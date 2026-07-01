@@ -1,0 +1,29 @@
+# Unreal generated files
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Editor and IDE state
+.idea/
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build products and debug symbols
+*.dll
+*.exe
+*.exp
+*.lib
+*.obj
+*.pdb
+*.ilk
+
+# Unreal assets are intentionally excluded for this code-only repository.
+Content/
+Plugins/**/Content/
+Plugins/**/Binaries/
+Plugins/**/Intermediate/
+
