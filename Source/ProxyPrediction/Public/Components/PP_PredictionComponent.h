@@ -58,7 +58,7 @@ struct FPP_DeferredPredictedReactionCorrection
 	double TimeSeconds = 0.0;
 };
 
-UCLASS()
+UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class PROXYPREDICTION_API UPP_PredictionComponent : public UActorComponent
 {
 	GENERATED_BODY()
