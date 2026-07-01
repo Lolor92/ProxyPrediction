@@ -24,7 +24,7 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 	
 	if (!CanPlayPredictedReactionOnTargetProxy(TargetActor, Reaction)) return false;
 	
-	const FPMMO_ReactionPredictionContext Context = MakeReactionPredictionContext();
+	const FPP_ReactionPredictionContext Context = MakeReactionPredictionContext();
 	
 	AddPendingPredictedReaction(Context, TargetActor, ReactionTag);
 	
@@ -43,7 +43,7 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 	return true;
 }
 
-void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPMMO_ReactionPredictionContext Context,
+void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_ReactionPredictionContext Context,
 	AActor* TargetActor, FGameplayTag ReactionTag)
 {
 	AActor* OwnerActor = GetOwner();
@@ -66,7 +66,7 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPMM
 		const float RemainingDuration = FMath::Max(0.05f, (MontageLength - StartPosition) / PlayRate);
 		TWeakObjectPtr<UPP_PredictionComponent> WeakThis(this);
 		TWeakObjectPtr<AActor> WeakTarget(TargetActor);
-		const FPMMO_ReactionPredictionContext CapturedContext = Context;
+		const FPP_ReactionPredictionContext CapturedContext = Context;
 		const FGameplayTag CapturedReactionTag = ReactionTag;
 
 		FTimerHandle TimerHandle;
@@ -93,7 +93,7 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPMM
 	MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag);
 }
 
-void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation(FPMMO_ReactionPredictionContext Context,
+void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation(FPP_ReactionPredictionContext Context,
 	AActor* TargetActor, FGameplayTag ReactionTag)
 {
 	AActor* OwnerActor = GetOwner();
@@ -119,7 +119,7 @@ void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation(FPMM
 	PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 }
 
-bool UPP_PredictionComponent::ConsumePendingPredictedReaction(const FPMMO_ReactionPredictionContext& Context,
+bool UPP_PredictionComponent::ConsumePendingPredictedReaction(const FPP_ReactionPredictionContext& Context,
 	AActor* TargetActor, FGameplayTag ReactionTag)
 {
 	if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return false;
@@ -128,7 +128,7 @@ bool UPP_PredictionComponent::ConsumePendingPredictedReaction(const FPMMO_Reacti
 
 	for (int32 Index = PendingPredictedReactions.Num() - 1; Index >= 0; --Index)
 	{
-		const FPMMO_PendingPredictedReaction& Entry = PendingPredictedReactions[Index];
+		const FPP_PendingPredictedReaction& Entry = PendingPredictedReactions[Index];
 
 		if (Entry.TargetActor.Get() == TargetActor && Entry.ReactionTag == ReactionTag && Entry.PredictionId == Context.PredictionId)
 		{
@@ -140,7 +140,7 @@ bool UPP_PredictionComponent::ConsumePendingPredictedReaction(const FPMMO_Reacti
 	return false;
 }
 
-void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FPMMO_ReactionPredictionContext Context,
+void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FPP_ReactionPredictionContext Context,
 	AActor* TargetActor, AActor* InstigatorActor, FGameplayTag ReactionTag)
 {
 	AActor* OwnerActor = GetOwner();
@@ -156,7 +156,7 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 }
 
-void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FPMMO_ReactionPredictionContext Context,
+void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FPP_ReactionPredictionContext Context,
 	AActor* TargetActor, FGameplayTag ReactionTag, FVector ServerFinalLocation)
 {
 	AActor* OwnerActor = GetOwner();
@@ -182,43 +182,239 @@ void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FP
 	TargetActor->SetActorLocation(ServerFinalLocation, false, nullptr, ETeleportType::TeleportPhysics);
 }
 
+void UPP_PredictionComponent::AddDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor, FGameplayTag ReactionTag)
+{
+	if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return;
+
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	RemoveExpiredDeferredPredictedReactionCorrections();
+
+	FPP_DeferredPredictedReactionCorrection& Entry =
+		DeferredPredictedReactionCorrections.AddDefaulted_GetRef();
+
+	Entry.TargetActor = TargetActor;
+	Entry.ReactionTag = ReactionTag;
+	Entry.PredictionId = Context.PredictionId;
+	Entry.TimeSeconds = World->GetTimeSeconds();
+}
+
+
+bool UPP_PredictionComponent::ConsumeDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor, FGameplayTag ReactionTag)
+{
+	if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return false;
+
+	RemoveExpiredDeferredPredictedReactionCorrections();
+
+	for (int32 Index = DeferredPredictedReactionCorrections.Num() - 1; Index >= 0; --Index)
+	{
+		const FPP_DeferredPredictedReactionCorrection& Entry = DeferredPredictedReactionCorrections[Index];
+
+		if (Entry.TargetActor.Get() == TargetActor &&
+			Entry.ReactionTag == ReactionTag &&
+			Entry.PredictionId == Context.PredictionId)
+		{
+			DeferredPredictedReactionCorrections.RemoveAtSwap(Index);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections()
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		DeferredPredictedReactionCorrections.Reset();
+		return;
+	}
+
+	const double Now = World->GetTimeSeconds();
+
+	for (int32 Index = DeferredPredictedReactionCorrections.Num() - 1; Index >= 0; --Index)
+	{
+		const FPP_DeferredPredictedReactionCorrection& Entry = DeferredPredictedReactionCorrections[Index];
+
+		const bool bExpired = Now - Entry.TimeSeconds > DeferredPredictedCorrectionTimeout;
+		const bool bInvalid =
+			!Entry.TargetActor.IsValid() ||
+			!Entry.ReactionTag.IsValid() ||
+			Entry.PredictionId == INDEX_NONE;
+
+		if (bExpired || bInvalid)
+		{
+			DeferredPredictedReactionCorrections.RemoveAtSwap(Index);
+		}
+	}
+}
+
 bool UPP_PredictionComponent::CanPlayPredictedReactionOnTargetProxy(AActor* TargetActor,
 	const FPP_ReactionDataEntry& Reaction) const
 {
+	if (!TargetActor || !Reaction.Montage) return false;
+
+	const UWorld* World = GetWorld();
+	if (!World) return false;
+
+	if (World->GetNetMode() == NM_DedicatedServer) return false;
+
+	const AActor* OwnerActor = GetOwner();
+	if (!OwnerActor) return false;
+
+	// This component is on the attacker.
+	// Only the attacking client should predict target proxy reaction.
+	if (OwnerActor->HasAuthority()) return false;
+
+	const APawn* OwnerPawn = Cast<APawn>(OwnerActor);
+	if (!OwnerPawn || !OwnerPawn->IsLocallyControlled()) return false;
+
+	// The target we are animating should be a proxy on this machine.
+	if (TargetActor->HasAuthority()) return false;
+
+	const APawn* TargetPawn = Cast<APawn>(TargetActor);
+	if (TargetPawn && TargetPawn->IsLocallyControlled()) return false;
+
+	const double Now = World->GetTimeSeconds();
+
+	if (const double* LastTime = LastReactionTimeByTarget.Find(TargetActor))
+	{
+		if (Now - *LastTime < Reaction.MinReplayInterval)
+		{
+			return false;
+		}
+	}
+
+	return true;
 }
 
-FPMMO_ReactionPredictionContext UPP_PredictionComponent::MakeReactionPredictionContext()
+FPP_ReactionPredictionContext UPP_PredictionComponent::MakeReactionPredictionContext()
 {
+	FPP_ReactionPredictionContext Context;
+	Context.PredictionId = NextPredictionId;
+
+	NextPredictionId = (NextPredictionId + 1) % MaxPredictionId;
+	if (NextPredictionId == INDEX_NONE)
+	{
+		NextPredictionId = 0;
+	}
+
+	return Context;
 }
 
-void UPP_PredictionComponent::AddPendingPredictedReaction(const FPMMO_ReactionPredictionContext& Context,
+void UPP_PredictionComponent::AddPendingPredictedReaction(const FPP_ReactionPredictionContext& Context,
 	AActor* TargetActor, FGameplayTag ReactionTag)
 {
+	if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return;
+
+	UWorld* World = GetWorld();
+	if (!World) return;
+	
+	RemoveExpiredPendingPredictedReactions();
+	
+	FPP_PendingPredictedReaction& Entry = PendingPredictedReactions.AddDefaulted_GetRef();
+	
+	Entry.TargetActor = TargetActor;
+	Entry.ReactionTag = ReactionTag;
+	Entry.PredictionId = Context.PredictionId;
+	Entry.TimeSeconds = World->GetTimeSeconds();
+	
+	if (PendingPredictedReactions.Num() > MaxPendingPredictedReactions)
+	{
+		PendingPredictedReactions.RemoveAt(0, PendingPredictedReactions.Num() - MaxPendingPredictedReactions,
+			EAllowShrinking::No);
+	}
 }
 
 void UPP_PredictionComponent::RemoveExpiredPendingPredictedReactions()
 {
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		PendingPredictedReactions.Reset();
+		return;
+	}
+	
+	const double Now = World->GetTimeSeconds();
+	
+	for (int32 Index = PendingPredictedReactions.Num() - 1; Index >= 0; --Index)
+	{
+		const FPP_PendingPredictedReaction& Entry = PendingPredictedReactions[Index];
+
+		const bool bExpired = Now - Entry.TimeSeconds > PendingPredictedReactionTimeout;
+		const bool bInvalid =
+			!Entry.TargetActor.IsValid() ||
+			!Entry.ReactionTag.IsValid() ||
+			Entry.PredictionId == INDEX_NONE;
+
+		if (bExpired || bInvalid)
+		{
+			PendingPredictedReactions.RemoveAtSwap(Index);
+		}
+	}
 }
 
 float UPP_PredictionComponent::GetReactionStartPosition(const FPP_ReactionDataEntry& Reaction) const
 {
+	if (!Reaction.Montage || Reaction.StartSection == NAME_None)
+	{
+		return 0.f;
+	}
+
+	const int32 SectionIndex = Reaction.Montage->GetSectionIndex(Reaction.StartSection);
+	if (SectionIndex == INDEX_NONE)
+	{
+		return 0.f;
+	}
+
+	float SectionStartTime = 0.f;
+	float SectionEndTime = 0.f;
+
+	Reaction.Montage->GetSectionStartAndEndTime(SectionIndex, SectionStartTime, SectionEndTime);
+
+	return SectionStartTime;
 }
 
 bool UPP_PredictionComponent::PlayReactionMontageOnActor(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction,
 	float StartPosition, bool bForceRestart) const
 {
-}
+	if (!TargetActor || !Reaction.Montage) return false;
 
-void UPP_PredictionComponent::AddDeferredPredictedReactionCorrection(const FPMMO_ReactionPredictionContext& Context,
-	AActor* TargetActor, FGameplayTag ReactionTag)
-{
-}
+	ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
+	if (!TargetCharacter) return false;
 
-bool UPP_PredictionComponent::ConsumeDeferredPredictedReactionCorrection(const FPMMO_ReactionPredictionContext& Context,
-	AActor* TargetActor, FGameplayTag ReactionTag)
-{
-}
+	USkeletalMeshComponent* Mesh = TargetCharacter->GetMesh();
+	if (!Mesh) return false;
 
-void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections()
-{
+	UAnimInstance* AnimInstance = Mesh->GetAnimInstance();
+	if (!AnimInstance) return false;
+
+	if (!bForceRestart && AnimInstance->Montage_IsPlaying(Reaction.Montage)) return true;
+	
+	const FVector BeforeLocation = TargetActor->GetActorLocation();
+
+	const float PlayedLength = AnimInstance->Montage_Play(Reaction.Montage, Reaction.PlayRate);
+
+	if (PlayedLength <= 0.f) return false;
+
+	const FVector AfterLocation = TargetActor->GetActorLocation();
+	
+	const float MontageLength = Reaction.Montage->GetPlayLength();
+	const float ClampedStartPosition = FMath::Clamp(StartPosition,
+		0.f, FMath::Max(0.f, MontageLength - KINDA_SMALL_NUMBER));
+	
+	if (ClampedStartPosition > KINDA_SMALL_NUMBER)
+	{
+		AnimInstance->Montage_SetPosition(Reaction.Montage, ClampedStartPosition);
+	}
+	else if (Reaction.StartSection != NAME_None)
+	{
+		AnimInstance->Montage_JumpToSection(Reaction.StartSection, Reaction.Montage);
+	}
+
+	return true;
 }

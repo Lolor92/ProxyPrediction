@@ -9,7 +9,7 @@
 class AActor;
 
 USTRUCT(BlueprintType)
-struct FPMMO_ReactionPredictionContext
+struct FPP_ReactionPredictionContext
 {
 	GENERATED_BODY()
 
@@ -23,7 +23,7 @@ struct FPMMO_ReactionPredictionContext
 };
 
 USTRUCT()
-struct FPMMO_PendingPredictedReaction
+struct FPP_PendingPredictedReaction
 {
 	GENERATED_BODY()
 
@@ -41,7 +41,7 @@ struct FPMMO_PendingPredictedReaction
 };
 
 USTRUCT()
-struct FPMMO_DeferredPredictedReactionCorrection
+struct FPP_DeferredPredictedReactionCorrection
 {
 	GENERATED_BODY()
 
@@ -70,21 +70,21 @@ public:
 	bool PlayPredictedReactionOnTargetProxy(AActor* TargetActor, FGameplayTag ReactionTag);
 
 	UFUNCTION(Server, Reliable)
-	void ServerConfirmPredictedReaction(FPMMO_ReactionPredictionContext Context, AActor* TargetActor,
+	void ServerConfirmPredictedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
 		FGameplayTag ReactionTag);
 	
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastPlayConfirmedReaction(FPMMO_ReactionPredictionContext Context, AActor* TargetActor,
+	void MulticastPlayConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
 		FGameplayTag ReactionTag);
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastFinishConfirmedReaction(FPMMO_ReactionPredictionContext Context, AActor* TargetActor,
+	void MulticastFinishConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, FVector ServerFinalLocation);
 	
 private:
 	bool CanPlayPredictedReactionOnTargetProxy(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction) const;
-	FPMMO_ReactionPredictionContext MakeReactionPredictionContext();
-	void AddPendingPredictedReaction(const FPMMO_ReactionPredictionContext& Context, AActor* TargetActor,
+	FPP_ReactionPredictionContext MakeReactionPredictionContext();
+	void AddPendingPredictedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag);
 	void RemoveExpiredPendingPredictedReactions();
 	
@@ -93,17 +93,17 @@ private:
 	bool PlayReactionMontageOnActor(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction, float StartPosition,
 		bool bForceRestart) const;
 	
-	bool ConsumePendingPredictedReaction(const FPMMO_ReactionPredictionContext& Context, AActor* TargetActor,
+	bool ConsumePendingPredictedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 	FGameplayTag ReactionTag);
 
-	void AddDeferredPredictedReactionCorrection(const FPMMO_ReactionPredictionContext& Context, AActor* TargetActor,
+	void AddDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag);
-	bool ConsumeDeferredPredictedReactionCorrection(const FPMMO_ReactionPredictionContext& Context, AActor* TargetActor,
+	bool ConsumeDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag);
 	void RemoveExpiredDeferredPredictedReactionCorrections();
 
 	UFUNCTION(Client, Reliable)
-	void ClientPlayOwnerConfirmedReaction(FPMMO_ReactionPredictionContext Context,AActor* TargetActor,
+	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context,AActor* TargetActor,
 		AActor* InstigatorActor, FGameplayTag ReactionTag);
 	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SyncPrediction|Reaction", meta = (AllowPrivateAccess = "true"))
@@ -119,10 +119,10 @@ private:
 	static constexpr int32 MaxPendingPredictedReactions = 32;
 	
 	UPROPERTY(Transient)
-	TArray<FPMMO_PendingPredictedReaction> PendingPredictedReactions;
+	TArray<FPP_PendingPredictedReaction> PendingPredictedReactions;
 
 	UPROPERTY(Transient)
-	TArray<FPMMO_DeferredPredictedReactionCorrection> DeferredPredictedReactionCorrections;
+	TArray<FPP_DeferredPredictedReactionCorrection> DeferredPredictedReactionCorrections;
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Seconds"))
 	float PendingPredictedReactionTimeout = 2.0f;
@@ -137,5 +137,5 @@ private:
 	bool bApplyInstantFinalCorrection = false;
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Centimeters"))
-	float MaxInstantFinalCorrectionDistance = 35.0f;
+	float MaxInstantFinalCorrectionDistance = 0.0f;
 };
