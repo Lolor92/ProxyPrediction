@@ -8,6 +8,32 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
 
+namespace
+{
+	const TCHAR* PP_NetModeToString(const UWorld* World)
+	{
+		if (!World) return TEXT("NoWorld");
+
+		switch (World->GetNetMode())
+		{
+		case NM_Client:
+			return TEXT("Client");
+		case NM_DedicatedServer:
+			return TEXT("DedicatedServer");
+		case NM_ListenServer:
+			return TEXT("ListenServer");
+		case NM_Standalone:
+			return TEXT("Standalone");
+		default:
+			return TEXT("Unknown");
+		}
+	}
+
+	const TCHAR* PP_YesNo(const bool bValue)
+	{
+		return bValue ? TEXT("1") : TEXT("0");
+	}
+}
 
 UPP_PredictionComponent::UPP_PredictionComponent()
 {
@@ -17,6 +43,9 @@ UPP_PredictionComponent::UPP_PredictionComponent()
 
 bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetActor, FGameplayTag ReactionTag)
 {
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PredictRequest Net=%s Owner=%s Target=%s Tag=%s"),
+		PP_NetModeToString(GetWorld()), *GetNameSafe(GetOwner()), *GetNameSafe(TargetActor), *ReactionTag.ToString());
+
 	if (!ReactionData || !ReactionTag.IsValid()) return false;
 	
 	FPP_ReactionDataEntry Reaction;
@@ -31,12 +60,19 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 	const float StartPosition = GetReactionStartPosition(Reaction);
 	
 	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PredictLocalPlay Net=%s Owner=%s Target=%s Tag=%s PredictionId=%d Played=%s Start=%.3f"),
+		PP_NetModeToString(GetWorld()), *GetNameSafe(GetOwner()), *GetNameSafe(TargetActor), *ReactionTag.ToString(),
+		Context.PredictionId, PP_YesNo(bPlayed), StartPosition);
 	
 	if (!bPlayed)
 	{
 		ConsumePendingPredictedReaction(Context, TargetActor, ReactionTag);
 		return false;
 	}
+
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION SendServerConfirm Net=%s Owner=%s Target=%s Tag=%s PredictionId=%d"),
+		PP_NetModeToString(GetWorld()), *GetNameSafe(GetOwner()), *GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId);
 
 	ServerConfirmPredictedReaction(Context, TargetActor, ReactionTag);
 
@@ -48,6 +84,10 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 {
 	AActor* OwnerActor = GetOwner();
 
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION ServerConfirm ENTER Net=%s Owner=%s Target=%s Tag=%s PredictionId=%d Auth=%s"),
+		PP_NetModeToString(GetWorld()), *GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), *ReactionTag.ToString(),
+		Context.PredictionId, PP_YesNo(OwnerActor && OwnerActor->HasAuthority()));
+
 	if (!OwnerActor || !OwnerActor->HasAuthority()) return;
 
 	if (!Context.IsValid() || !TargetActor || !ReactionData || !ReactionTag.IsValid()) return;
@@ -57,7 +97,9 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
-	PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+	const bool bServerPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION ServerPlay Target=%s Tag=%s PredictionId=%d Played=%s Start=%.3f"),
+		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, PP_YesNo(bServerPlayed), StartPosition);
 	
 	if (UWorld* World = GetWorld())
 	{
@@ -69,6 +111,9 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 		const FPP_ReactionPredictionContext CapturedContext = Context;
 		const FGameplayTag CapturedReactionTag = ReactionTag;
 
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION ServerFinishTimer Target=%s Tag=%s PredictionId=%d Remaining=%.3f"),
+			*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, RemainingDuration);
+
 		FTimerHandle TimerHandle;
 		World->GetTimerManager().SetTimer(TimerHandle,[WeakThis, WeakTarget, CapturedContext, CapturedReactionTag]()
 			{
@@ -77,6 +122,8 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 				if (!StrongThis || !StrongTarget) return;
 
 				const FVector ServerFinalLocation = StrongTarget->GetActorLocation();
+				UE_LOG(LogTemp, Warning, TEXT("PP_REACTION ServerFinishFire Target=%s Tag=%s PredictionId=%d ServerLoc=%s"),
+					*GetNameSafe(StrongTarget), *CapturedReactionTag.ToString(), CapturedContext.PredictionId, *ServerFinalLocation.ToString());
 				StrongThis->MulticastFinishConfirmedReaction(CapturedContext, StrongTarget,
 					CapturedReactionTag, ServerFinalLocation);
 			},
@@ -87,9 +134,13 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 	if (UPP_PredictionComponent* TargetPredictionComponent =
 	TargetActor->FindComponentByClass<UPP_PredictionComponent>())
 	{
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION SendOwnerClientRPC Target=%s Instigator=%s Tag=%s PredictionId=%d"),
+			*GetNameSafe(TargetActor), *GetNameSafe(OwnerActor), *ReactionTag.ToString(), Context.PredictionId);
 		TargetPredictionComponent->ClientPlayOwnerConfirmedReaction(Context, TargetActor, OwnerActor, ReactionTag);
 	}
 	
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION SendMulticastPlay Target=%s Tag=%s PredictionId=%d"),
+		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId);
 	MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag);
 }
 
@@ -97,26 +148,37 @@ void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation(FPP_
 	AActor* TargetActor, FGameplayTag ReactionTag)
 {
 	AActor* OwnerActor = GetOwner();
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION MulticastPlay ENTER Net=%s Owner=%s Target=%s Tag=%s PredictionId=%d OwnerAuth=%s"),
+		PP_NetModeToString(GetWorld()), *GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), *ReactionTag.ToString(),
+		Context.PredictionId, PP_YesNo(OwnerActor && OwnerActor->HasAuthority()));
+
 	if (!OwnerActor || OwnerActor->HasAuthority()) return;
 
 	if (!TargetActor || !ReactionData || !ReactionTag.IsValid()) return;
 
 	if (ConsumePendingPredictedReaction(Context, TargetActor, ReactionTag))
 	{
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION MulticastPlay ConsumedPending_DeferFinalCorrection Owner=%s Target=%s Tag=%s PredictionId=%d"),
+			*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId);
 		AddDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag);
 		
 		return;
 	}
 	
 	const APawn* TargetPawn = Cast<APawn>(TargetActor);
-	if (TargetPawn && TargetPawn->IsLocallyControlled()) return;
+	const bool bTargetLocallyControlled = TargetPawn && TargetPawn->IsLocallyControlled();
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION MulticastPlay TargetLocalCheck Owner=%s Target=%s LocalTarget=%s"),
+		*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), PP_YesNo(bTargetLocallyControlled));
+	if (bTargetLocallyControlled) return;
 
 	FPP_ReactionDataEntry Reaction;
 	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return;
 
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
-	PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION MulticastPlay Played Owner=%s Target=%s Tag=%s PredictionId=%d Played=%s Start=%.3f"),
+		*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, PP_YesNo(bPlayed), StartPosition);
 }
 
 bool UPP_PredictionComponent::ConsumePendingPredictedReaction(const FPP_ReactionPredictionContext& Context,
@@ -133,10 +195,14 @@ bool UPP_PredictionComponent::ConsumePendingPredictedReaction(const FPP_Reaction
 		if (Entry.TargetActor.Get() == TargetActor && Entry.ReactionTag == ReactionTag && Entry.PredictionId == Context.PredictionId)
 		{
 			PendingPredictedReactions.RemoveAtSwap(Index);
+			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION ConsumePending HIT Target=%s Tag=%s PredictionId=%d"),
+				*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId);
 			return true;
 		}
 	}
 
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION ConsumePending MISS Target=%s Tag=%s PredictionId=%d PendingCount=%d"),
+		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, PendingPredictedReactions.Num());
 	return false;
 }
 
@@ -144,6 +210,10 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	AActor* TargetActor, AActor* InstigatorActor, FGameplayTag ReactionTag)
 {
 	AActor* OwnerActor = GetOwner();
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC ENTER Net=%s Owner=%s Target=%s Instigator=%s Tag=%s PredictionId=%d"),
+		PP_NetModeToString(GetWorld()), *GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), *GetNameSafe(InstigatorActor),
+		*ReactionTag.ToString(), Context.PredictionId);
+
 	if (!OwnerActor || OwnerActor != TargetActor) return;
 
 	APawn* OwnerPawn = Cast<APawn>(OwnerActor);
@@ -162,6 +232,10 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 		? MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection
 		: false;
 
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC SuppressCorrection Target=%s Tag=%s PredictionId=%d PrevIgnore=%s MovementValid=%s Loc=%s"),
+		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, PP_YesNo(bPreviousIgnoreClientCorrections),
+		PP_YesNo(MovementComponent != nullptr), *TargetActor->GetActorLocation().ToString());
+
 	if (MovementComponent)
 	{
 		MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = true;
@@ -174,11 +248,16 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	// the local montage window is finished.
 	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC LocalPlay Target=%s Tag=%s PredictionId=%d Played=%s Start=%.3f"),
+		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, PP_YesNo(bPlayed), StartPosition);
+
 	if (!bPlayed)
 	{
 		if (MovementComponent)
 		{
 			MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientCorrections;
+			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC RestoreAfterFailedPlay Target=%s Tag=%s PredictionId=%d RestoredIgnore=%s"),
+				*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, PP_YesNo(bPreviousIgnoreClientCorrections));
 		}
 		return;
 	}
@@ -189,16 +268,25 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 		const float PlayRate = FMath::Max(FMath::Abs(Reaction.PlayRate), KINDA_SMALL_NUMBER);
 		const float RemainingDuration = FMath::Max(0.05f, (MontageLength - StartPosition) / PlayRate);
 
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC RestoreTimer Target=%s Tag=%s PredictionId=%d Remaining=%.3f MontageLength=%.3f PlayRate=%.3f"),
+			*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, RemainingDuration, MontageLength, Reaction.PlayRate);
+
 		TWeakObjectPtr<UCharacterMovementComponent> WeakMovementComponent(MovementComponent);
+		TWeakObjectPtr<AActor> WeakTarget(TargetActor);
+		const FGameplayTag CapturedReactionTag = ReactionTag;
+		const FPP_ReactionPredictionContext CapturedContext = Context;
 
 		FTimerHandle TimerHandle;
 		World->GetTimerManager().SetTimer(
 			TimerHandle,
-			[WeakMovementComponent, bPreviousIgnoreClientCorrections]()
+			[WeakMovementComponent, WeakTarget, CapturedReactionTag, CapturedContext, bPreviousIgnoreClientCorrections]()
 			{
 				if (UCharacterMovementComponent* StrongMovementComponent = WeakMovementComponent.Get())
 				{
 					StrongMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientCorrections;
+					UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC RestoreTimerFire Target=%s Tag=%s PredictionId=%d RestoredIgnore=%s Loc=%s"),
+						*GetNameSafe(WeakTarget.Get()), *CapturedReactionTag.ToString(), CapturedContext.PredictionId,
+						PP_YesNo(bPreviousIgnoreClientCorrections), WeakTarget.IsValid() ? *WeakTarget->GetActorLocation().ToString() : TEXT("Invalid"));
 				}
 			},
 			RemainingDuration,
@@ -207,6 +295,8 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	else if (MovementComponent)
 	{
 		MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientCorrections;
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC RestoreNoWorld Target=%s Tag=%s PredictionId=%d RestoredIgnore=%s"),
+			*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, PP_YesNo(bPreviousIgnoreClientCorrections));
 	}
 }
 
@@ -214,18 +304,37 @@ void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FP
 	AActor* TargetActor, FGameplayTag ReactionTag, FVector ServerFinalLocation)
 {
 	AActor* OwnerActor = GetOwner();
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION MulticastFinish ENTER Net=%s Owner=%s Target=%s Tag=%s PredictionId=%d OwnerAuth=%s ServerLoc=%s"),
+		PP_NetModeToString(GetWorld()), *GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), *ReactionTag.ToString(),
+		Context.PredictionId, PP_YesNo(OwnerActor && OwnerActor->HasAuthority()), *ServerFinalLocation.ToString());
+
 	if (!OwnerActor || OwnerActor->HasAuthority()) return;
 
 	if (!TargetActor || !ReactionTag.IsValid()) return;
 
 	const APawn* TargetPawn = Cast<APawn>(TargetActor);
-	if (TargetPawn && TargetPawn->IsLocallyControlled()) return;
+	const bool bTargetLocallyControlled = TargetPawn && TargetPawn->IsLocallyControlled();
+	if (bTargetLocallyControlled)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION MulticastFinish SkipLocalTarget Target=%s Tag=%s PredictionId=%d"),
+			*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId);
+		return;
+	}
 
-	if (!ConsumeDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag)) return;
+	if (!ConsumeDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION MulticastFinish NoDeferredCorrection Target=%s Tag=%s PredictionId=%d"),
+			*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId);
+		return;
+	}
 
 	const FVector ClientFinalLocation = TargetActor->GetActorLocation();
 	const FVector Delta = ServerFinalLocation - ClientFinalLocation;
 	const float Distance = Delta.Size();
+
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION MulticastFinish CorrectionCheck Target=%s Tag=%s PredictionId=%d ClientLoc=%s ServerLoc=%s Distance=%.3f Tol=%.3f Apply=%s MaxInstant=%.3f"),
+		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, *ClientFinalLocation.ToString(),
+		*ServerFinalLocation.ToString(), Distance, FinalCorrectionTolerance, PP_YesNo(bApplyInstantFinalCorrection), MaxInstantFinalCorrectionDistance);
 
 	if (Distance <= FinalCorrectionTolerance) return;
 
@@ -234,6 +343,8 @@ void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FP
 	if (Distance > MaxInstantFinalCorrectionDistance) return;
 
 	TargetActor->SetActorLocation(ServerFinalLocation, false, nullptr, ETeleportType::TeleportPhysics);
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION MulticastFinish AppliedInstantCorrection Target=%s Tag=%s PredictionId=%d NewLoc=%s"),
+		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, *TargetActor->GetActorLocation().ToString());
 }
 
 void UPP_PredictionComponent::AddDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context,
@@ -253,6 +364,9 @@ void UPP_PredictionComponent::AddDeferredPredictedReactionCorrection(const FPP_R
 	Entry.ReactionTag = ReactionTag;
 	Entry.PredictionId = Context.PredictionId;
 	Entry.TimeSeconds = World->GetTimeSeconds();
+
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION AddDeferredCorrection Target=%s Tag=%s PredictionId=%d Count=%d"),
+		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, DeferredPredictedReactionCorrections.Num());
 }
 
 
@@ -272,10 +386,14 @@ bool UPP_PredictionComponent::ConsumeDeferredPredictedReactionCorrection(const F
 			Entry.PredictionId == Context.PredictionId)
 		{
 			DeferredPredictedReactionCorrections.RemoveAtSwap(Index);
+			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION ConsumeDeferred HIT Target=%s Tag=%s PredictionId=%d"),
+				*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId);
 			return true;
 		}
 	}
 
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION ConsumeDeferred MISS Target=%s Tag=%s PredictionId=%d DeferredCount=%d"),
+		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, DeferredPredictedReactionCorrections.Num());
 	return false;
 }
 
@@ -302,6 +420,9 @@ void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections(
 
 		if (bExpired || bInvalid)
 		{
+			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION DeferredExpired Target=%s Tag=%s PredictionId=%d Expired=%s Invalid=%s"),
+				*GetNameSafe(Entry.TargetActor.Get()), *Entry.ReactionTag.ToString(), Entry.PredictionId,
+				PP_YesNo(bExpired), PP_YesNo(bInvalid));
 			DeferredPredictedReactionCorrections.RemoveAtSwap(Index);
 		}
 	}
@@ -339,10 +460,14 @@ bool UPP_PredictionComponent::CanPlayPredictedReactionOnTargetProxy(AActor* Targ
 	{
 		if (Now - *LastTime < Reaction.MinReplayInterval)
 		{
+			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CanPredict RejectMinReplay Owner=%s Target=%s Delta=%.3f Min=%.3f"),
+				*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), Now - *LastTime, Reaction.MinReplayInterval);
 			return false;
 		}
 	}
 
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CanPredict OK Owner=%s Target=%s"),
+		*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));
 	return true;
 }
 
@@ -376,6 +501,9 @@ void UPP_PredictionComponent::AddPendingPredictedReaction(const FPP_ReactionPred
 	Entry.ReactionTag = ReactionTag;
 	Entry.PredictionId = Context.PredictionId;
 	Entry.TimeSeconds = World->GetTimeSeconds();
+
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION AddPending Target=%s Tag=%s PredictionId=%d Count=%d"),
+		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, PendingPredictedReactions.Num());
 	
 	if (PendingPredictedReactions.Num() > MaxPendingPredictedReactions)
 	{
@@ -407,6 +535,9 @@ void UPP_PredictionComponent::RemoveExpiredPendingPredictedReactions()
 
 		if (bExpired || bInvalid)
 		{
+			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PendingExpired Target=%s Tag=%s PredictionId=%d Expired=%s Invalid=%s"),
+				*GetNameSafe(Entry.TargetActor.Get()), *Entry.ReactionTag.ToString(), Entry.PredictionId,
+				PP_YesNo(bExpired), PP_YesNo(bInvalid));
 			PendingPredictedReactions.RemoveAtSwap(Index);
 		}
 	}
@@ -447,16 +578,36 @@ bool UPP_PredictionComponent::PlayReactionMontageOnActor(AActor* TargetActor, co
 	UAnimInstance* AnimInstance = Mesh->GetAnimInstance();
 	if (!AnimInstance) return false;
 
-	if (!bForceRestart && AnimInstance->Montage_IsPlaying(Reaction.Montage)) return true;
-	
-	if (bForceRestart && AnimInstance->Montage_IsPlaying(Reaction.Montage))
+	const bool bWasPlaying = AnimInstance->Montage_IsPlaying(Reaction.Montage);
+	const float PreviousPosition = bWasPlaying ? AnimInstance->Montage_GetPosition(Reaction.Montage) : -1.f;
+
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PlayMontage ENTER Net=%s Owner=%s Target=%s Montage=%s ForceRestart=%s WasPlaying=%s PrevPos=%.3f Start=%.3f PlayRate=%.3f Loc=%s"),
+		PP_NetModeToString(GetWorld()), *GetNameSafe(GetOwner()), *GetNameSafe(TargetActor), *GetNameSafe(Reaction.Montage),
+		PP_YesNo(bForceRestart), PP_YesNo(bWasPlaying), PreviousPosition, StartPosition, Reaction.PlayRate,
+		*TargetActor->GetActorLocation().ToString());
+
+	if (!bForceRestart && bWasPlaying)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PlayMontage AlreadyPlaying_NoRestart Target=%s Montage=%s Pos=%.3f"),
+			*GetNameSafe(TargetActor), *GetNameSafe(Reaction.Montage), PreviousPosition);
+		return true;
+	}
+	
+	if (bForceRestart && bWasPlaying)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PlayMontage STOP_FOR_RESTART Target=%s Montage=%s Pos=%.3f"),
+			*GetNameSafe(TargetActor), *GetNameSafe(Reaction.Montage), PreviousPosition);
 		AnimInstance->Montage_Stop(0.f, Reaction.Montage);
 	}
 
 	const float PlayedLength = AnimInstance->Montage_Play(Reaction.Montage, Reaction.PlayRate);
 
-	if (PlayedLength <= 0.f) return false;
+	if (PlayedLength <= 0.f)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PlayMontage FAILED Target=%s Montage=%s PlayedLength=%.3f"),
+			*GetNameSafe(TargetActor), *GetNameSafe(Reaction.Montage), PlayedLength);
+		return false;
+	}
 	
 	const float MontageLength = Reaction.Montage->GetPlayLength();
 	const float ClampedStartPosition = FMath::Clamp(StartPosition,
@@ -470,6 +621,9 @@ bool UPP_PredictionComponent::PlayReactionMontageOnActor(AActor* TargetActor, co
 	{
 		AnimInstance->Montage_JumpToSection(Reaction.StartSection, Reaction.Montage);
 	}
+
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PlayMontage SUCCESS Target=%s Montage=%s FinalPos=%.3f MontageLength=%.3f"),
+		*GetNameSafe(TargetActor), *GetNameSafe(Reaction.Montage), AnimInstance->Montage_GetPosition(Reaction.Montage), MontageLength);
 
 	return true;
 }
