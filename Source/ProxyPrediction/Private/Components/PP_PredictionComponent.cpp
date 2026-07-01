@@ -398,8 +398,6 @@ bool UPP_PredictionComponent::PlayReactionMontageOnActor(AActor* TargetActor, co
 
 	if (!bForceRestart && AnimInstance->Montage_IsPlaying(Reaction.Montage)) return true;
 	
-	const FVector BeforeLocation = TargetActor->GetActorLocation();
-
 	if (bForceRestart && AnimInstance->Montage_IsPlaying(Reaction.Montage))
 	{
 		AnimInstance->Montage_Stop(0.f, Reaction.Montage);
@@ -408,8 +406,6 @@ bool UPP_PredictionComponent::PlayReactionMontageOnActor(AActor* TargetActor, co
 	const float PlayedLength = AnimInstance->Montage_Play(Reaction.Montage, Reaction.PlayRate);
 
 	if (PlayedLength <= 0.f) return false;
-
-	const FVector AfterLocation = TargetActor->GetActorLocation();
 	
 	const float MontageLength = Reaction.Montage->GetPlayLength();
 	const float ClampedStartPosition = FMath::Clamp(StartPosition,
