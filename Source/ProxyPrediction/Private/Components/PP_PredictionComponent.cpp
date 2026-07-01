@@ -154,9 +154,68 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	FPP_ReactionDataEntry Reaction;
 	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return;
 
+	ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
+	if (!TargetCharacter) return;
+
+	USkeletalMeshComponent* Mesh = TargetCharacter->GetMesh();
+	if (!Mesh) return;
+
+	UAnimInstance* AnimInstance = Mesh->GetAnimInstance();
+	if (!AnimInstance) return;
+
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
-	PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+	// The owning victim receives this after server latency.
+	// The server root-motion montage is already ahead by then, so play the local
+	// owner montage as cosmetic and let server movement replication drive the capsule.
+	const ERootMotionMode::Type PreviousRootMotionMode = AnimInstance->RootMotionMode;
+	AnimInstance->SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
+
+	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+
+	if (!bPlayed)
+	{
+		AnimInstance->SetRootMotionMode(PreviousRootMotionMode);
+		return;
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		const float MontageLength = Reaction.Montage ? Reaction.Montage->GetPlayLength() : 0.f;
+		const float PlayRate = FMath::Max(FMath::Abs(Reaction.PlayRate), KINDA_SMALL_NUMBER);
+		const float RemainingDuration = FMath::Max(0.05f, (MontageLength - StartPosition) / PlayRate);
+
+		TWeakObjectPtr<UAnimInstance> WeakAnimInstance(AnimInstance);
+		TWeakObjectPtr<UAnimMontage> WeakMontage(Reaction.Montage);
+
+		FTimerHandle TimerHandle;
+		World->GetTimerManager().SetTimer(
+			TimerHandle,
+			[WeakAnimInstance, WeakMontage, PreviousRootMotionMode]()
+			{
+				UAnimInstance* StrongAnimInstance = WeakAnimInstance.Get();
+				if (!StrongAnimInstance) return;
+
+				if (UAnimMontage* StrongMontage = WeakMontage.Get())
+				{
+					// If something is still playing, restore later through a fallback path
+					// or keep this simple and restore when the timer fires.
+					if (StrongAnimInstance->Montage_IsPlaying(StrongMontage))
+					{
+						StrongAnimInstance->SetRootMotionMode(PreviousRootMotionMode);
+						return;
+					}
+				}
+
+				StrongAnimInstance->SetRootMotionMode(PreviousRootMotionMode);
+			},
+			RemainingDuration,
+			false);
+	}
+	else
+	{
+		AnimInstance->SetRootMotionMode(PreviousRootMotionMode);
+	}
 }
 
 void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FPP_ReactionPredictionContext Context,
