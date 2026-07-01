@@ -228,24 +228,29 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	if (!TargetCharacter) return;
 
 	UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement();
-	const bool bPreviousIgnoreClientCorrections = MovementComponent
+	const bool bPreviousIgnoreClientErrorChecks = MovementComponent
 		? MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection
 		: false;
+	const bool bPreviousClientIgnoreMovementCorrections = MovementComponent
+		? MovementComponent->bClientIgnoreMovementCorrections
+		: false;
 
-	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC SuppressCorrection Target=%s Tag=%s PredictionId=%d PrevIgnore=%s MovementValid=%s Loc=%s"),
-		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, PP_YesNo(bPreviousIgnoreClientCorrections),
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC SuppressCorrection Target=%s Tag=%s PredictionId=%d PrevErrorChecks=%s PrevClientIgnore=%s MovementValid=%s Loc=%s"),
+		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId,
+		PP_YesNo(bPreviousIgnoreClientErrorChecks), PP_YesNo(bPreviousClientIgnoreMovementCorrections),
 		PP_YesNo(MovementComponent != nullptr), *TargetActor->GetActorLocation().ToString());
 
 	if (MovementComponent)
 	{
 		MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = true;
+		MovementComponent->bClientIgnoreMovementCorrections = true;
 	}
 
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
 	// The owning victim starts this montage later than the server because this RPC arrives after latency.
-	// While the local reaction plays, ignore server correction yanks. Normal reconciliation resumes when
-	// the local montage window is finished.
+	// While the local reaction plays, ignore both newly generated server corrections and already in-flight
+	// corrections on this client. Normal reconciliation resumes when the local montage window is finished.
 	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 
 	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC LocalPlay Target=%s Tag=%s PredictionId=%d Played=%s Start=%.3f"),
@@ -255,9 +260,11 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	{
 		if (MovementComponent)
 		{
-			MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientCorrections;
-			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC RestoreAfterFailedPlay Target=%s Tag=%s PredictionId=%d RestoredIgnore=%s"),
-				*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, PP_YesNo(bPreviousIgnoreClientCorrections));
+			MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientErrorChecks;
+			MovementComponent->bClientIgnoreMovementCorrections = bPreviousClientIgnoreMovementCorrections;
+			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC RestoreAfterFailedPlay Target=%s Tag=%s PredictionId=%d RestoredErrorChecks=%s RestoredClientIgnore=%s"),
+				*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId,
+				PP_YesNo(bPreviousIgnoreClientErrorChecks), PP_YesNo(bPreviousClientIgnoreMovementCorrections));
 		}
 		return;
 	}
@@ -279,14 +286,17 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 		FTimerHandle TimerHandle;
 		World->GetTimerManager().SetTimer(
 			TimerHandle,
-			[WeakMovementComponent, WeakTarget, CapturedReactionTag, CapturedContext, bPreviousIgnoreClientCorrections]()
+			[WeakMovementComponent, WeakTarget, CapturedReactionTag, CapturedContext,
+				bPreviousIgnoreClientErrorChecks, bPreviousClientIgnoreMovementCorrections]()
 			{
 				if (UCharacterMovementComponent* StrongMovementComponent = WeakMovementComponent.Get())
 				{
-					StrongMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientCorrections;
-					UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC RestoreTimerFire Target=%s Tag=%s PredictionId=%d RestoredIgnore=%s Loc=%s"),
+					StrongMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientErrorChecks;
+					StrongMovementComponent->bClientIgnoreMovementCorrections = bPreviousClientIgnoreMovementCorrections;
+					UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC RestoreTimerFire Target=%s Tag=%s PredictionId=%d RestoredErrorChecks=%s RestoredClientIgnore=%s Loc=%s"),
 						*GetNameSafe(WeakTarget.Get()), *CapturedReactionTag.ToString(), CapturedContext.PredictionId,
-						PP_YesNo(bPreviousIgnoreClientCorrections), WeakTarget.IsValid() ? *WeakTarget->GetActorLocation().ToString() : TEXT("Invalid"));
+						PP_YesNo(bPreviousIgnoreClientErrorChecks), PP_YesNo(bPreviousClientIgnoreMovementCorrections),
+						WeakTarget.IsValid() ? *WeakTarget->GetActorLocation().ToString() : TEXT("Invalid"));
 				}
 			},
 			RemainingDuration,
@@ -294,9 +304,11 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	}
 	else if (MovementComponent)
 	{
-		MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientCorrections;
-		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC RestoreNoWorld Target=%s Tag=%s PredictionId=%d RestoredIgnore=%s"),
-			*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, PP_YesNo(bPreviousIgnoreClientCorrections));
+		MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientErrorChecks;
+		MovementComponent->bClientIgnoreMovementCorrections = bPreviousClientIgnoreMovementCorrections;
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION OwnerClientRPC RestoreNoWorld Target=%s Tag=%s PredictionId=%d RestoredErrorChecks=%s RestoredClientIgnore=%s"),
+			*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId,
+			PP_YesNo(bPreviousIgnoreClientErrorChecks), PP_YesNo(bPreviousClientIgnoreMovementCorrections));
 	}
 }
 
