@@ -1,4 +1,4 @@
-﻿#include "Components/PP_PredictionComponent.h"
+#include "Components/PP_PredictionComponent.h"
 #include "TimerManager.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
@@ -157,25 +157,29 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
 	if (!TargetCharacter) return;
 
-	USkeletalMeshComponent* Mesh = TargetCharacter->GetMesh();
-	if (!Mesh) return;
+	UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement();
+	const bool bPreviousIgnoreClientCorrections = MovementComponent
+		? MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection
+		: false;
 
-	UAnimInstance* AnimInstance = Mesh->GetAnimInstance();
-	if (!AnimInstance) return;
+	if (MovementComponent)
+	{
+		MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = true;
+	}
 
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
-	// The owning victim receives this after server latency.
-	// The server root-motion montage is already ahead by then, so play the local
-	// owner montage as cosmetic and let server movement replication drive the capsule.
-	const ERootMotionMode::Type PreviousRootMotionMode = AnimInstance->RootMotionMode;
-	AnimInstance->SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
-
+	// The owning victim starts this montage later than the server because this RPC arrives after latency.
+	// While the local reaction plays, ignore server correction yanks. Normal reconciliation resumes when
+	// the local montage window is finished.
 	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 
 	if (!bPlayed)
 	{
-		AnimInstance->SetRootMotionMode(PreviousRootMotionMode);
+		if (MovementComponent)
+		{
+			MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientCorrections;
+		}
 		return;
 	}
 
@@ -185,36 +189,24 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 		const float PlayRate = FMath::Max(FMath::Abs(Reaction.PlayRate), KINDA_SMALL_NUMBER);
 		const float RemainingDuration = FMath::Max(0.05f, (MontageLength - StartPosition) / PlayRate);
 
-		TWeakObjectPtr<UAnimInstance> WeakAnimInstance(AnimInstance);
-		TWeakObjectPtr<UAnimMontage> WeakMontage(Reaction.Montage);
+		TWeakObjectPtr<UCharacterMovementComponent> WeakMovementComponent(MovementComponent);
 
 		FTimerHandle TimerHandle;
 		World->GetTimerManager().SetTimer(
 			TimerHandle,
-			[WeakAnimInstance, WeakMontage, PreviousRootMotionMode]()
+			[WeakMovementComponent, bPreviousIgnoreClientCorrections]()
 			{
-				UAnimInstance* StrongAnimInstance = WeakAnimInstance.Get();
-				if (!StrongAnimInstance) return;
-
-				if (UAnimMontage* StrongMontage = WeakMontage.Get())
+				if (UCharacterMovementComponent* StrongMovementComponent = WeakMovementComponent.Get())
 				{
-					// If something is still playing, restore later through a fallback path
-					// or keep this simple and restore when the timer fires.
-					if (StrongAnimInstance->Montage_IsPlaying(StrongMontage))
-					{
-						StrongAnimInstance->SetRootMotionMode(PreviousRootMotionMode);
-						return;
-					}
+					StrongMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientCorrections;
 				}
-
-				StrongAnimInstance->SetRootMotionMode(PreviousRootMotionMode);
 			},
 			RemainingDuration,
 			false);
 	}
-	else
+	else if (MovementComponent)
 	{
-		AnimInstance->SetRootMotionMode(PreviousRootMotionMode);
+		MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientCorrections;
 	}
 }
 
