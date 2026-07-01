@@ -146,6 +146,9 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	AActor* OwnerActor = GetOwner();
 	if (!OwnerActor || OwnerActor != TargetActor) return;
 
+	APawn* OwnerPawn = Cast<APawn>(OwnerActor);
+	if (!OwnerPawn || !OwnerPawn->IsLocallyControlled()) return;
+
 	if (!TargetActor || !ReactionData || !ReactionTag.IsValid()) return;
 
 	FPP_ReactionDataEntry Reaction;
@@ -396,6 +399,11 @@ bool UPP_PredictionComponent::PlayReactionMontageOnActor(AActor* TargetActor, co
 	if (!bForceRestart && AnimInstance->Montage_IsPlaying(Reaction.Montage)) return true;
 	
 	const FVector BeforeLocation = TargetActor->GetActorLocation();
+
+	if (bForceRestart && AnimInstance->Montage_IsPlaying(Reaction.Montage))
+	{
+		AnimInstance->Montage_Stop(0.f, Reaction.Montage);
+	}
 
 	const float PlayedLength = AnimInstance->Montage_Play(Reaction.Montage, Reaction.PlayRate);
 
