@@ -96,12 +96,90 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPMM
 void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation(FPMMO_ReactionPredictionContext Context,
 	AActor* TargetActor, FGameplayTag ReactionTag)
 {
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor || OwnerActor->HasAuthority()) return;
+
+	if (!TargetActor || !ReactionData || !ReactionTag.IsValid()) return;
+
+	if (ConsumePendingPredictedReaction(Context, TargetActor, ReactionTag))
+	{
+		AddDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag);
+		
+		return;
+	}
 	
+	const APawn* TargetPawn = Cast<APawn>(TargetActor);
+	if (TargetPawn && TargetPawn->IsLocallyControlled()) return;
+
+	FPP_ReactionDataEntry Reaction;
+	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return;
+
+	const float StartPosition = GetReactionStartPosition(Reaction);
+
+	PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+}
+
+bool UPP_PredictionComponent::ConsumePendingPredictedReaction(const FPMMO_ReactionPredictionContext& Context,
+	AActor* TargetActor, FGameplayTag ReactionTag)
+{
+	if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return false;
+
+	RemoveExpiredPendingPredictedReactions();
+
+	for (int32 Index = PendingPredictedReactions.Num() - 1; Index >= 0; --Index)
+	{
+		const FPMMO_PendingPredictedReaction& Entry = PendingPredictedReactions[Index];
+
+		if (Entry.TargetActor.Get() == TargetActor && Entry.ReactionTag == ReactionTag && Entry.PredictionId == Context.PredictionId)
+		{
+			PendingPredictedReactions.RemoveAtSwap(Index);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FPMMO_ReactionPredictionContext Context,
+	AActor* TargetActor, AActor* InstigatorActor, FGameplayTag ReactionTag)
+{
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor || OwnerActor != TargetActor) return;
+
+	if (!TargetActor || !ReactionData || !ReactionTag.IsValid()) return;
+
+	FPP_ReactionDataEntry Reaction;
+	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return;
+
+	const float StartPosition = GetReactionStartPosition(Reaction);
+
+	PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 }
 
 void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FPMMO_ReactionPredictionContext Context,
 	AActor* TargetActor, FGameplayTag ReactionTag, FVector ServerFinalLocation)
 {
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor || OwnerActor->HasAuthority()) return;
+
+	if (!TargetActor || !ReactionTag.IsValid()) return;
+
+	const APawn* TargetPawn = Cast<APawn>(TargetActor);
+	if (TargetPawn && TargetPawn->IsLocallyControlled()) return;
+
+	if (!ConsumeDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag)) return;
+
+	const FVector ClientFinalLocation = TargetActor->GetActorLocation();
+	const FVector Delta = ServerFinalLocation - ClientFinalLocation;
+	const float Distance = Delta.Size();
+
+	if (Distance <= FinalCorrectionTolerance) return;
+
+	if (!bApplyInstantFinalCorrection) return;
+
+	if (Distance > MaxInstantFinalCorrectionDistance) return;
+
+	TargetActor->SetActorLocation(ServerFinalLocation, false, nullptr, ETeleportType::TeleportPhysics);
 }
 
 bool UPP_PredictionComponent::CanPlayPredictedReactionOnTargetProxy(AActor* TargetActor,
@@ -131,11 +209,6 @@ bool UPP_PredictionComponent::PlayReactionMontageOnActor(AActor* TargetActor, co
 {
 }
 
-bool UPP_PredictionComponent::ConsumePendingPredictedReaction(const FPMMO_ReactionPredictionContext& Context,
-	AActor* TargetActor, FGameplayTag ReactionTag)
-{
-}
-
 void UPP_PredictionComponent::AddDeferredPredictedReactionCorrection(const FPMMO_ReactionPredictionContext& Context,
 	AActor* TargetActor, FGameplayTag ReactionTag)
 {
@@ -147,10 +220,5 @@ bool UPP_PredictionComponent::ConsumeDeferredPredictedReactionCorrection(const F
 }
 
 void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections()
-{
-}
-
-void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FPMMO_ReactionPredictionContext Context,
-	AActor* TargetActor, AActor* InstigatorActor, FGameplayTag ReactionTag)
 {
 }
