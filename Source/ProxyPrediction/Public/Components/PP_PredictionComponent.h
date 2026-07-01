@@ -134,8 +134,8 @@ private:
 	float FinalCorrectionTolerance = 2.0f;
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction")
-	bool bApplyInstantFinalCorrection = false;
+	bool bApplyInstantFinalCorrection = true;
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Centimeters"))
-	float MaxInstantFinalCorrectionDistance = 0.0f;
+	float MaxInstantFinalCorrectionDistance = 2.0f;
 };

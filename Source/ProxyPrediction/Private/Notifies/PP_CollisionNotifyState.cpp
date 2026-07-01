@@ -1,5 +1,6 @@
 ﻿#include "Notifies/PP_CollisionNotifyState.h"
 #include "DrawDebugHelpers.h"
+#include "Components/PP_PredictionComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
@@ -100,13 +101,13 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 	float DebugRadius = 25.f;
 	switch (CollisionShape)
 	{
-	case EPMMO_CollisionShape::Sphere:
+	case EPP_CollisionShape::Sphere:
 		DebugRadius = FMath::Max(SphereRadius, 1.f);
 		break;
-	case EPMMO_CollisionShape::Capsule:
+	case EPP_CollisionShape::Capsule:
 		DebugRadius = FMath::Max(CapsuleRadius, 1.f);
 		break;
-	case EPMMO_CollisionShape::Box:
+	case EPP_CollisionShape::Box:
 	default:
 		DebugRadius = BoxExtent.GetMax();
 		break;
