@@ -74,6 +74,12 @@ struct FPP_PredictedReactionPhysicsInteractionState
 
 	UPROPERTY()
 	bool bTargetHadPhysicsInteraction = false;
+
+	UPROPERTY()
+	TEnumAsByte<ECollisionResponse> OwnerPawnResponse = ECR_Block;
+
+	UPROPERTY()
+	TEnumAsByte<ECollisionResponse> TargetPawnResponse = ECR_Block;
 };
 
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))

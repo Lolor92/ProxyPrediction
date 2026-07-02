@@ -215,6 +215,12 @@ namespace
 		ACharacter* Character = Cast<ACharacter>(Actor);
 		return Character ? Character->GetCharacterMovement() : nullptr;
 	}
+
+	UCapsuleComponent* PP_GetCharacterCapsule(AActor* Actor)
+	{
+		ACharacter* Character = Cast<ACharacter>(Actor);
+		return Character ? Character->GetCapsuleComponent() : nullptr;
+	}
 }
 
 UPP_PredictionComponent::UPP_PredictionComponent()
@@ -656,6 +662,8 @@ void UPP_PredictionComponent::AddPredictedReactionPhysicsInteractionSuppress(AAc
 	{
 		UCharacterMovementComponent* OwnerMovement = PP_GetCharacterMovement(OwnerActor);
 		UCharacterMovementComponent* TargetMovement = PP_GetCharacterMovement(TargetActor);
+		UCapsuleComponent* OwnerCapsule = PP_GetCharacterCapsule(OwnerActor);
+		UCapsuleComponent* TargetCapsule = PP_GetCharacterCapsule(TargetActor);
 
 		FPP_PredictedReactionPhysicsInteractionState& PhysicsState =
 			PredictedReactionPhysicsInteractionStates.FindOrAdd(TargetActor);
@@ -667,6 +675,12 @@ void UPP_PredictionComponent::AddPredictedReactionPhysicsInteractionSuppress(AAc
 		PhysicsState.bTargetHadPhysicsInteraction = TargetMovement
 			? TargetMovement->bEnablePhysicsInteraction
 			: false;
+		PhysicsState.OwnerPawnResponse = OwnerCapsule
+			? OwnerCapsule->GetCollisionResponseToChannel(ECC_Pawn)
+			: ECR_Block;
+		PhysicsState.TargetPawnResponse = TargetCapsule
+			? TargetCapsule->GetCollisionResponseToChannel(ECC_Pawn)
+			: ECR_Block;
 
 		if (OwnerMovement)
 		{
@@ -678,14 +692,28 @@ void UPP_PredictionComponent::AddPredictedReactionPhysicsInteractionSuppress(AAc
 			TargetMovement->bEnablePhysicsInteraction = false;
 		}
 
-		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionSuppressAdd Owner=%s Target=%s Count=%d OwnerPrev=%s TargetPrev=%s OwnerMove=%s TargetMove=%s"),
+		if (OwnerCapsule)
+		{
+			OwnerCapsule->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+		}
+
+		if (TargetCapsule)
+		{
+			TargetCapsule->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionSuppressAdd Owner=%s Target=%s Count=%d OwnerPrev=%s TargetPrev=%s OwnerMove=%s TargetMove=%s OwnerPawnPrev=%d TargetPawnPrev=%d OwnerCapsule=%s TargetCapsule=%s"),
 			*GetNameSafe(OwnerActor),
 			*GetNameSafe(TargetActor),
 			Count,
 			PP_YesNo(PhysicsState.bOwnerHadPhysicsInteraction),
 			PP_YesNo(PhysicsState.bTargetHadPhysicsInteraction),
 			PP_YesNo(OwnerMovement != nullptr),
-			PP_YesNo(TargetMovement != nullptr));
+			PP_YesNo(TargetMovement != nullptr),
+			static_cast<int32>(PhysicsState.OwnerPawnResponse.GetValue()),
+			static_cast<int32>(PhysicsState.TargetPawnResponse.GetValue()),
+			PP_YesNo(OwnerCapsule != nullptr),
+			PP_YesNo(TargetCapsule != nullptr));
 		return;
 	}
 
@@ -716,6 +744,8 @@ void UPP_PredictionComponent::RemovePredictedReactionPhysicsInteractionSuppress(
 	{
 		UCharacterMovementComponent* OwnerMovement = PP_GetCharacterMovement(OwnerActor);
 		UCharacterMovementComponent* TargetMovement = PP_GetCharacterMovement(TargetActor);
+		UCapsuleComponent* OwnerCapsule = PP_GetCharacterCapsule(OwnerActor);
+		UCapsuleComponent* TargetCapsule = PP_GetCharacterCapsule(TargetActor);
 
 		if (OwnerMovement)
 		{
@@ -727,13 +757,27 @@ void UPP_PredictionComponent::RemovePredictedReactionPhysicsInteractionSuppress(
 			TargetMovement->bEnablePhysicsInteraction = PhysicsState->bTargetHadPhysicsInteraction;
 		}
 
-		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionRestored Owner=%s Target=%s Count=0 OwnerRestored=%s TargetRestored=%s OwnerMove=%s TargetMove=%s"),
+		if (OwnerCapsule)
+		{
+			OwnerCapsule->SetCollisionResponseToChannel(ECC_Pawn, PhysicsState->OwnerPawnResponse);
+		}
+
+		if (TargetCapsule)
+		{
+			TargetCapsule->SetCollisionResponseToChannel(ECC_Pawn, PhysicsState->TargetPawnResponse);
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionRestored Owner=%s Target=%s Count=0 OwnerRestored=%s TargetRestored=%s OwnerMove=%s TargetMove=%s OwnerPawnRestored=%d TargetPawnRestored=%d OwnerCapsule=%s TargetCapsule=%s"),
 			*GetNameSafe(OwnerActor),
 			*GetNameSafe(TargetActor),
 			PP_YesNo(PhysicsState->bOwnerHadPhysicsInteraction),
 			PP_YesNo(PhysicsState->bTargetHadPhysicsInteraction),
 			PP_YesNo(OwnerMovement != nullptr),
-			PP_YesNo(TargetMovement != nullptr));
+			PP_YesNo(TargetMovement != nullptr),
+			static_cast<int32>(PhysicsState->OwnerPawnResponse.GetValue()),
+			static_cast<int32>(PhysicsState->TargetPawnResponse.GetValue()),
+			PP_YesNo(OwnerCapsule != nullptr),
+			PP_YesNo(TargetCapsule != nullptr));
 
 		PredictedReactionPhysicsInteractionStates.Remove(TargetActor);
 	}
