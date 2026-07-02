@@ -1,7 +1,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Animation/AnimTypes.h"
 #include "GameplayTagContainer.h"
 #include "Components/ActorComponent.h"
 #include "Data/PP_ReactionData.h"
@@ -106,7 +105,6 @@ private:
 	void AddPredictedReactionCollisionIgnore(AActor* TargetActor);
 	void RemovePredictedReactionCollisionIgnore(AActor* TargetActor);
 	void ClearPredictedReactionCollisionIgnores();
-	void SetPredictedProxyRootMotionVisualOnly(AActor* TargetActor, bool bVisualOnly);
 
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context,AActor* TargetActor,
@@ -132,9 +130,6 @@ private:
 
 	UPROPERTY(Transient)
 	TMap<TWeakObjectPtr<AActor>, int32> PredictedReactionCollisionIgnoreCounts;
-
-	UPROPERTY(Transient)
-	TMap<TWeakObjectPtr<AActor>, TEnumAsByte<ERootMotionMode::Type>> SavedPredictedProxyRootMotionModes;
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Seconds"))
 	float PendingPredictedReactionTimeout = 2.0f;

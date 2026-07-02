@@ -472,49 +472,6 @@ void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections(
 	}
 }
 
-
-void UPP_PredictionComponent::SetPredictedProxyRootMotionVisualOnly(AActor* TargetActor, bool bVisualOnly)
-{
-if (!TargetActor) return;
-
-ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
-if (!TargetCharacter) return;
-
-USkeletalMeshComponent* Mesh = TargetCharacter->GetMesh();
-UAnimInstance* AnimInstance = Mesh ? Mesh->GetAnimInstance() : nullptr;
-if (!AnimInstance) return;
-
-if (bVisualOnly)
-{
-if (!SavedPredictedProxyRootMotionModes.Contains(TargetActor))
-{
-SavedPredictedProxyRootMotionModes.Add(TargetActor, AnimInstance->RootMotionMode);
-UE_LOG(LogTemp, Warning, TEXT("PP_REACTION VisualOnlyRootMotionSave Target=%s Mode=%d"),
-*GetNameSafe(TargetActor), static_cast<int32>(AnimInstance->RootMotionMode.GetValue()));
-}
-
-AnimInstance->RootMotionMode = ERootMotionMode::NoRootMotionExtraction;
-UE_LOG(LogTemp, Warning, TEXT("PP_REACTION VisualOnlyRootMotionEnable Target=%s"),
-*GetNameSafe(TargetActor));
-return;
-}
-
-if (const TEnumAsByte<ERootMotionMode::Type>* SavedMode = SavedPredictedProxyRootMotionModes.Find(TargetActor))
-{
-AnimInstance->RootMotionMode = *SavedMode;
-SavedPredictedProxyRootMotionModes.Remove(TargetActor);
-
-Mesh->SetRelativeLocationAndRotation(
-TargetCharacter->GetBaseTranslationOffset(),
-TargetCharacter->GetBaseRotationOffset());
-
-UE_LOG(LogTemp, Warning, TEXT("PP_REACTION VisualOnlyRootMotionRestore Target=%s Mode=%d MeshRelLoc=%s"),
-*GetNameSafe(TargetActor),
-static_cast<int32>(AnimInstance->RootMotionMode.GetValue()),
-*Mesh->GetRelativeLocation().ToString());
-}
-}
-
 void UPP_PredictionComponent::AddPredictedReactionCollisionIgnore(AActor* TargetActor)
 {
 	AActor* OwnerActor = GetOwner();
@@ -525,7 +482,8 @@ void UPP_PredictionComponent::AddPredictedReactionCollisionIgnore(AActor* Target
 
 	if (Count == 1)
 	{
-		SetPredictedProxyRootMotionVisualOnly(TargetActor, true);
+		PP_SetMovementIgnore(OwnerActor, TargetActor, true);
+		PP_SetMovementIgnore(TargetActor, OwnerActor, true);
 
 		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreAdd Owner=%s Target=%s Count=%d"),
 			*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), Count);
@@ -553,7 +511,8 @@ void UPP_PredictionComponent::RemovePredictedReactionCollisionIgnore(AActor* Tar
 	}
 
 	PredictedReactionCollisionIgnoreCounts.Remove(TargetActor);
-	SetPredictedProxyRootMotionVisualOnly(TargetActor, false);
+	PP_SetMovementIgnore(OwnerActor, TargetActor, false);
+	PP_SetMovementIgnore(TargetActor, OwnerActor, false);
 
 	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreRestored Owner=%s Target=%s Count=0"),
 		*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));
@@ -568,7 +527,8 @@ void UPP_PredictionComponent::ClearPredictedReactionCollisionIgnores()
 		AActor* TargetActor = It.Key().Get();
 		if (OwnerActor && TargetActor && OwnerActor != TargetActor)
 		{
-			SetPredictedProxyRootMotionVisualOnly(TargetActor, false);
+			PP_SetMovementIgnore(OwnerActor, TargetActor, false);
+			PP_SetMovementIgnore(TargetActor, OwnerActor, false);
 
 			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreCleared Owner=%s Target=%s Count=0"),
 				*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));
