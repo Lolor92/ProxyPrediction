@@ -181,7 +181,7 @@ namespace
 					PP_YesNo(bTargetPlayingRootMotion),
 					PP_YesNo(bTargetHasRootMotionSources));
 			},
-			0.0f,
+			0.016f,
 			true,
 			0.0f);
 	}
@@ -208,6 +208,12 @@ namespace
 		}
 
 		PP_SetIgnoreActorWhenMoving(Cast<UPrimitiveComponent>(MovingActor->GetRootComponent()), IgnoredActor, bShouldIgnore);
+	}
+
+	UCharacterMovementComponent* PP_GetCharacterMovement(AActor* Actor)
+	{
+		ACharacter* Character = Cast<ACharacter>(Actor);
+		return Character ? Character->GetCharacterMovement() : nullptr;
 	}
 }
 
@@ -647,6 +653,38 @@ void UPP_PredictionComponent::AddPredictedReactionCollisionIgnore(AActor* Target
 		PP_SetMovementIgnore(OwnerActor, TargetActor, true);
 		PP_SetMovementIgnore(TargetActor, OwnerActor, true);
 
+		UCharacterMovementComponent* OwnerMovement = PP_GetCharacterMovement(OwnerActor);
+		UCharacterMovementComponent* TargetMovement = PP_GetCharacterMovement(TargetActor);
+
+		FPP_PredictedReactionPhysicsInteractionState& PhysicsState =
+			PredictedReactionPhysicsInteractionStates.FindOrAdd(TargetActor);
+		PhysicsState.OwnerActor = OwnerActor;
+		PhysicsState.TargetActor = TargetActor;
+		PhysicsState.bOwnerHadPhysicsInteraction = OwnerMovement
+			? OwnerMovement->bEnablePhysicsInteraction
+			: false;
+		PhysicsState.bTargetHadPhysicsInteraction = TargetMovement
+			? TargetMovement->bEnablePhysicsInteraction
+			: false;
+
+		if (OwnerMovement)
+		{
+			OwnerMovement->bEnablePhysicsInteraction = false;
+		}
+
+		if (TargetMovement)
+		{
+			TargetMovement->bEnablePhysicsInteraction = false;
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionSuppressAdd Owner=%s Target=%s OwnerPrev=%s TargetPrev=%s OwnerMove=%s TargetMove=%s"),
+			*GetNameSafe(OwnerActor),
+			*GetNameSafe(TargetActor),
+			PP_YesNo(PhysicsState.bOwnerHadPhysicsInteraction),
+			PP_YesNo(PhysicsState.bTargetHadPhysicsInteraction),
+			PP_YesNo(OwnerMovement != nullptr),
+			PP_YesNo(TargetMovement != nullptr));
+
 		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreAdd Owner=%s Target=%s Count=%d"),
 			*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), Count);
 		return;
@@ -676,6 +714,33 @@ void UPP_PredictionComponent::RemovePredictedReactionCollisionIgnore(AActor* Tar
 	PP_SetMovementIgnore(OwnerActor, TargetActor, false);
 	PP_SetMovementIgnore(TargetActor, OwnerActor, false);
 
+	if (FPP_PredictedReactionPhysicsInteractionState* PhysicsState =
+		PredictedReactionPhysicsInteractionStates.Find(TargetActor))
+	{
+		UCharacterMovementComponent* OwnerMovement = PP_GetCharacterMovement(OwnerActor);
+		UCharacterMovementComponent* TargetMovement = PP_GetCharacterMovement(TargetActor);
+
+		if (OwnerMovement)
+		{
+			OwnerMovement->bEnablePhysicsInteraction = PhysicsState->bOwnerHadPhysicsInteraction;
+		}
+
+		if (TargetMovement)
+		{
+			TargetMovement->bEnablePhysicsInteraction = PhysicsState->bTargetHadPhysicsInteraction;
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionRestored Owner=%s Target=%s OwnerRestored=%s TargetRestored=%s OwnerMove=%s TargetMove=%s"),
+			*GetNameSafe(OwnerActor),
+			*GetNameSafe(TargetActor),
+			PP_YesNo(PhysicsState->bOwnerHadPhysicsInteraction),
+			PP_YesNo(PhysicsState->bTargetHadPhysicsInteraction),
+			PP_YesNo(OwnerMovement != nullptr),
+			PP_YesNo(TargetMovement != nullptr));
+
+		PredictedReactionPhysicsInteractionStates.Remove(TargetActor);
+	}
+
 	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreRestored Owner=%s Target=%s Count=0"),
 		*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));
 }
@@ -691,6 +756,33 @@ void UPP_PredictionComponent::ClearPredictedReactionCollisionIgnores()
 		{
 			PP_SetMovementIgnore(OwnerActor, TargetActor, false);
 			PP_SetMovementIgnore(TargetActor, OwnerActor, false);
+
+			if (FPP_PredictedReactionPhysicsInteractionState* PhysicsState =
+				PredictedReactionPhysicsInteractionStates.Find(TargetActor))
+			{
+				UCharacterMovementComponent* OwnerMovement = PP_GetCharacterMovement(OwnerActor);
+				UCharacterMovementComponent* TargetMovement = PP_GetCharacterMovement(TargetActor);
+
+				if (OwnerMovement)
+				{
+					OwnerMovement->bEnablePhysicsInteraction = PhysicsState->bOwnerHadPhysicsInteraction;
+				}
+
+				if (TargetMovement)
+				{
+					TargetMovement->bEnablePhysicsInteraction = PhysicsState->bTargetHadPhysicsInteraction;
+				}
+
+				UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionCleared Owner=%s Target=%s OwnerRestored=%s TargetRestored=%s OwnerMove=%s TargetMove=%s"),
+					*GetNameSafe(OwnerActor),
+					*GetNameSafe(TargetActor),
+					PP_YesNo(PhysicsState->bOwnerHadPhysicsInteraction),
+					PP_YesNo(PhysicsState->bTargetHadPhysicsInteraction),
+					PP_YesNo(OwnerMovement != nullptr),
+					PP_YesNo(TargetMovement != nullptr));
+
+				PredictedReactionPhysicsInteractionStates.Remove(TargetActor);
+			}
 
 			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreCleared Owner=%s Target=%s Count=0"),
 				*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));

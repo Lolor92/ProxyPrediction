@@ -58,6 +58,24 @@ struct FPP_DeferredPredictedReactionCorrection
 	double TimeSeconds = 0.0;
 };
 
+USTRUCT()
+struct FPP_PredictedReactionPhysicsInteractionState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TWeakObjectPtr<AActor> OwnerActor;
+
+	UPROPERTY()
+	TWeakObjectPtr<AActor> TargetActor;
+
+	UPROPERTY()
+	bool bOwnerHadPhysicsInteraction = false;
+
+	UPROPERTY()
+	bool bTargetHadPhysicsInteraction = false;
+};
+
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class PROXYPREDICTION_API UPP_PredictionComponent : public UActorComponent
 {
@@ -130,6 +148,9 @@ private:
 
 	UPROPERTY(Transient)
 	TMap<TWeakObjectPtr<AActor>, int32> PredictedReactionCollisionIgnoreCounts;
+
+	UPROPERTY(Transient)
+	TMap<TWeakObjectPtr<AActor>, FPP_PredictedReactionPhysicsInteractionState> PredictedReactionPhysicsInteractionStates;
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Seconds"))
 	float PendingPredictedReactionTimeout = 2.0f;
