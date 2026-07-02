@@ -2,6 +2,7 @@
 #include "TimerManager.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
+#include "Components/CapsuleComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
@@ -35,14 +36,28 @@ namespace
 		return bValue ? TEXT("1") : TEXT("0");
 	}
 
+	void PP_SetIgnoreActorWhenMoving(UPrimitiveComponent* Component, AActor* IgnoredActor, bool bShouldIgnore)
+	{
+		if (!Component || !IgnoredActor) return;
+
+		Component->IgnoreActorWhenMoving(IgnoredActor, bShouldIgnore);
+	}
+
 	void PP_SetMovementIgnore(AActor* MovingActor, AActor* IgnoredActor, bool bShouldIgnore)
 	{
 		if (!MovingActor || !IgnoredActor) return;
 
-		UPrimitiveComponent* RootPrimitive = Cast<UPrimitiveComponent>(MovingActor->GetRootComponent());
-		if (!RootPrimitive) return;
+		if (ACharacter* MovingCharacter = Cast<ACharacter>(MovingActor))
+		{
+			PP_SetIgnoreActorWhenMoving(MovingCharacter->GetCapsuleComponent(), IgnoredActor, bShouldIgnore);
 
-		RootPrimitive->IgnoreActorWhenMoving(IgnoredActor, bShouldIgnore);
+			if (UCharacterMovementComponent* MovementComponent = MovingCharacter->GetCharacterMovement())
+			{
+				PP_SetIgnoreActorWhenMoving(Cast<UPrimitiveComponent>(MovementComponent->UpdatedComponent), IgnoredActor, bShouldIgnore);
+			}
+		}
+
+		PP_SetIgnoreActorWhenMoving(Cast<UPrimitiveComponent>(MovingActor->GetRootComponent()), IgnoredActor, bShouldIgnore);
 	}
 }
 
