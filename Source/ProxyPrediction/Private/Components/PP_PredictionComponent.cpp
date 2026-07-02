@@ -456,8 +456,15 @@ void UPP_PredictionComponent::AddPredictedReactionCollisionIgnore(AActor* Target
 
 	if (Count == 1)
 	{
-		OwnerActor->MoveIgnoreActorAdd(TargetActor);
-		TargetActor->MoveIgnoreActorAdd(OwnerActor);
+		if (APawn* OwnerPawn = Cast<APawn>(OwnerActor))
+		{
+			OwnerPawn->MoveIgnoreActorAdd(TargetActor);
+		}
+
+		if (APawn* TargetPawn = Cast<APawn>(TargetActor))
+		{
+			TargetPawn->MoveIgnoreActorAdd(OwnerActor);
+		}
 
 		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreAdd Owner=%s Target=%s Count=%d"),
 			*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), Count);
@@ -485,8 +492,16 @@ void UPP_PredictionComponent::RemovePredictedReactionCollisionIgnore(AActor* Tar
 	}
 
 	PredictedReactionCollisionIgnoreCounts.Remove(TargetActor);
-	OwnerActor->MoveIgnoreActorRemove(TargetActor);
-	TargetActor->MoveIgnoreActorRemove(OwnerActor);
+
+	if (APawn* OwnerPawn = Cast<APawn>(OwnerActor))
+	{
+		OwnerPawn->MoveIgnoreActorRemove(TargetActor);
+	}
+
+	if (APawn* TargetPawn = Cast<APawn>(TargetActor))
+	{
+		TargetPawn->MoveIgnoreActorRemove(OwnerActor);
+	}
 
 	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreRestored Owner=%s Target=%s Count=0"),
 		*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));
@@ -501,8 +516,15 @@ void UPP_PredictionComponent::ClearPredictedReactionCollisionIgnores()
 		AActor* TargetActor = It.Key().Get();
 		if (OwnerActor && TargetActor && OwnerActor != TargetActor)
 		{
-			OwnerActor->MoveIgnoreActorRemove(TargetActor);
-			TargetActor->MoveIgnoreActorRemove(OwnerActor);
+			if (APawn* OwnerPawn = Cast<APawn>(OwnerActor))
+			{
+				OwnerPawn->MoveIgnoreActorRemove(TargetActor);
+			}
+
+			if (APawn* TargetPawn = Cast<APawn>(TargetActor))
+			{
+				TargetPawn->MoveIgnoreActorRemove(OwnerActor);
+			}
 
 			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreCleared Owner=%s Target=%s Count=0"),
 				*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));
