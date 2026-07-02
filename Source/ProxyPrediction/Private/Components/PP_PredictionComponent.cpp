@@ -289,6 +289,7 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 
 	if (bServerPlayed)
 	{
+		AddPredictedReactionPhysicsInteractionSuppress(TargetActor);
 		PP_StartReactionMoveTrace(this, OwnerActor, TargetActor, Reaction.Montage, Context, ReactionTag, StartPosition, Reaction.PlayRate, TEXT("ServerAuth"));
 	}
 	
@@ -311,6 +312,8 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 				UPP_PredictionComponent* StrongThis = WeakThis.Get();
 				AActor* StrongTarget = WeakTarget.Get();
 				if (!StrongThis || !StrongTarget) return;
+
+				StrongThis->RemovePredictedReactionPhysicsInteractionSuppress(StrongTarget);
 
 				const FVector ServerFinalLocation = StrongTarget->GetActorLocation();
 				UE_LOG(LogTemp, Warning, TEXT("PP_REACTION ServerFinishFire Target=%s Tag=%s PredictionId=%d ServerLoc=%s"),
@@ -614,6 +617,7 @@ void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections(
 	{
 		DeferredPredictedReactionCorrections.Reset();
 		ClearPredictedReactionCollisionIgnores();
+		ClearPredictedReactionPhysicsInteractionSuppressions();
 		return;
 	}
 
@@ -637,6 +641,143 @@ void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections(
 			RemovePredictedReactionCollisionIgnore(Entry.TargetActor.Get());
 			DeferredPredictedReactionCorrections.RemoveAtSwap(Index);
 		}
+	}
+}
+
+void UPP_PredictionComponent::AddPredictedReactionPhysicsInteractionSuppress(AActor* TargetActor)
+{
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor || !TargetActor || OwnerActor == TargetActor) return;
+
+	int32& Count = PredictedReactionPhysicsInteractionSuppressCounts.FindOrAdd(TargetActor);
+	++Count;
+
+	if (Count == 1)
+	{
+		UCharacterMovementComponent* OwnerMovement = PP_GetCharacterMovement(OwnerActor);
+		UCharacterMovementComponent* TargetMovement = PP_GetCharacterMovement(TargetActor);
+
+		FPP_PredictedReactionPhysicsInteractionState& PhysicsState =
+			PredictedReactionPhysicsInteractionStates.FindOrAdd(TargetActor);
+		PhysicsState.OwnerActor = OwnerActor;
+		PhysicsState.TargetActor = TargetActor;
+		PhysicsState.bOwnerHadPhysicsInteraction = OwnerMovement
+			? OwnerMovement->bEnablePhysicsInteraction
+			: false;
+		PhysicsState.bTargetHadPhysicsInteraction = TargetMovement
+			? TargetMovement->bEnablePhysicsInteraction
+			: false;
+
+		if (OwnerMovement)
+		{
+			OwnerMovement->bEnablePhysicsInteraction = false;
+		}
+
+		if (TargetMovement)
+		{
+			TargetMovement->bEnablePhysicsInteraction = false;
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionSuppressAdd Owner=%s Target=%s Count=%d OwnerPrev=%s TargetPrev=%s OwnerMove=%s TargetMove=%s"),
+			*GetNameSafe(OwnerActor),
+			*GetNameSafe(TargetActor),
+			Count,
+			PP_YesNo(PhysicsState.bOwnerHadPhysicsInteraction),
+			PP_YesNo(PhysicsState.bTargetHadPhysicsInteraction),
+			PP_YesNo(OwnerMovement != nullptr),
+			PP_YesNo(TargetMovement != nullptr));
+		return;
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionSuppressIncrement Owner=%s Target=%s Count=%d"),
+		*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), Count);
+}
+
+void UPP_PredictionComponent::RemovePredictedReactionPhysicsInteractionSuppress(AActor* TargetActor)
+{
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor || !TargetActor || OwnerActor == TargetActor) return;
+
+	int32* CountPtr = PredictedReactionPhysicsInteractionSuppressCounts.Find(TargetActor);
+	if (!CountPtr) return;
+
+	if (*CountPtr > 1)
+	{
+		--(*CountPtr);
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionSuppressDecrement Owner=%s Target=%s Count=%d"),
+			*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), *CountPtr);
+		return;
+	}
+
+	PredictedReactionPhysicsInteractionSuppressCounts.Remove(TargetActor);
+
+	if (FPP_PredictedReactionPhysicsInteractionState* PhysicsState =
+		PredictedReactionPhysicsInteractionStates.Find(TargetActor))
+	{
+		UCharacterMovementComponent* OwnerMovement = PP_GetCharacterMovement(OwnerActor);
+		UCharacterMovementComponent* TargetMovement = PP_GetCharacterMovement(TargetActor);
+
+		if (OwnerMovement)
+		{
+			OwnerMovement->bEnablePhysicsInteraction = PhysicsState->bOwnerHadPhysicsInteraction;
+		}
+
+		if (TargetMovement)
+		{
+			TargetMovement->bEnablePhysicsInteraction = PhysicsState->bTargetHadPhysicsInteraction;
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionRestored Owner=%s Target=%s Count=0 OwnerRestored=%s TargetRestored=%s OwnerMove=%s TargetMove=%s"),
+			*GetNameSafe(OwnerActor),
+			*GetNameSafe(TargetActor),
+			PP_YesNo(PhysicsState->bOwnerHadPhysicsInteraction),
+			PP_YesNo(PhysicsState->bTargetHadPhysicsInteraction),
+			PP_YesNo(OwnerMovement != nullptr),
+			PP_YesNo(TargetMovement != nullptr));
+
+		PredictedReactionPhysicsInteractionStates.Remove(TargetActor);
+	}
+}
+
+void UPP_PredictionComponent::ClearPredictedReactionPhysicsInteractionSuppressions()
+{
+	AActor* OwnerActor = GetOwner();
+
+	for (auto It = PredictedReactionPhysicsInteractionSuppressCounts.CreateIterator(); It; ++It)
+	{
+		AActor* TargetActor = It.Key().Get();
+
+		if (OwnerActor && TargetActor && OwnerActor != TargetActor)
+		{
+			if (FPP_PredictedReactionPhysicsInteractionState* PhysicsState =
+				PredictedReactionPhysicsInteractionStates.Find(TargetActor))
+			{
+				UCharacterMovementComponent* OwnerMovement = PP_GetCharacterMovement(OwnerActor);
+				UCharacterMovementComponent* TargetMovement = PP_GetCharacterMovement(TargetActor);
+
+				if (OwnerMovement)
+				{
+					OwnerMovement->bEnablePhysicsInteraction = PhysicsState->bOwnerHadPhysicsInteraction;
+				}
+
+				if (TargetMovement)
+				{
+					TargetMovement->bEnablePhysicsInteraction = PhysicsState->bTargetHadPhysicsInteraction;
+				}
+
+				UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PhysicsInteractionCleared Owner=%s Target=%s OwnerRestored=%s TargetRestored=%s OwnerMove=%s TargetMove=%s"),
+					*GetNameSafe(OwnerActor),
+					*GetNameSafe(TargetActor),
+					PP_YesNo(PhysicsState->bOwnerHadPhysicsInteraction),
+					PP_YesNo(PhysicsState->bTargetHadPhysicsInteraction),
+					PP_YesNo(OwnerMovement != nullptr),
+					PP_YesNo(TargetMovement != nullptr));
+
+				PredictedReactionPhysicsInteractionStates.Remove(TargetActor);
+			}
+		}
+
+		It.RemoveCurrent();
 	}
 }
 

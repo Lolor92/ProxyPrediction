@@ -124,6 +124,10 @@ private:
 	void RemovePredictedReactionCollisionIgnore(AActor* TargetActor);
 	void ClearPredictedReactionCollisionIgnores();
 
+	void AddPredictedReactionPhysicsInteractionSuppress(AActor* TargetActor);
+	void RemovePredictedReactionPhysicsInteractionSuppress(AActor* TargetActor);
+	void ClearPredictedReactionPhysicsInteractionSuppressions();
+
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context,AActor* TargetActor,
 		AActor* InstigatorActor, FGameplayTag ReactionTag);
@@ -151,6 +155,9 @@ private:
 
 	UPROPERTY(Transient)
 	TMap<TWeakObjectPtr<AActor>, FPP_PredictedReactionPhysicsInteractionState> PredictedReactionPhysicsInteractionStates;
+
+	UPROPERTY(Transient)
+	TMap<TWeakObjectPtr<AActor>, int32> PredictedReactionPhysicsInteractionSuppressCounts;
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Seconds"))
 	float PendingPredictedReactionTimeout = 2.0f;
