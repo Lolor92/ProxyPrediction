@@ -102,7 +102,7 @@ void USyncInputComponent::UninstallFromPawn()
 
 void USyncInputComponent::AddMappingContextsForLocalPlayer() const
 {
-	if (!InputConfig) { UE_LOG(LogTemp, Warning, TEXT("SyncInput: InputConfig is null.")); return; }
+return; }
 
 	const APlayerController* PC = GetOwningPlayerController();
 	if (!PC) return;
@@ -151,7 +151,6 @@ void USyncInputComponent::BindActionsFromConfig()
 
 	if (InputConfig->SyncInputActions.Num() == 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("SyncInput: SyncInputActions is empty on %s"), *GetNameSafe(InputConfig));
 	}
 
 	for (const FSyncInputAction& Row : InputConfig->SyncInputActions)

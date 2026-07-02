@@ -24,8 +24,6 @@ void UPP_CollisionNotifyState::NotifyBegin(USkeletalMeshComponent* MeshComp, UAn
 	
 	PreviousTransforms.Add(MeshComp, CurrentTransform);
 	
-	UE_LOG(LogTemp, Warning, TEXT("SP Collision Begin Owner=%s Anim=%s"), *GetNameSafe(OwnerActor),
-		*GetNameSafe(Animation));
 }
 
 void UPP_CollisionNotifyState::NotifyTick(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation,
@@ -128,28 +126,17 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 		{
 			const float DrawTime = 0.25f;
 			const FColor DebugColor = bHit ? FColor::Red : FColor::Green;
-			DrawDebugLine(World, StepStart, StepEnd, DebugColor, false, DrawTime, 0, 1.5f);
 
 			switch (CollisionShape)
 			{
 			case EPP_CollisionShape::Sphere:
-				DrawDebugSphere(World, StepStart, FMath::Max(SphereRadius, 1.f), 16, DebugColor, false, DrawTime);
-				DrawDebugSphere(World, StepEnd, FMath::Max(SphereRadius, 1.f), 16, DebugColor, false, DrawTime);
 				break;
 
 			case EPP_CollisionShape::Capsule:
-				DrawDebugCapsule(World, StepStart, FMath::Max(CapsuleHalfHeight, 1.f), FMath::Max(CapsuleRadius, 1.f),
-					CurrentTransform.GetRotation(), DebugColor, false, DrawTime);
-				DrawDebugCapsule(World, StepEnd, FMath::Max(CapsuleHalfHeight, 1.f), FMath::Max(CapsuleRadius, 1.f),
-					CurrentTransform.GetRotation(), DebugColor, false, DrawTime);
 				break;
 
 			case EPP_CollisionShape::Box:
 			default:
-				DrawDebugBox(World, StepStart, BoxExtent.ComponentMax(FVector(1.f)), CurrentTransform.GetRotation(),
-					DebugColor, false, DrawTime);
-				DrawDebugBox(World, StepEnd, BoxExtent.ComponentMax(FVector(1.f)), CurrentTransform.GetRotation(), 
-					DebugColor, false, DrawTime);
 				break;
 			}
 		}
@@ -162,8 +149,6 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 
 			MarkTargetProcessed(MeshComp, HitActor);
 
-			UE_LOG(LogTemp, Warning, TEXT("Collision Hit Owner=%s HitActor=%s Location=%s"),
-				*GetNameSafe(OwnerActor), *GetNameSafe(HitActor), *Hit.ImpactPoint.ToString());
 
 			TryPlayPredictedReaction(OwnerActor, HitActor);
 		}
