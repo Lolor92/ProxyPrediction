@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
@@ -102,6 +102,10 @@ private:
 		FGameplayTag ReactionTag);
 	void RemoveExpiredDeferredPredictedReactionCorrections();
 
+	void AddPredictedReactionCollisionIgnore(AActor* TargetActor);
+	void RemovePredictedReactionCollisionIgnore(AActor* TargetActor);
+	void ClearPredictedReactionCollisionIgnores();
+
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context,AActor* TargetActor,
 		AActor* InstigatorActor, FGameplayTag ReactionTag);
@@ -123,6 +127,9 @@ private:
 
 	UPROPERTY(Transient)
 	TArray<FPP_DeferredPredictedReactionCorrection> DeferredPredictedReactionCorrections;
+
+	UPROPERTY(Transient)
+	TMap<TWeakObjectPtr<AActor>, int32> PredictedReactionCollisionIgnoreCounts;
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Seconds"))
 	float PendingPredictedReactionTimeout = 2.0f;
