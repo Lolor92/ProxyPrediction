@@ -106,6 +106,90 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 		return false;
 	}
 
+	if (UWorld* TraceWorld = GetWorld())
+	{
+		const float MontageLength = Reaction.Montage ? Reaction.Montage->GetPlayLength() : 0.f;
+		const float PlayRate = FMath::Max(FMath::Abs(Reaction.PlayRate), KINDA_SMALL_NUMBER);
+		const float TraceDuration = FMath::Max(0.05f, (MontageLength - StartPosition) / PlayRate);
+		const double TraceStartTime = TraceWorld->GetTimeSeconds();
+
+		TWeakObjectPtr<UPP_PredictionComponent> WeakThis(this);
+		TWeakObjectPtr<AActor> WeakOwner(GetOwner());
+		TWeakObjectPtr<AActor> WeakTarget(TargetActor);
+		TWeakObjectPtr<UAnimMontage> WeakMontage(Reaction.Montage);
+		TSharedRef<FTimerHandle> TraceTimerHandle = MakeShared<FTimerHandle>();
+
+		TraceWorld->GetTimerManager().SetTimer(
+			*TraceTimerHandle,
+			[WeakThis, WeakOwner, WeakTarget, WeakMontage, TraceStartTime, TraceDuration, TraceTimerHandle, Context, ReactionTag]()
+			{
+				UPP_PredictionComponent* StrongThis = WeakThis.Get();
+				UWorld* TickWorld = StrongThis ? StrongThis->GetWorld() : nullptr;
+				AActor* OwnerActor = WeakOwner.Get();
+				AActor* TargetActor = WeakTarget.Get();
+
+				if (!TickWorld || !OwnerActor || !TargetActor)
+				{
+					if (TickWorld)
+					{
+						TickWorld->GetTimerManager().ClearTimer(*TraceTimerHandle);
+					}
+					return;
+				}
+
+				const float Elapsed = static_cast<float>(TickWorld->GetTimeSeconds() - TraceStartTime);
+				if (Elapsed > TraceDuration + 0.05f)
+				{
+					TickWorld->GetTimerManager().ClearTimer(*TraceTimerHandle);
+					UE_LOG(LogTemp, Warning, TEXT("PP_TRACE ReactionMoveEnd Net=%s PredictionId=%d Tag=%s Elapsed=%.3f Duration=%.3f Owner=%s Target=%s"),
+						PP_NetModeToString(TickWorld), Context.PredictionId, *ReactionTag.ToString(), Elapsed, TraceDuration,
+						*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));
+					return;
+				}
+
+				ACharacter* OwnerCharacter = Cast<ACharacter>(OwnerActor);
+				ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
+
+				UCharacterMovementComponent* OwnerMovement = OwnerCharacter ? OwnerCharacter->GetCharacterMovement() : nullptr;
+				UCharacterMovementComponent* TargetMovement = TargetCharacter ? TargetCharacter->GetCharacterMovement() : nullptr;
+
+				USkeletalMeshComponent* OwnerMesh = OwnerCharacter ? OwnerCharacter->GetMesh() : nullptr;
+				USkeletalMeshComponent* TargetMesh = TargetCharacter ? TargetCharacter->GetMesh() : nullptr;
+
+				UAnimInstance* TargetAnimInstance = TargetMesh ? TargetMesh->GetAnimInstance() : nullptr;
+				UAnimMontage* Montage = WeakMontage.Get();
+
+				const FVector OwnerLoc = OwnerActor->GetActorLocation();
+				const FVector TargetLoc = TargetActor->GetActorLocation();
+				const FVector OwnerMeshRel = OwnerMesh ? OwnerMesh->GetRelativeLocation() : FVector::ZeroVector;
+				const FVector TargetMeshRel = TargetMesh ? TargetMesh->GetRelativeLocation() : FVector::ZeroVector;
+				const FVector OwnerVel = OwnerMovement ? OwnerMovement->Velocity : FVector::ZeroVector;
+				const FVector TargetVel = TargetMovement ? TargetMovement->Velocity : FVector::ZeroVector;
+
+				const int32 OwnerMoveMode = OwnerMovement ? static_cast<int32>(OwnerMovement->MovementMode) : -1;
+				const int32 TargetMoveMode = TargetMovement ? static_cast<int32>(TargetMovement->MovementMode) : -1;
+
+				const ECollisionResponse OwnerPawnResponse = PP_GetCapsulePawnResponse(OwnerActor);
+				const ECollisionResponse TargetPawnResponse = PP_GetCapsulePawnResponse(TargetActor);
+
+				const bool bTargetMontagePlaying = TargetAnimInstance && Montage && TargetAnimInstance->Montage_IsPlaying(Montage);
+				const float TargetMontagePos = TargetAnimInstance && Montage ? TargetAnimInstance->Montage_GetPosition(Montage) : -1.f;
+				const int32 TargetRootMotionMode = TargetAnimInstance ? static_cast<int32>(TargetAnimInstance->RootMotionMode.GetValue()) : -1;
+
+				UE_LOG(LogTemp, Warning, TEXT("PP_TRACE ReactionMove Net=%s PredictionId=%d Tag=%s Elapsed=%.3f Duration=%.3f Owner=%s OwnerLoc=%s OwnerMeshRel=%s OwnerVel=%s OwnerMove=%d OwnerPawn=%d Target=%s TargetLoc=%s TargetMeshRel=%s TargetVel=%s TargetMove=%d TargetPawn=%d Dist=%.3f TargetMontagePlaying=%s TargetMontagePos=%.3f TargetRM=%d"),
+					PP_NetModeToString(TickWorld), Context.PredictionId, *ReactionTag.ToString(), Elapsed, TraceDuration,
+					*GetNameSafe(OwnerActor), *OwnerLoc.ToString(), *OwnerMeshRel.ToString(), *OwnerVel.ToString(), OwnerMoveMode,
+					static_cast<int32>(OwnerPawnResponse),
+					*GetNameSafe(TargetActor), *TargetLoc.ToString(), *TargetMeshRel.ToString(), *TargetVel.ToString(), TargetMoveMode,
+					static_cast<int32>(TargetPawnResponse),
+					FVector::Dist(OwnerLoc, TargetLoc),
+					PP_YesNo(bTargetMontagePlaying), TargetMontagePos, TargetRootMotionMode);
+			},
+			0.05f,
+			true,
+			0.0f);
+	}
+
 	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION SendServerConfirm Net=%s Owner=%s Target=%s Tag=%s PredictionId=%d"),
 		PP_NetModeToString(GetWorld()), *GetNameSafe(GetOwner()), *GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId);
 
