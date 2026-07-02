@@ -56,6 +56,7 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 	const FPP_ReactionPredictionContext Context = MakeReactionPredictionContext();
 	
 	AddPendingPredictedReaction(Context, TargetActor, ReactionTag);
+	AddPredictedReactionCollisionIgnore(TargetActor);
 	
 	const float StartPosition = GetReactionStartPosition(Reaction);
 	
@@ -67,6 +68,7 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 	
 	if (!bPlayed)
 	{
+		RemovePredictedReactionCollisionIgnore(TargetActor);
 		ConsumePendingPredictedReaction(Context, TargetActor, ReactionTag);
 		return false;
 	}
@@ -337,8 +339,11 @@ void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FP
 	{
 		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION MulticastFinish NoDeferredCorrection Target=%s Tag=%s PredictionId=%d"),
 			*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId);
+		RemovePredictedReactionCollisionIgnore(TargetActor);
 		return;
 	}
+
+	RemovePredictedReactionCollisionIgnore(TargetActor);
 
 	const FVector ClientFinalLocation = TargetActor->GetActorLocation();
 	const FVector Delta = ServerFinalLocation - ClientFinalLocation;
@@ -381,7 +386,6 @@ void UPP_PredictionComponent::AddDeferredPredictedReactionCorrection(const FPP_R
 		*GetNameSafe(TargetActor), *ReactionTag.ToString(), Context.PredictionId, DeferredPredictedReactionCorrections.Num());
 }
 
-
 bool UPP_PredictionComponent::ConsumeDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context,
 	AActor* TargetActor, FGameplayTag ReactionTag)
 {
@@ -415,6 +419,7 @@ void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections(
 	if (!World)
 	{
 		DeferredPredictedReactionCorrections.Reset();
+		ClearPredictedReactionCollisionIgnores();
 		return;
 	}
 
@@ -435,8 +440,75 @@ void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections(
 			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION DeferredExpired Target=%s Tag=%s PredictionId=%d Expired=%s Invalid=%s"),
 				*GetNameSafe(Entry.TargetActor.Get()), *Entry.ReactionTag.ToString(), Entry.PredictionId,
 				PP_YesNo(bExpired), PP_YesNo(bInvalid));
+			RemovePredictedReactionCollisionIgnore(Entry.TargetActor.Get());
 			DeferredPredictedReactionCorrections.RemoveAtSwap(Index);
 		}
+	}
+}
+
+void UPP_PredictionComponent::AddPredictedReactionCollisionIgnore(AActor* TargetActor)
+{
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor || !TargetActor || OwnerActor == TargetActor) return;
+
+	int32& Count = PredictedReactionCollisionIgnoreCounts.FindOrAdd(TargetActor);
+	++Count;
+
+	if (Count == 1)
+	{
+		OwnerActor->MoveIgnoreActorAdd(TargetActor);
+		TargetActor->MoveIgnoreActorAdd(OwnerActor);
+
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreAdd Owner=%s Target=%s Count=%d"),
+			*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), Count);
+		return;
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreIncrement Owner=%s Target=%s Count=%d"),
+		*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), Count);
+}
+
+void UPP_PredictionComponent::RemovePredictedReactionCollisionIgnore(AActor* TargetActor)
+{
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor || !TargetActor || OwnerActor == TargetActor) return;
+
+	int32* CountPtr = PredictedReactionCollisionIgnoreCounts.Find(TargetActor);
+	if (!CountPtr) return;
+
+	if (*CountPtr > 1)
+	{
+		--(*CountPtr);
+		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreDecrement Owner=%s Target=%s Count=%d"),
+			*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), *CountPtr);
+		return;
+	}
+
+	PredictedReactionCollisionIgnoreCounts.Remove(TargetActor);
+	OwnerActor->MoveIgnoreActorRemove(TargetActor);
+	TargetActor->MoveIgnoreActorRemove(OwnerActor);
+
+	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreRestored Owner=%s Target=%s Count=0"),
+		*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));
+}
+
+void UPP_PredictionComponent::ClearPredictedReactionCollisionIgnores()
+{
+	AActor* OwnerActor = GetOwner();
+
+	for (auto It = PredictedReactionCollisionIgnoreCounts.CreateIterator(); It; ++It)
+	{
+		AActor* TargetActor = It.Key().Get();
+		if (OwnerActor && TargetActor && OwnerActor != TargetActor)
+		{
+			OwnerActor->MoveIgnoreActorRemove(TargetActor);
+			TargetActor->MoveIgnoreActorRemove(OwnerActor);
+
+			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreCleared Owner=%s Target=%s Count=0"),
+				*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));
+		}
+
+		It.RemoveCurrent();
 	}
 }
 
@@ -519,8 +591,12 @@ void UPP_PredictionComponent::AddPendingPredictedReaction(const FPP_ReactionPred
 	
 	if (PendingPredictedReactions.Num() > MaxPendingPredictedReactions)
 	{
-		PendingPredictedReactions.RemoveAt(0, PendingPredictedReactions.Num() - MaxPendingPredictedReactions,
-			EAllowShrinking::No);
+		const int32 NumToRemove = PendingPredictedReactions.Num() - MaxPendingPredictedReactions;
+		for (int32 RemoveIndex = 0; RemoveIndex < NumToRemove; ++RemoveIndex)
+		{
+			RemovePredictedReactionCollisionIgnore(PendingPredictedReactions[RemoveIndex].TargetActor.Get());
+		}
+		PendingPredictedReactions.RemoveAt(0, NumToRemove, EAllowShrinking::No);
 	}
 }
 
@@ -530,6 +606,7 @@ void UPP_PredictionComponent::RemoveExpiredPendingPredictedReactions()
 	if (!World)
 	{
 		PendingPredictedReactions.Reset();
+		ClearPredictedReactionCollisionIgnores();
 		return;
 	}
 	
@@ -550,6 +627,7 @@ void UPP_PredictionComponent::RemoveExpiredPendingPredictedReactions()
 			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION PendingExpired Target=%s Tag=%s PredictionId=%d Expired=%s Invalid=%s"),
 				*GetNameSafe(Entry.TargetActor.Get()), *Entry.ReactionTag.ToString(), Entry.PredictionId,
 				PP_YesNo(bExpired), PP_YesNo(bInvalid));
+			RemovePredictedReactionCollisionIgnore(Entry.TargetActor.Get());
 			PendingPredictedReactions.RemoveAtSwap(Index);
 		}
 	}
