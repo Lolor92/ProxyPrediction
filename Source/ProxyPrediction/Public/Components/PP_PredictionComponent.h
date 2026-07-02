@@ -102,10 +102,6 @@ private:
 		FGameplayTag ReactionTag);
 	void RemoveExpiredDeferredPredictedReactionCorrections();
 
-	void AddPredictedReactionCollisionIgnore(AActor* TargetActor);
-	void RemovePredictedReactionCollisionIgnore(AActor* TargetActor);
-	void ClearPredictedReactionCollisionIgnores();
-
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context,AActor* TargetActor,
 		AActor* InstigatorActor, FGameplayTag ReactionTag);

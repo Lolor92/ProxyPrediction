@@ -102,8 +102,6 @@ void USyncInputComponent::UninstallFromPawn()
 
 void USyncInputComponent::AddMappingContextsForLocalPlayer() const
 {
-return; }
-
 	const APlayerController* PC = GetOwningPlayerController();
 	if (!PC) return;
 
@@ -120,6 +118,7 @@ return; }
 			}
 		}
 	}
+	
 }
 
 void USyncInputComponent::RemoveMappingContextsForLocalPlayer() const

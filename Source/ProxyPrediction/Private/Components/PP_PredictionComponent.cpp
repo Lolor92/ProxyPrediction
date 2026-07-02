@@ -10,56 +10,6 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
 
-namespace
-{
-	const TCHAR* PP_NetModeToString(const UWorld* World)
-	{
-		if (!World) return TEXT("NoWorld");
-
-		switch (World->GetNetMode())
-		{
-		case NM_Client:
-			return TEXT("Client");
-		case NM_DedicatedServer:
-			return TEXT("DedicatedServer");
-		case NM_ListenServer:
-			return TEXT("ListenServer");
-		case NM_Standalone:
-			return TEXT("Standalone");
-		default:
-			return TEXT("Unknown");
-		}
-	}
-
-	const TCHAR* PP_YesNo(const bool bValue)
-	{
-		return bValue ? TEXT("1") : TEXT("0");
-	}
-
-	void PP_SetIgnoreActorWhenMoving(UPrimitiveComponent* Component, AActor* IgnoredActor, bool bShouldIgnore)
-	{
-		if (!Component || !IgnoredActor) return;
-
-		Component->IgnoreActorWhenMoving(IgnoredActor, bShouldIgnore);
-	}
-
-	void PP_SetMovementIgnore(AActor* MovingActor, AActor* IgnoredActor, bool bShouldIgnore)
-	{
-		if (!MovingActor || !IgnoredActor) return;
-
-		if (ACharacter* MovingCharacter = Cast<ACharacter>(MovingActor))
-		{
-			PP_SetIgnoreActorWhenMoving(MovingCharacter->GetCapsuleComponent(), IgnoredActor, bShouldIgnore);
-
-			if (UCharacterMovementComponent* MovementComponent = MovingCharacter->GetCharacterMovement())
-			{
-				PP_SetIgnoreActorWhenMoving(Cast<UPrimitiveComponent>(MovementComponent->UpdatedComponent), IgnoredActor, bShouldIgnore);
-			}
-		}
-
-		PP_SetIgnoreActorWhenMoving(Cast<UPrimitiveComponent>(MovingActor->GetRootComponent()), IgnoredActor, bShouldIgnore);
-	}
-}
 
 UPP_PredictionComponent::UPP_PredictionComponent()
 {
@@ -80,16 +30,13 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 	const FPP_ReactionPredictionContext Context = MakeReactionPredictionContext();
 	
 	AddPendingPredictedReaction(Context, TargetActor, ReactionTag);
-	AddPredictedReactionCollisionIgnore(TargetActor);
 	
 	const float StartPosition = GetReactionStartPosition(Reaction);
 	
 	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
-
 	
 	if (!bPlayed)
 	{
-		RemovePredictedReactionCollisionIgnore(TargetActor);
 		ConsumePendingPredictedReaction(Context, TargetActor, ReactionTag);
 		return false;
 	}
@@ -240,8 +187,7 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	// While the local reaction plays, ignore both newly generated server corrections and already in-flight
 	// corrections on this client. Normal reconciliation resumes when the local montage window is finished.
 	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
-
-
+	
 	if (!bPlayed)
 	{
 		if (MovementComponent)
@@ -304,11 +250,8 @@ void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FP
 
 	if (!ConsumeDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag))
 	{
-		RemovePredictedReactionCollisionIgnore(TargetActor);
 		return;
 	}
-
-	RemovePredictedReactionCollisionIgnore(TargetActor);
 
 	const FVector ClientFinalLocation = TargetActor->GetActorLocation();
 	const FVector Delta = ServerFinalLocation - ClientFinalLocation;
@@ -373,7 +316,6 @@ void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections(
 	if (!World)
 	{
 		DeferredPredictedReactionCorrections.Reset();
-		ClearPredictedReactionCollisionIgnores();
 		return;
 	}
 
@@ -391,65 +333,8 @@ void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections(
 
 		if (bExpired || bInvalid)
 		{
-			RemovePredictedReactionCollisionIgnore(Entry.TargetActor.Get());
 			DeferredPredictedReactionCorrections.RemoveAtSwap(Index);
 		}
-	}
-}
-
-void UPP_PredictionComponent::AddPredictedReactionCollisionIgnore(AActor* TargetActor)
-{
-	AActor* OwnerActor = GetOwner();
-	if (!OwnerActor || !TargetActor || OwnerActor == TargetActor) return;
-
-	int32& Count = PredictedReactionCollisionIgnoreCounts.FindOrAdd(TargetActor);
-	++Count;
-
-	if (Count == 1)
-	{
-		PP_SetMovementIgnore(OwnerActor, TargetActor, true);
-		PP_SetMovementIgnore(TargetActor, OwnerActor, true);
-
-		return;
-	}
-
-}
-
-void UPP_PredictionComponent::RemovePredictedReactionCollisionIgnore(AActor* TargetActor)
-{
-	AActor* OwnerActor = GetOwner();
-	if (!OwnerActor || !TargetActor || OwnerActor == TargetActor) return;
-
-	int32* CountPtr = PredictedReactionCollisionIgnoreCounts.Find(TargetActor);
-	if (!CountPtr) return;
-
-	if (*CountPtr > 1)
-	{
-		--(*CountPtr);
-		return;
-	}
-
-	PredictedReactionCollisionIgnoreCounts.Remove(TargetActor);
-	PP_SetMovementIgnore(OwnerActor, TargetActor, false);
-	PP_SetMovementIgnore(TargetActor, OwnerActor, false);
-
-}
-
-void UPP_PredictionComponent::ClearPredictedReactionCollisionIgnores()
-{
-	AActor* OwnerActor = GetOwner();
-
-	for (auto It = PredictedReactionCollisionIgnoreCounts.CreateIterator(); It; ++It)
-	{
-		AActor* TargetActor = It.Key().Get();
-		if (OwnerActor && TargetActor && OwnerActor != TargetActor)
-		{
-			PP_SetMovementIgnore(OwnerActor, TargetActor, false);
-			PP_SetMovementIgnore(TargetActor, OwnerActor, false);
-
-		}
-
-		It.RemoveCurrent();
 	}
 }
 
@@ -527,10 +412,6 @@ void UPP_PredictionComponent::AddPendingPredictedReaction(const FPP_ReactionPred
 	if (PendingPredictedReactions.Num() > MaxPendingPredictedReactions)
 	{
 		const int32 NumToRemove = PendingPredictedReactions.Num() - MaxPendingPredictedReactions;
-		for (int32 RemoveIndex = 0; RemoveIndex < NumToRemove; ++RemoveIndex)
-		{
-			RemovePredictedReactionCollisionIgnore(PendingPredictedReactions[RemoveIndex].TargetActor.Get());
-		}
 		PendingPredictedReactions.RemoveAt(0, NumToRemove, EAllowShrinking::No);
 	}
 }
@@ -541,7 +422,6 @@ void UPP_PredictionComponent::RemoveExpiredPendingPredictedReactions()
 	if (!World)
 	{
 		PendingPredictedReactions.Reset();
-		ClearPredictedReactionCollisionIgnores();
 		return;
 	}
 	
@@ -559,7 +439,6 @@ void UPP_PredictionComponent::RemoveExpiredPendingPredictedReactions()
 
 		if (bExpired || bInvalid)
 		{
-			RemovePredictedReactionCollisionIgnore(Entry.TargetActor.Get());
 			PendingPredictedReactions.RemoveAtSwap(Index);
 		}
 	}
