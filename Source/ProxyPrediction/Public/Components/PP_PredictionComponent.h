@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Animation/AnimTypes.h"
 #include "GameplayTagContainer.h"
 #include "Components/ActorComponent.h"
 #include "Data/PP_ReactionData.h"
@@ -57,6 +58,33 @@ struct FPP_DeferredPredictedReactionCorrection
 	UPROPERTY()
 	double TimeSeconds = 0.0;
 };
+USTRUCT()
+struct FPP_PredictedProxyReactionState
+{
+GENERATED_BODY()
+
+UPROPERTY()
+TEnumAsByte<ERootMotionMode::Type> SavedRootMotionMode = ERootMotionMode::RootMotionFromMontagesOnly;
+
+UPROPERTY()
+TEnumAsByte<ECollisionResponse> SavedTargetPawnResponse = ECR_Block;
+
+UPROPERTY()
+TEnumAsByte<ECollisionResponse> SavedOwnerPawnResponse = ECR_Block;
+
+UPROPERTY()
+int32 RefCount = 0;
+
+UPROPERTY()
+bool bSavedRootMotionMode = false;
+
+UPROPERTY()
+bool bSavedTargetPawnResponse = false;
+
+UPROPERTY()
+bool bSavedOwnerPawnResponse = false;
+};
+
 
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class PROXYPREDICTION_API UPP_PredictionComponent : public UActorComponent
@@ -129,7 +157,7 @@ private:
 	TArray<FPP_DeferredPredictedReactionCorrection> DeferredPredictedReactionCorrections;
 
 	UPROPERTY(Transient)
-	TMap<TWeakObjectPtr<AActor>, int32> PredictedReactionCollisionIgnoreCounts;
+	TMap<TWeakObjectPtr<AActor>, FPP_PredictedProxyReactionState> PredictedProxyReactionStates;
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Seconds"))
 	float PendingPredictedReactionTimeout = 2.0f;

@@ -36,29 +36,36 @@ namespace
 		return bValue ? TEXT("1") : TEXT("0");
 	}
 
-	void PP_SetIgnoreActorWhenMoving(UPrimitiveComponent* Component, AActor* IgnoredActor, bool bShouldIgnore)
+	UCapsuleComponent* PP_GetCharacterCapsule(AActor* Actor)
 	{
-		if (!Component || !IgnoredActor) return;
-
-		Component->IgnoreActorWhenMoving(IgnoredActor, bShouldIgnore);
+		ACharacter* Character = Cast<ACharacter>(Actor);
+		return Character ? Character->GetCapsuleComponent() : nullptr;
 	}
 
-	void PP_SetMovementIgnore(AActor* MovingActor, AActor* IgnoredActor, bool bShouldIgnore)
+	ECollisionResponse PP_GetCapsulePawnResponse(AActor* Actor)
 	{
-		if (!MovingActor || !IgnoredActor) return;
-
-		if (ACharacter* MovingCharacter = Cast<ACharacter>(MovingActor))
+		if (const UCapsuleComponent* Capsule = PP_GetCharacterCapsule(Actor))
 		{
-			PP_SetIgnoreActorWhenMoving(MovingCharacter->GetCapsuleComponent(), IgnoredActor, bShouldIgnore);
-
-			if (UCharacterMovementComponent* MovementComponent = MovingCharacter->GetCharacterMovement())
-			{
-				PP_SetIgnoreActorWhenMoving(Cast<UPrimitiveComponent>(MovementComponent->UpdatedComponent), IgnoredActor, bShouldIgnore);
-			}
+			return Capsule->GetCollisionResponseToChannel(ECC_Pawn);
 		}
 
-		PP_SetIgnoreActorWhenMoving(Cast<UPrimitiveComponent>(MovingActor->GetRootComponent()), IgnoredActor, bShouldIgnore);
+		return ECR_MAX;
 	}
+
+	void PP_SetCapsulePawnResponse(AActor* Actor, ECollisionResponse Response)
+	{
+		UCapsuleComponent* Capsule = PP_GetCharacterCapsule(Actor);
+		if (!Capsule || Response == ECR_MAX) return;
+
+		Capsule->SetCollisionResponseToChannel(ECC_Pawn, Response);
+	}
+
+UAnimInstance* PP_GetCharacterAnimInstance(AActor* Actor)
+{
+ACharacter* Character = Cast<ACharacter>(Actor);
+USkeletalMeshComponent* Mesh = Character ? Character->GetMesh() : nullptr;
+return Mesh ? Mesh->GetAnimInstance() : nullptr;
+}
 }
 
 UPP_PredictionComponent::UPP_PredictionComponent()
@@ -474,68 +481,137 @@ void UPP_PredictionComponent::RemoveExpiredDeferredPredictedReactionCorrections(
 
 void UPP_PredictionComponent::AddPredictedReactionCollisionIgnore(AActor* TargetActor)
 {
-	AActor* OwnerActor = GetOwner();
-	if (!OwnerActor || !TargetActor || OwnerActor == TargetActor) return;
+AActor* OwnerActor = GetOwner();
+if (!OwnerActor || !TargetActor || OwnerActor == TargetActor) return;
 
-	int32& Count = PredictedReactionCollisionIgnoreCounts.FindOrAdd(TargetActor);
-	++Count;
+FPP_PredictedProxyReactionState& State = PredictedProxyReactionStates.FindOrAdd(TargetActor);
+++State.RefCount;
 
-	if (Count == 1)
-	{
-		PP_SetMovementIgnore(OwnerActor, TargetActor, true);
-		PP_SetMovementIgnore(TargetActor, OwnerActor, true);
+if (State.RefCount == 1)
+{
+if (UAnimInstance* TargetAnimInstance = PP_GetCharacterAnimInstance(TargetActor))
+{
+State.SavedRootMotionMode = TargetAnimInstance->RootMotionMode;
+State.bSavedRootMotionMode = true;
+TargetAnimInstance->RootMotionMode = ERootMotionMode::NoRootMotionExtraction;
+}
 
-		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreAdd Owner=%s Target=%s Count=%d"),
-			*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), Count);
-		return;
-	}
+const ECollisionResponse PreviousTargetPawnResponse = PP_GetCapsulePawnResponse(TargetActor);
+if (PreviousTargetPawnResponse != ECR_MAX)
+{
+State.SavedTargetPawnResponse = PreviousTargetPawnResponse;
+State.bSavedTargetPawnResponse = true;
+PP_SetCapsulePawnResponse(TargetActor, ECR_Ignore);
+}
 
-	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreIncrement Owner=%s Target=%s Count=%d"),
-		*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), Count);
+const ECollisionResponse PreviousOwnerPawnResponse = PP_GetCapsulePawnResponse(OwnerActor);
+if (PreviousOwnerPawnResponse != ECR_MAX)
+{
+State.SavedOwnerPawnResponse = PreviousOwnerPawnResponse;
+State.bSavedOwnerPawnResponse = true;
+PP_SetCapsulePawnResponse(OwnerActor, ECR_Ignore);
+}
+
+UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CombinedSuppressAdd Owner=%s Target=%s Count=%d SavedRM=%s TargetPawn=%d OwnerPawn=%d"),
+*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), State.RefCount,
+PP_YesNo(State.bSavedRootMotionMode),
+static_cast<int32>(PreviousTargetPawnResponse),
+static_cast<int32>(PreviousOwnerPawnResponse));
+return;
+}
+
+UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CombinedSuppressIncrement Owner=%s Target=%s Count=%d"),
+*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), State.RefCount);
 }
 
 void UPP_PredictionComponent::RemovePredictedReactionCollisionIgnore(AActor* TargetActor)
 {
-	AActor* OwnerActor = GetOwner();
-	if (!OwnerActor || !TargetActor || OwnerActor == TargetActor) return;
+AActor* OwnerActor = GetOwner();
+if (!OwnerActor || !TargetActor || OwnerActor == TargetActor) return;
 
-	int32* CountPtr = PredictedReactionCollisionIgnoreCounts.Find(TargetActor);
-	if (!CountPtr) return;
+FPP_PredictedProxyReactionState* State = PredictedProxyReactionStates.Find(TargetActor);
+if (!State) return;
 
-	if (*CountPtr > 1)
-	{
-		--(*CountPtr);
-		UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreDecrement Owner=%s Target=%s Count=%d"),
-			*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), *CountPtr);
-		return;
-	}
+if (State->RefCount > 1)
+{
+--State->RefCount;
+UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CombinedSuppressDecrement Owner=%s Target=%s Count=%d"),
+*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor), State->RefCount);
+return;
+}
 
-	PredictedReactionCollisionIgnoreCounts.Remove(TargetActor);
-	PP_SetMovementIgnore(OwnerActor, TargetActor, false);
-	PP_SetMovementIgnore(TargetActor, OwnerActor, false);
+if (State->bSavedRootMotionMode)
+{
+if (UAnimInstance* TargetAnimInstance = PP_GetCharacterAnimInstance(TargetActor))
+{
+TargetAnimInstance->RootMotionMode = State->SavedRootMotionMode;
+}
+}
 
-	UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreRestored Owner=%s Target=%s Count=0"),
-		*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));
+if (State->bSavedTargetPawnResponse)
+{
+PP_SetCapsulePawnResponse(TargetActor, State->SavedTargetPawnResponse.GetValue());
+}
+
+if (State->bSavedOwnerPawnResponse)
+{
+PP_SetCapsulePawnResponse(OwnerActor, State->SavedOwnerPawnResponse.GetValue());
+}
+
+const int32 RestoredRootMotionMode = State->bSavedRootMotionMode
+? static_cast<int32>(State->SavedRootMotionMode.GetValue())
+: -1;
+const int32 RestoredTargetPawnResponse = State->bSavedTargetPawnResponse
+? static_cast<int32>(State->SavedTargetPawnResponse.GetValue())
+: -1;
+const int32 RestoredOwnerPawnResponse = State->bSavedOwnerPawnResponse
+? static_cast<int32>(State->SavedOwnerPawnResponse.GetValue())
+: -1;
+
+PredictedProxyReactionStates.Remove(TargetActor);
+
+UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CombinedSuppressRestored Owner=%s Target=%s Count=0 RM=%d TargetPawn=%d OwnerPawn=%d"),
+*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor),
+RestoredRootMotionMode, RestoredTargetPawnResponse, RestoredOwnerPawnResponse);
 }
 
 void UPP_PredictionComponent::ClearPredictedReactionCollisionIgnores()
 {
-	AActor* OwnerActor = GetOwner();
+AActor* OwnerActor = GetOwner();
 
-	for (auto It = PredictedReactionCollisionIgnoreCounts.CreateIterator(); It; ++It)
-	{
-		AActor* TargetActor = It.Key().Get();
-		if (OwnerActor && TargetActor && OwnerActor != TargetActor)
-		{
-			PP_SetMovementIgnore(OwnerActor, TargetActor, false);
-			PP_SetMovementIgnore(TargetActor, OwnerActor, false);
+for (auto It = PredictedProxyReactionStates.CreateIterator(); It; ++It)
+{
+AActor* TargetActor = It.Key().Get();
+FPP_PredictedProxyReactionState& State = It.Value();
 
-			UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CollisionIgnoreCleared Owner=%s Target=%s Count=0"),
-				*GetNameSafe(OwnerActor), *GetNameSafe(TargetActor));
-		}
+if (!OwnerActor || !TargetActor || OwnerActor == TargetActor)
+{
+continue;
+}
 
-		It.RemoveCurrent();
-	}
+if (State.bSavedRootMotionMode)
+{
+if (UAnimInstance* TargetAnimInstance = PP_GetCharacterAnimInstance(TargetActor))
+{
+TargetAnimInstance->RootMotionMode = State.SavedRootMotionMode;
+}
+}
+
+if (State.bSavedTargetPawnResponse)
+{
+PP_SetCapsulePawnResponse(TargetActor, State.SavedTargetPawnResponse.GetValue());
+}
+
+if (State.bSavedOwnerPawnResponse)
+{
+PP_SetCapsulePawnResponse(OwnerActor, State.SavedOwnerPawnResponse.GetValue());
+}
+}
+
+PredictedProxyReactionStates.Reset();
+
+UE_LOG(LogTemp, Warning, TEXT("PP_REACTION CombinedSuppressClear Owner=%s"),
+*GetNameSafe(OwnerActor));
 }
 
 bool UPP_PredictionComponent::CanPlayPredictedReactionOnTargetProxy(AActor* TargetActor,
