@@ -104,6 +104,14 @@ void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 
 	if (bSettingsChanged)
 	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SAM_COLLISION PROBE_CONFIG Owner=%s Dist=%.1f Angle=%.1f Radius=%.1f HalfHeight=%.1f"),
+			*GetNameSafe(Character),
+			ClampedProbeDistance,
+			ClampedForwardAngle,
+			OwnerCapsule->GetUnscaledCapsuleRadius(),
+			OwnerCapsule->GetUnscaledCapsuleHalfHeight());
+
 		RootMotionCollisionProbeComponent->UpdateComponentToWorld();
 		RootMotionCollisionProbeComponent->UpdateOverlaps();
 		RebuildRootMotionCollisionOverlaps();
@@ -112,7 +120,17 @@ void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 
 void USyncAbilityMotionComponent::ClearRootMotionCollisionProbe()
 {
+	if (bRootMotionCollisionProbeEnabled)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SAM_COLLISION PROBE_CLEAR Owner=%s CachedOverlaps=%d LastBlocked=%d"),
+			*GetNameSafe(GetOwner()),
+			RootMotionCollisionCharacters.Num(),
+			bLastLoggedRootMotionCollisionBlocked ? 1 : 0);
+	}
+
 	bRootMotionCollisionProbeEnabled = false;
+	bLastLoggedRootMotionCollisionBlocked = false;
 	RootMotionCollisionCharacters.Reset();
 
 	if (RootMotionCollisionProbeComponent)
@@ -128,21 +146,89 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		return false;
 	}
 
+	ACharacter* BestRejectedCharacter = nullptr;
+	float BestRejectedAngle = 0.f;
+	float BestRejectedDot = -1.f;
+	float RequiredDot = FMath::Cos(FMath::DegreesToRadians(RootMotionCollisionForwardAngleDegrees));
+
 	for (int32 Index = RootMotionCollisionCharacters.Num() - 1; Index >= 0; --Index)
 	{
 		ACharacter* OtherCharacter = RootMotionCollisionCharacters[Index].Get();
 		if (!OtherCharacter || !RootMotionCollisionProbeComponent->IsOverlappingActor(OtherCharacter))
 		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("SAM_COLLISION OVERLAP_STALE Owner=%s Other=%s"),
+				*GetNameSafe(GetOwner()),
+				*GetNameSafe(OtherCharacter));
+
 			RootMotionCollisionCharacters.RemoveAtSwap(Index, 1, EAllowShrinking::No);
 			continue;
 		}
 
-		if (IsRootMotionCollisionCharacterInFront(OtherCharacter))
+		const ACharacter* Character = GetOwnerCharacter();
+		if (!Character || OtherCharacter == Character)
 		{
+			continue;
+		}
+
+		FVector Forward = Character->GetActorForwardVector();
+		Forward.Z = 0.f;
+		if (!Forward.Normalize())
+		{
+			continue;
+		}
+
+		FVector ToOther = OtherCharacter->GetActorLocation() - Character->GetActorLocation();
+		ToOther.Z = 0.f;
+		if (!ToOther.Normalize())
+		{
+			continue;
+		}
+
+		const float Dot = FVector::DotProduct(Forward, ToOther);
+		const float Angle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(Dot, -1.f, 1.f)));
+		if (Dot >= RequiredDot)
+		{
+			if (!bLastLoggedRootMotionCollisionBlocked)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("SAM_COLLISION BLOCKED Owner=%s Other=%s Angle=%.1f MaxAngle=%.1f Dot=%.3f RequiredDot=%.3f CachedOverlaps=%d"),
+					*GetNameSafe(Character),
+					*GetNameSafe(OtherCharacter),
+					Angle,
+					RootMotionCollisionForwardAngleDegrees,
+					Dot,
+					RequiredDot,
+					RootMotionCollisionCharacters.Num());
+			}
+
+			bLastLoggedRootMotionCollisionBlocked = true;
 			return true;
+		}
+
+		if (!BestRejectedCharacter || Dot > BestRejectedDot)
+		{
+			BestRejectedCharacter = OtherCharacter;
+			BestRejectedAngle = Angle;
+			BestRejectedDot = Dot;
 		}
 	}
 
+	if (bLastLoggedRootMotionCollisionBlocked || BestRejectedCharacter)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SAM_COLLISION UNBLOCKED Owner=%s Reason=%s BestOther=%s BestAngle=%.1f MaxAngle=%.1f BestDot=%.3f RequiredDot=%.3f CachedOverlaps=%d"),
+			*GetNameSafe(GetOwner()),
+			BestRejectedCharacter ? TEXT("ANGLE_REJECT") : TEXT("NO_OVERLAP"),
+			*GetNameSafe(BestRejectedCharacter),
+			BestRejectedAngle,
+			RootMotionCollisionForwardAngleDegrees,
+			BestRejectedDot,
+			RequiredDot,
+			RootMotionCollisionCharacters.Num());
+	}
+
+	bLastLoggedRootMotionCollisionBlocked = false;
 	return false;
 }
 
@@ -173,6 +259,13 @@ void USyncAbilityMotionComponent::OnRootMotionCollisionProbeBeginOverlap(
 	bool bFromSweep,
 	const FHitResult& SweepResult)
 {
+	UE_LOG(LogTemp, Warning,
+		TEXT("SAM_COLLISION OVERLAP_BEGIN Owner=%s Other=%s OtherComp=%s FromSweep=%d"),
+		*GetNameSafe(GetOwner()),
+		*GetNameSafe(OtherActor),
+		*GetNameSafe(OtherComp),
+		bFromSweep ? 1 : 0);
+
 	AddRootMotionCollisionCharacter(Cast<ACharacter>(OtherActor));
 }
 
@@ -182,6 +275,13 @@ void USyncAbilityMotionComponent::OnRootMotionCollisionProbeEndOverlap(
 	UPrimitiveComponent* OtherComp,
 	int32 OtherBodyIndex)
 {
+	UE_LOG(LogTemp, Warning,
+		TEXT("SAM_COLLISION OVERLAP_END Owner=%s Other=%s OtherComp=%s StillOverlapping=%d"),
+		*GetNameSafe(GetOwner()),
+		*GetNameSafe(OtherActor),
+		*GetNameSafe(OtherComp),
+		RootMotionCollisionProbeComponent && RootMotionCollisionProbeComponent->IsOverlappingActor(OtherActor) ? 1 : 0);
+
 	ACharacter* OtherCharacter = Cast<ACharacter>(OtherActor);
 	if (!OtherCharacter || !RootMotionCollisionProbeComponent ||
 		RootMotionCollisionProbeComponent->IsOverlappingActor(OtherCharacter))
@@ -274,6 +374,11 @@ void USyncAbilityMotionComponent::RebuildRootMotionCollisionOverlaps()
 	TArray<AActor*> OverlappingActors;
 	RootMotionCollisionProbeComponent->GetOverlappingActors(OverlappingActors, ACharacter::StaticClass());
 
+	UE_LOG(LogTemp, Warning,
+		TEXT("SAM_COLLISION OVERLAP_REBUILD Owner=%s Count=%d"),
+		*GetNameSafe(GetOwner()),
+		OverlappingActors.Num());
+
 	for (AActor* OverlappingActor : OverlappingActors)
 	{
 		AddRootMotionCollisionCharacter(Cast<ACharacter>(OverlappingActor));
@@ -311,6 +416,12 @@ void USyncAbilityMotionComponent::AddRootMotionCollisionCharacter(ACharacter* Ot
 	}
 
 	RootMotionCollisionCharacters.Add(OtherCharacter);
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("SAM_COLLISION CACHE_ADD Owner=%s Other=%s CachedOverlaps=%d"),
+		*GetNameSafe(GetOwner()),
+		*GetNameSafe(OtherCharacter),
+		RootMotionCollisionCharacters.Num());
 }
 
 void USyncAbilityMotionComponent::RemoveRootMotionCollisionCharacter(ACharacter* OtherCharacter)
@@ -324,4 +435,10 @@ void USyncAbilityMotionComponent::RemoveRootMotionCollisionCharacter(ACharacter*
 			RootMotionCollisionCharacters.RemoveAtSwap(Index, 1, EAllowShrinking::No);
 		}
 	}
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("SAM_COLLISION CACHE_REMOVE Owner=%s Other=%s CachedOverlaps=%d"),
+		*GetNameSafe(GetOwner()),
+		*GetNameSafe(OtherCharacter),
+		RootMotionCollisionCharacters.Num());
 }
