@@ -3,9 +3,16 @@
 #include "AnimInstance/SyncAbilityMotionAnimInstance.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "Movement/SyncAbilityMotionCharacterMovementComponent.h"
 #include "Net/UnrealNetwork.h"
+
+namespace SyncAbilityMotionCollisionProbe
+{
+	constexpr float LostOverlapGraceSeconds = 0.08f;
+	constexpr float AngleReleaseGraceDegrees = 5.f;
+}
 
 USyncAbilityMotionComponent::USyncAbilityMotionComponent()
 {
@@ -105,12 +112,14 @@ void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 	if (bSettingsChanged)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION PROBE_CONFIG Owner=%s Dist=%.1f Angle=%.1f Radius=%.1f HalfHeight=%.1f"),
+			TEXT("SAM_COLLISION PROBE_CONFIG Owner=%s Dist=%.1f Angle=%.1f Radius=%.1f HalfHeight=%.1f Grace=%.2f AngleGrace=%.1f"),
 			*GetNameSafe(Character),
 			ClampedProbeDistance,
 			ClampedForwardAngle,
 			OwnerCapsule->GetUnscaledCapsuleRadius(),
-			OwnerCapsule->GetUnscaledCapsuleHalfHeight());
+			OwnerCapsule->GetUnscaledCapsuleHalfHeight(),
+			SyncAbilityMotionCollisionProbe::LostOverlapGraceSeconds,
+			SyncAbilityMotionCollisionProbe::AngleReleaseGraceDegrees);
 
 		RootMotionCollisionProbeComponent->UpdateComponentToWorld();
 		RootMotionCollisionProbeComponent->UpdateOverlaps();
@@ -131,6 +140,7 @@ void USyncAbilityMotionComponent::ClearRootMotionCollisionProbe()
 
 	bRootMotionCollisionProbeEnabled = false;
 	bLastLoggedRootMotionCollisionBlocked = false;
+	LastRootMotionCollisionBlockTimeSeconds = -1000.f;
 	RootMotionCollisionCharacters.Reset();
 
 	if (RootMotionCollisionProbeComponent)
@@ -146,10 +156,18 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		return false;
 	}
 
+	const UWorld* World = GetWorld();
+	const float NowSeconds = World ? World->GetTimeSeconds() : 0.f;
+
 	ACharacter* BestRejectedCharacter = nullptr;
 	float BestRejectedAngle = 0.f;
 	float BestRejectedDot = -1.f;
-	float RequiredDot = FMath::Cos(FMath::DegreesToRadians(RootMotionCollisionForwardAngleDegrees));
+	const float RequiredDot = FMath::Cos(FMath::DegreesToRadians(RootMotionCollisionForwardAngleDegrees));
+	const float GraceAngleDegrees = FMath::Clamp(
+		RootMotionCollisionForwardAngleDegrees + SyncAbilityMotionCollisionProbe::AngleReleaseGraceDegrees,
+		0.f,
+		180.f);
+	const float GraceRequiredDot = FMath::Cos(FMath::DegreesToRadians(GraceAngleDegrees));
 
 	for (int32 Index = RootMotionCollisionCharacters.Num() - 1; Index >= 0; --Index)
 	{
@@ -189,7 +207,13 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 
 		const float Dot = FVector::DotProduct(Forward, ToOther);
 		const float Angle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(Dot, -1.f, 1.f)));
-		if (Dot >= RequiredDot)
+		const bool bStrictAngleBlock = Dot >= RequiredDot;
+		const bool bAngleGraceBlock =
+			!bStrictAngleBlock &&
+			bLastLoggedRootMotionCollisionBlocked &&
+			Dot >= GraceRequiredDot;
+
+		if (bStrictAngleBlock || bAngleGraceBlock)
 		{
 			if (!bLastLoggedRootMotionCollisionBlocked)
 			{
@@ -203,8 +227,23 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 					RequiredDot,
 					RootMotionCollisionCharacters.Num());
 			}
+			else if (bAngleGraceBlock)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("SAM_COLLISION BLOCKED_ANGLE_GRACE Owner=%s Other=%s Angle=%.1f MaxAngle=%.1f GraceAngle=%.1f Dot=%.3f RequiredDot=%.3f GraceRequiredDot=%.3f CachedOverlaps=%d"),
+					*GetNameSafe(Character),
+					*GetNameSafe(OtherCharacter),
+					Angle,
+					RootMotionCollisionForwardAngleDegrees,
+					GraceAngleDegrees,
+					Dot,
+					RequiredDot,
+					GraceRequiredDot,
+					RootMotionCollisionCharacters.Num());
+			}
 
 			bLastLoggedRootMotionCollisionBlocked = true;
+			LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
 			return true;
 		}
 
@@ -216,17 +255,36 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		}
 	}
 
+	const float SecondsSinceBlock = NowSeconds - LastRootMotionCollisionBlockTimeSeconds;
+	const bool bLostOverlapGraceBlock =
+		bLastLoggedRootMotionCollisionBlocked &&
+		SecondsSinceBlock >= 0.f &&
+		SecondsSinceBlock <= SyncAbilityMotionCollisionProbe::LostOverlapGraceSeconds;
+
+	if (bLostOverlapGraceBlock)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SAM_COLLISION BLOCKED_LOST_OVERLAP_GRACE Owner=%s SecondsSinceBlock=%.3f Grace=%.3f CachedOverlaps=%d"),
+			*GetNameSafe(GetOwner()),
+			SecondsSinceBlock,
+			SyncAbilityMotionCollisionProbe::LostOverlapGraceSeconds,
+			RootMotionCollisionCharacters.Num());
+		return true;
+	}
+
 	if (bLastLoggedRootMotionCollisionBlocked || BestRejectedCharacter)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION UNBLOCKED Owner=%s Reason=%s BestOther=%s BestAngle=%.1f MaxAngle=%.1f BestDot=%.3f RequiredDot=%.3f CachedOverlaps=%d"),
+			TEXT("SAM_COLLISION UNBLOCKED Owner=%s Reason=%s BestOther=%s BestAngle=%.1f MaxAngle=%.1f GraceAngle=%.1f BestDot=%.3f RequiredDot=%.3f GraceRequiredDot=%.3f CachedOverlaps=%d"),
 			*GetNameSafe(GetOwner()),
 			BestRejectedCharacter ? TEXT("ANGLE_REJECT") : TEXT("NO_CAPSULE_OVERLAP"),
 			*GetNameSafe(BestRejectedCharacter),
 			BestRejectedAngle,
 			RootMotionCollisionForwardAngleDegrees,
+			GraceAngleDegrees,
 			BestRejectedDot,
 			RequiredDot,
+			GraceRequiredDot,
 			RootMotionCollisionCharacters.Num());
 	}
 
