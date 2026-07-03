@@ -13,6 +13,78 @@ namespace SyncAbilityMotionCollisionProbe
 {
 	constexpr float LostOverlapGraceSeconds = 0.12f;
 	constexpr float AngleReleaseGraceDegrees = 5.f;
+	constexpr float ForwardContactPadding = 8.f;
+
+	bool IsForwardContactBlocking(
+		const ACharacter* Character,
+		const ACharacter* OtherCharacter,
+		float ProbeDistance,
+		float RequiredDot,
+		float GraceRequiredDot,
+		bool bAllowGraceAngle,
+		float& OutAngle,
+		float& OutDot)
+	{
+		OutAngle = 0.f;
+		OutDot = -1.f;
+
+		const UCapsuleComponent* OwnerCapsule = Character ? Character->GetCapsuleComponent() : nullptr;
+		const UCapsuleComponent* OtherCapsule = OtherCharacter ? OtherCharacter->GetCapsuleComponent() : nullptr;
+		if (!Character || !OtherCharacter || OtherCharacter == Character || !OwnerCapsule || !OtherCapsule)
+		{
+			return false;
+		}
+
+		FVector Forward = Character->GetActorForwardVector();
+		Forward.Z = 0.f;
+		if (!Forward.Normalize())
+		{
+			return false;
+		}
+
+		FVector ToOther = OtherCharacter->GetActorLocation() - Character->GetActorLocation();
+		ToOther.Z = 0.f;
+		if (ToOther.IsNearlyZero())
+		{
+			return false;
+		}
+
+		const float ForwardDistance = FVector::DotProduct(ToOther, Forward);
+		const float CombinedRadius =
+			OwnerCapsule->GetUnscaledCapsuleRadius() +
+			OtherCapsule->GetUnscaledCapsuleRadius() +
+			ForwardContactPadding;
+
+		if (ForwardDistance <= 0.f || ForwardDistance > ProbeDistance + CombinedRadius)
+		{
+			return false;
+		}
+
+		const FVector Lateral = ToOther - Forward * ForwardDistance;
+		const float LateralDistanceSquared = Lateral.SizeSquared2D();
+		if (LateralDistanceSquared > FMath::Square(CombinedRadius))
+		{
+			return false;
+		}
+
+		const float LateralDistance = FMath::Sqrt(LateralDistanceSquared);
+		const float ContactLateralDistance = FMath::Max(0.f, LateralDistance - CombinedRadius);
+		FVector ContactDirection = Forward * ForwardDistance;
+		if (ContactLateralDistance > KINDA_SMALL_NUMBER && LateralDistance > KINDA_SMALL_NUMBER)
+		{
+			ContactDirection += Lateral.GetSafeNormal2D() * ContactLateralDistance;
+		}
+
+		ContactDirection.Z = 0.f;
+		if (!ContactDirection.Normalize())
+		{
+			return false;
+		}
+
+		OutDot = FVector::DotProduct(Forward, ContactDirection);
+		OutAngle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(OutDot, -1.f, 1.f)));
+		return OutDot >= RequiredDot || (bAllowGraceAngle && OutDot >= GraceRequiredDot);
+	}
 }
 
 USyncAbilityMotionComponent::USyncAbilityMotionComponent()
@@ -113,14 +185,15 @@ void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 	if (bSettingsChanged)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION PROBE_CONFIG Owner=%s Dist=%.1f Angle=%.1f Radius=%.1f HalfHeight=%.1f Grace=%.2f AngleGrace=%.1f"),
+			TEXT("SAM_COLLISION PROBE_CONFIG Owner=%s Dist=%.1f Angle=%.1f Radius=%.1f HalfHeight=%.1f Grace=%.2f AngleGrace=%.1f ContactPadding=%.1f"),
 			*GetNameSafe(Character),
 			ClampedProbeDistance,
 			ClampedForwardAngle,
 			OwnerCapsule->GetUnscaledCapsuleRadius(),
 			OwnerCapsule->GetUnscaledCapsuleHalfHeight(),
 			SyncAbilityMotionCollisionProbe::LostOverlapGraceSeconds,
-			SyncAbilityMotionCollisionProbe::AngleReleaseGraceDegrees);
+			SyncAbilityMotionCollisionProbe::AngleReleaseGraceDegrees,
+			SyncAbilityMotionCollisionProbe::ForwardContactPadding);
 
 		RootMotionCollisionProbeComponent->UpdateComponentToWorld();
 		RootMotionCollisionProbeComponent->UpdateOverlaps();
@@ -214,9 +287,35 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 			bLastLoggedRootMotionCollisionBlocked &&
 			Dot >= GraceRequiredDot;
 
-		if (bStrictAngleBlock || bAngleGraceBlock)
+		float ContactAngle = 0.f;
+		float ContactDot = -1.f;
+		const bool bContactBlock = SyncAbilityMotionCollisionProbe::IsForwardContactBlocking(
+			Character,
+			OtherCharacter,
+			RootMotionCollisionProbeDistance,
+			RequiredDot,
+			GraceRequiredDot,
+			bLastLoggedRootMotionCollisionBlocked,
+			ContactAngle,
+			ContactDot);
+
+		if (bStrictAngleBlock || bAngleGraceBlock || bContactBlock)
 		{
-			if (!bLastLoggedRootMotionCollisionBlocked)
+			if (bContactBlock && !bStrictAngleBlock && !bAngleGraceBlock)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("SAM_COLLISION BLOCKED_CONTACT Owner=%s Other=%s CenterAngle=%.1f ContactAngle=%.1f MaxAngle=%.1f Dot=%.3f ContactDot=%.3f RequiredDot=%.3f CachedOverlaps=%d"),
+					*GetNameSafe(Character),
+					*GetNameSafe(OtherCharacter),
+					Angle,
+					ContactAngle,
+					RootMotionCollisionForwardAngleDegrees,
+					Dot,
+					ContactDot,
+					RequiredDot,
+					RootMotionCollisionCharacters.Num());
+			}
+			else if (!bLastLoggedRootMotionCollisionBlocked)
 			{
 				UE_LOG(LogTemp, Warning,
 					TEXT("SAM_COLLISION BLOCKED Owner=%s Other=%s Angle=%.1f MaxAngle=%.1f Dot=%.3f RequiredDot=%.3f CachedOverlaps=%d"),
@@ -545,13 +644,6 @@ bool USyncAbilityMotionComponent::HasFallbackRootMotionBlockingCharacterCollisio
 		return false;
 	}
 
-	FVector Forward = Character->GetActorForwardVector();
-	Forward.Z = 0.f;
-	if (!Forward.Normalize())
-	{
-		return false;
-	}
-
 	for (const FOverlapResult& Overlap : Overlaps)
 	{
 		ACharacter* OtherCharacter = Cast<ACharacter>(Overlap.GetActor());
@@ -561,21 +653,19 @@ bool USyncAbilityMotionComponent::HasFallbackRootMotionBlockingCharacterCollisio
 			continue;
 		}
 
-		FVector ToOther = OtherCharacter->GetActorLocation() - Character->GetActorLocation();
-		ToOther.Z = 0.f;
-		if (!ToOther.Normalize())
+		if (!SyncAbilityMotionCollisionProbe::IsForwardContactBlocking(
+			Character,
+			OtherCharacter,
+			RootMotionCollisionProbeDistance,
+			RequiredDot,
+			GraceRequiredDot,
+			true,
+			OutAngle,
+			OutDot))
 		{
 			continue;
 		}
 
-		const float Dot = FVector::DotProduct(Forward, ToOther);
-		if (Dot < GraceRequiredDot)
-		{
-			continue;
-		}
-
-		OutDot = Dot;
-		OutAngle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(Dot, -1.f, 1.f)));
 		OutCharacter = OtherCharacter;
 		return true;
 	}
