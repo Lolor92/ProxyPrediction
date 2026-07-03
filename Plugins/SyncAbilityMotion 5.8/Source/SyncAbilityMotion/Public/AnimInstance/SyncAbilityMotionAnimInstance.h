@@ -69,7 +69,6 @@ protected:
 
 	bool bHasSavedMovementCorrectionFlags = false;
 	bool bSavedIgnoreClientMovementErrorChecksAndCorrection = false;
-	bool bSavedClientIgnoreMovementCorrection = false;
 
 	UPROPERTY(BlueprintReadOnly, Category="Anim|Movement", meta=(AllowPrivateAccess="true"))
 	float GroundSpeed = 0.f;
