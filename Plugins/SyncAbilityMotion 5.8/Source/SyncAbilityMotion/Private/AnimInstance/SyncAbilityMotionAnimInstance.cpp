@@ -82,6 +82,7 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 		LastTrackedAbilityActivationSequenceId = 0;
 		LastTrackedMontage = nullptr;
 		bReleasedRootMotionThisMontage = false;
+		bRootMotionCollisionPauseHeldUntilRelease = false;
 		SyncMotion->ClearRootMotionCollisionProbe();
 		SyncMotion->ResetAbilityMotionState();
 		return;
@@ -94,27 +95,17 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 		|| CurrentActivationSequenceId != LastTrackedAbilityActivationSequenceId
 		|| CurrentMontage != LastTrackedMontage)
 	{
+		SyncMotion->SetServerMovementCorrectionIgnoreForAbility(false);
 		RestoreAbilityMovementCorrectionOverride();
 
-		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION MONTAGE_TRACK Owner=%s Ability=%s Montage=%s Seq=%u ProbeDist=%.1f FallbackDist=%.1f Angle=%.1f IgnoreCorrections=%d PrevRootMotion=%d PrevIgnoreError=%d"),
-			*GetNameSafe(Character),
-			*GetNameSafe(Ability),
-			*GetNameSafe(CurrentMontage),
-			CurrentActivationSequenceId,
-			Ability->GetRootMotionCharacterCollisionProbeDistance(),
-			Ability->GetRootMotionCharacterCollisionFallbackProbeDistance(),
-			Ability->GetRootMotionCharacterCollisionForwardAngleDegrees(),
-			Ability->ShouldIgnoreMovementCorrectionsDuringAbility() ? 1 : 0,
-			SyncMotion->GetAbilityMotionState().bRootMotionEnabled ? 1 : 0,
-			CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0);
-
+		
 		SyncMotion->ClearRootMotionCollisionProbe();
 
 		LastTrackedAbility = Ability;
 		LastTrackedAbilityActivationSequenceId = CurrentActivationSequenceId;
 		LastTrackedMontage = CurrentMontage;
 		bReleasedRootMotionThisMontage = false;
+		bRootMotionCollisionPauseHeldUntilRelease = false;
 	}
 
 	ApplyAbilityMovementCorrectionOverride(Ability);
@@ -132,12 +123,7 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 	{
 		if (!bReleasedRootMotionThisMontage)
 		{
-			UE_LOG(LogTemp, Warning,
-				TEXT("SAM_COLLISION ROOT_RELEASED_BY_INPUT Owner=%s Percent=%.1f UnlockPercent=%.1f"),
-				*GetNameSafe(Character),
-				Percent,
-				Ability->MontageLockout.MontageProgressBeforeInterrupt);
-		}
+					}
 
 		bReleasedRootMotionThisMontage = true;
 	}
@@ -152,9 +138,31 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 		Ability->GetRootMotionCharacterCollisionForwardAngleDegrees(),
 		Ability->GetRootMotionCharacterCollisionFallbackProbeDistance());
 
-	const bool bPausedByCharacterCollision =
+	const bool bRawPausedByCharacterCollision =
 		bShouldWatchCharacterCollision &&
 		SyncMotion->HasRootMotionBlockingCharacterCollision();
+
+	if (Ability->ShouldHoldRootMotionCollisionPauseUntilRelease())
+	{
+		if (bRawPausedByCharacterCollision && !bReachedReleasePoint)
+		{
+			bRootMotionCollisionPauseHeldUntilRelease = true;
+		}
+
+		if (bReachedReleasePoint)
+		{
+			bRootMotionCollisionPauseHeldUntilRelease = false;
+		}
+	}
+	else
+	{
+		bRootMotionCollisionPauseHeldUntilRelease = false;
+	}
+
+	const bool bPausedByCharacterCollision =
+		Ability->ShouldHoldRootMotionCollisionPauseUntilRelease()
+			? (!bReachedReleasePoint && (bRawPausedByCharacterCollision || bRootMotionCollisionPauseHeldUntilRelease))
+			: bRawPausedByCharacterCollision;
 
 	if (!bShouldWatchCharacterCollision)
 	{
@@ -176,21 +184,7 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 
 	if (SyncMotion->GetAbilityMotionState() == DesiredState) return;
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("SAM_COLLISION STATE_CHANGE Owner=%s Percent=%.1f RootMotion=%d PausedByCollision=%d Released=%d WatchCollision=%d ReachedRelease=%d HasInput=%d BlendMontage=%d LowerBody=%d SuppressInput=%d IgnoreError=%d"),
-		*GetNameSafe(Character),
-		Percent,
-		DesiredState.bRootMotionEnabled ? 1 : 0,
-		bPausedByCharacterCollision ? 1 : 0,
-		bReleasedRootMotionThisMontage ? 1 : 0,
-		bShouldWatchCharacterCollision ? 1 : 0,
-		bReachedReleasePoint ? 1 : 0,
-		bHasMovementInput ? 1 : 0,
-		DesiredState.bCanBlendMontage ? 1 : 0,
-		DesiredState.bShouldBlendLowerBody ? 1 : 0,
-		DesiredState.bMovementInputSuppressed ? 1 : 0,
-		CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0);
-
+	
 	SyncMotion->SetAbilityMotionState(DesiredState);
 }
 
@@ -263,10 +257,6 @@ if (!bHasSavedMovementCorrectionFlags)
 bSavedIgnoreClientMovementErrorChecksAndCorrection = CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection;
 bHasSavedMovementCorrectionFlags = true;
 
-UE_LOG(LogTemp, Warning,
-TEXT("SAM_COLLISION CORRECTION_IGNORE_BEGIN Owner=%s SavedIgnoreError=%d"),
-*GetNameSafe(Character),
-bSavedIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0);
 }
 
 CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = true;
@@ -281,10 +271,6 @@ return;
 
 CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bSavedIgnoreClientMovementErrorChecksAndCorrection;
 
-UE_LOG(LogTemp, Warning,
-TEXT("SAM_COLLISION CORRECTION_IGNORE_END Owner=%s RestoredIgnoreError=%d"),
-*GetNameSafe(Character),
-bSavedIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0);
 
 bHasSavedMovementCorrectionFlags = false;
 }

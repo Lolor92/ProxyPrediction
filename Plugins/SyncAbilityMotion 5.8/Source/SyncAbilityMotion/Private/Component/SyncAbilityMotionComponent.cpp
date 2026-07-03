@@ -198,11 +198,7 @@ void USyncAbilityMotionComponent::ApplyServerMovementCorrectionIgnoreForAbility(
 			bSavedServerIgnoreClientMovementErrorChecksAndCorrection = MoveComp->bIgnoreClientMovementErrorChecksAndCorrection;
 			bHasSavedServerMovementCorrectionIgnore = true;
 
-			UE_LOG(LogTemp, Warning,
-				TEXT("SAM_COLLISION SERVER_CORRECTION_IGNORE_BEGIN Owner=%s SavedIgnoreError=%d"),
-				*GetNameSafe(Character),
-				bSavedServerIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0);
-		}
+					}
 
 		MoveComp->bIgnoreClientMovementErrorChecksAndCorrection = true;
 		return;
@@ -215,11 +211,7 @@ void USyncAbilityMotionComponent::ApplyServerMovementCorrectionIgnoreForAbility(
 
 	MoveComp->bIgnoreClientMovementErrorChecksAndCorrection = bSavedServerIgnoreClientMovementErrorChecksAndCorrection;
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("SAM_COLLISION SERVER_CORRECTION_IGNORE_END Owner=%s RestoredIgnoreError=%d"),
-		*GetNameSafe(Character),
-		bSavedServerIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0);
-
+	
 	bHasSavedServerMovementCorrectionIgnore = false;
 }
 
@@ -274,19 +266,7 @@ void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 
 	if (bSettingsChanged)
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION PROBE_CONFIG Owner=%s Dist=%.1f FallbackDist=%.1f Angle=%.1f Radius=%.1f HalfHeight=%.1f Grace=%.2f AngleGrace=%.1f ContactPadding=%.1f SideScrapeTol=%.1f"),
-			*GetNameSafe(Character),
-			ClampedProbeDistance,
-			ClampedFallbackProbeDistance,
-			ClampedForwardAngle,
-			OwnerCapsule->GetUnscaledCapsuleRadius(),
-			OwnerCapsule->GetUnscaledCapsuleHalfHeight(),
-			SyncAbilityMotionCollisionProbe::LostOverlapGraceSeconds,
-			SyncAbilityMotionCollisionProbe::AngleReleaseGraceDegrees,
-			SyncAbilityMotionCollisionProbe::ForwardContactPadding,
-			SyncAbilityMotionCollisionProbe::ContactCenterAngleToleranceDegrees);
-
+		
 		RootMotionCollisionProbeComponent->UpdateComponentToWorld();
 		RootMotionCollisionProbeComponent->UpdateOverlaps();
 		RebuildRootMotionCollisionOverlaps();
@@ -297,12 +277,7 @@ void USyncAbilityMotionComponent::ClearRootMotionCollisionProbe()
 {
 	if (bRootMotionCollisionProbeEnabled)
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION PROBE_CLEAR Owner=%s CachedOverlaps=%d LastBlocked=%d"),
-			*GetNameSafe(GetOwner()),
-			RootMotionCollisionCharacters.Num(),
-			bLastLoggedRootMotionCollisionBlocked ? 1 : 0);
-	}
+			}
 
 	bRootMotionCollisionProbeEnabled = false;
 	bLastLoggedRootMotionCollisionBlocked = false;
@@ -343,12 +318,7 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		UCapsuleComponent* OtherCapsule = OtherCharacter ? OtherCharacter->GetCapsuleComponent() : nullptr;
 		if (!OtherCharacter || !OtherCapsule || !RootMotionCollisionProbeComponent->IsOverlappingComponent(OtherCapsule))
 		{
-			UE_LOG(LogTemp, Warning,
-				TEXT("SAM_COLLISION OVERLAP_STALE Owner=%s Other=%s OtherCapsule=%s"),
-				*GetNameSafe(GetOwner()),
-				*GetNameSafe(OtherCharacter),
-				*GetNameSafe(OtherCapsule));
-
+			
 			RootMotionCollisionCharacters.RemoveAtSwap(Index, 1, EAllowShrinking::No);
 			continue;
 		}
@@ -397,44 +367,13 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		{
 			if (bContactBlock && !bStrictAngleBlock && !bAngleGraceBlock)
 			{
-				UE_LOG(LogTemp, Warning,
-					TEXT("SAM_COLLISION BLOCKED_CONTACT Owner=%s Other=%s CenterAngle=%.1f ContactAngle=%.1f MaxAngle=%.1f Dot=%.3f ContactDot=%.3f RequiredDot=%.3f CachedOverlaps=%d"),
-					*GetNameSafe(Character),
-					*GetNameSafe(OtherCharacter),
-					Angle,
-					ContactAngle,
-					RootMotionCollisionForwardAngleDegrees,
-					Dot,
-					ContactDot,
-					RequiredDot,
-					RootMotionCollisionCharacters.Num());
-			}
+							}
 			else if (!bLastLoggedRootMotionCollisionBlocked)
 			{
-				UE_LOG(LogTemp, Warning,
-					TEXT("SAM_COLLISION BLOCKED Owner=%s Other=%s Angle=%.1f MaxAngle=%.1f Dot=%.3f RequiredDot=%.3f CachedOverlaps=%d"),
-					*GetNameSafe(Character),
-					*GetNameSafe(OtherCharacter),
-					Angle,
-					RootMotionCollisionForwardAngleDegrees,
-					Dot,
-					RequiredDot,
-					RootMotionCollisionCharacters.Num());
-			}
+							}
 			else if (bAngleGraceBlock)
 			{
-				UE_LOG(LogTemp, Warning,
-					TEXT("SAM_COLLISION BLOCKED_ANGLE_GRACE Owner=%s Other=%s Angle=%.1f MaxAngle=%.1f GraceAngle=%.1f Dot=%.3f RequiredDot=%.3f GraceRequiredDot=%.3f CachedOverlaps=%d"),
-					*GetNameSafe(Character),
-					*GetNameSafe(OtherCharacter),
-					Angle,
-					RootMotionCollisionForwardAngleDegrees,
-					GraceAngleDegrees,
-					Dot,
-					RequiredDot,
-					GraceRequiredDot,
-					RootMotionCollisionCharacters.Num());
-			}
+							}
 
 			bLastLoggedRootMotionCollisionBlocked = true;
 			LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
@@ -457,13 +396,7 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 
 	if (bLostOverlapGraceBlock)
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION BLOCKED_LOST_OVERLAP_GRACE Owner=%s SecondsSinceBlock=%.3f Grace=%.3f CachedOverlaps=%d"),
-			*GetNameSafe(GetOwner()),
-			SecondsSinceBlock,
-			SyncAbilityMotionCollisionProbe::LostOverlapGraceSeconds,
-			RootMotionCollisionCharacters.Num());
-		return true;
+				return true;
 	}
 
 	float FallbackAngle = 0.f;
@@ -472,39 +405,14 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 	if (bLastLoggedRootMotionCollisionBlocked &&
 		HasFallbackRootMotionBlockingCharacterCollision(RequiredDot, GraceRequiredDot, FallbackAngle, FallbackDot, FallbackCharacter))
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION BLOCKED_FALLBACK Owner=%s Other=%s ContactAngle=%.1f MaxAngle=%.1f GraceAngle=%.1f ContactDot=%.3f RequiredDot=%.3f GraceRequiredDot=%.3f CachedOverlaps=%d ProbeDist=%.1f FallbackDist=%.1f"),
-			*GetNameSafe(GetOwner()),
-			*GetNameSafe(FallbackCharacter),
-			FallbackAngle,
-			RootMotionCollisionForwardAngleDegrees,
-			GraceAngleDegrees,
-			FallbackDot,
-			RequiredDot,
-			GraceRequiredDot,
-			RootMotionCollisionCharacters.Num(),
-			RootMotionCollisionProbeDistance,
-			RootMotionCollisionFallbackProbeDistance);
-		bLastLoggedRootMotionCollisionBlocked = true;
+				bLastLoggedRootMotionCollisionBlocked = true;
 		LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
 		return true;
 	}
 
 	if (bLastLoggedRootMotionCollisionBlocked || BestRejectedCharacter)
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION UNBLOCKED Owner=%s Reason=%s BestOther=%s BestAngle=%.1f MaxAngle=%.1f GraceAngle=%.1f BestDot=%.3f RequiredDot=%.3f GraceRequiredDot=%.3f CachedOverlaps=%d"),
-			*GetNameSafe(GetOwner()),
-			BestRejectedCharacter ? TEXT("ANGLE_REJECT") : TEXT("NO_CAPSULE_OVERLAP"),
-			*GetNameSafe(BestRejectedCharacter),
-			BestRejectedAngle,
-			RootMotionCollisionForwardAngleDegrees,
-			GraceAngleDegrees,
-			BestRejectedDot,
-			RequiredDot,
-			GraceRequiredDot,
-			RootMotionCollisionCharacters.Num());
-	}
+			}
 
 	bLastLoggedRootMotionCollisionBlocked = false;
 	return false;
@@ -541,14 +449,7 @@ void USyncAbilityMotionComponent::OnRootMotionCollisionProbeBeginOverlap(
 	const UCapsuleComponent* OtherCapsule = OtherCharacter ? OtherCharacter->GetCapsuleComponent() : nullptr;
 	const bool bIsCharacterCapsule = OtherCapsule && OtherComp == OtherCapsule;
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("SAM_COLLISION OVERLAP_BEGIN Owner=%s Other=%s OtherComp=%s IsCapsule=%d FromSweep=%d"),
-		*GetNameSafe(GetOwner()),
-		*GetNameSafe(OtherActor),
-		*GetNameSafe(OtherComp),
-		bIsCharacterCapsule ? 1 : 0,
-		bFromSweep ? 1 : 0);
-
+	
 	if (!bIsCharacterCapsule)
 	{
 		return;
@@ -570,14 +471,7 @@ void USyncAbilityMotionComponent::OnRootMotionCollisionProbeEndOverlap(
 		RootMotionCollisionProbeComponent && OtherCapsule &&
 		RootMotionCollisionProbeComponent->IsOverlappingComponent(OtherCapsule);
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("SAM_COLLISION OVERLAP_END Owner=%s Other=%s OtherComp=%s IsCapsule=%d StillOverlappingCapsule=%d"),
-		*GetNameSafe(GetOwner()),
-		*GetNameSafe(OtherActor),
-		*GetNameSafe(OtherComp),
-		bIsCharacterCapsule ? 1 : 0,
-		bStillOverlappingCapsule ? 1 : 0);
-
+	
 	if (!bIsCharacterCapsule || bStillOverlappingCapsule)
 	{
 		return;
@@ -668,11 +562,7 @@ void USyncAbilityMotionComponent::RebuildRootMotionCollisionOverlaps()
 	TArray<UPrimitiveComponent*> OverlappingComponents;
 	RootMotionCollisionProbeComponent->GetOverlappingComponents(OverlappingComponents);
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("SAM_COLLISION OVERLAP_REBUILD Owner=%s ComponentCount=%d"),
-		*GetNameSafe(GetOwner()),
-		OverlappingComponents.Num());
-
+	
 	for (UPrimitiveComponent* OverlappingComponent : OverlappingComponents)
 	{
 		ACharacter* OtherCharacter = Cast<ACharacter>(OverlappingComponent ? OverlappingComponent->GetOwner() : nullptr);
@@ -796,12 +686,7 @@ void USyncAbilityMotionComponent::AddRootMotionCollisionCharacter(ACharacter* Ot
 
 	RootMotionCollisionCharacters.Add(OtherCharacter);
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("SAM_COLLISION CACHE_ADD Owner=%s Other=%s CachedOverlaps=%d"),
-		*GetNameSafe(GetOwner()),
-		*GetNameSafe(OtherCharacter),
-		RootMotionCollisionCharacters.Num());
-}
+	}
 
 void USyncAbilityMotionComponent::RemoveRootMotionCollisionCharacter(ACharacter* OtherCharacter)
 {
@@ -815,9 +700,4 @@ void USyncAbilityMotionComponent::RemoveRootMotionCollisionCharacter(ACharacter*
 		}
 	}
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("SAM_COLLISION CACHE_REMOVE Owner=%s Other=%s CachedOverlaps=%d"),
-		*GetNameSafe(GetOwner()),
-		*GetNameSafe(OtherCharacter),
-		RootMotionCollisionCharacters.Num());
-}
+	}
