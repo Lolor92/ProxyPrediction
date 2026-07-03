@@ -81,6 +81,7 @@ private:
 	UPROPERTY(Transient)
 	TArray<TWeakObjectPtr<ACharacter>> RootMotionCollisionCharacters;
 
+
 	bool bRootMotionCollisionProbeEnabled = false;
 	float RootMotionCollisionProbeDistance = 0.f;
 	float RootMotionCollisionFallbackProbeDistance = 0.f;

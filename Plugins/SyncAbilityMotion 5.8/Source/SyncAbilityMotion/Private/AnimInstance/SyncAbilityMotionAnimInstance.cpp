@@ -108,6 +108,8 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 			SyncMotion->GetAbilityMotionState().bRootMotionEnabled ? 1 : 0,
 			CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0);
 
+		SyncMotion->ClearRootMotionCollisionProbe();
+
 		LastTrackedAbility = Ability;
 		LastTrackedAbilityActivationSequenceId = CurrentActivationSequenceId;
 		LastTrackedMontage = CurrentMontage;
