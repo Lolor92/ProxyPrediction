@@ -68,7 +68,7 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Root Motion", meta=(EditCondition="bPauseRootMotionOnCharacterCollision",
 		ClampMin="0.0", UIMin="0.0", Units="cm"))
-	float RootMotionCharacterCollisionFallbackProbeDistance = 40.f;
+	float RootMotionCharacterCollisionFallbackProbeDistance = 100.f;
 
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Root Motion")
 	bool bIgnoreMovementCorrectionsDuringAbility = false;
