@@ -272,6 +272,28 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		return true;
 	}
 
+	float FallbackAngle = 0.f;
+	float FallbackDot = -1.f;
+	ACharacter* FallbackCharacter = nullptr;
+	if (bLastLoggedRootMotionCollisionBlocked &&
+		HasFallbackRootMotionBlockingCharacterCollision(RequiredDot, GraceRequiredDot, FallbackAngle, FallbackDot, FallbackCharacter))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SAM_COLLISION BLOCKED_FALLBACK Owner=%s Other=%s Angle=%.1f MaxAngle=%.1f GraceAngle=%.1f Dot=%.3f RequiredDot=%.3f GraceRequiredDot=%.3f CachedOverlaps=%d"),
+			*GetNameSafe(GetOwner()),
+			*GetNameSafe(FallbackCharacter),
+			FallbackAngle,
+			RootMotionCollisionForwardAngleDegrees,
+			GraceAngleDegrees,
+			FallbackDot,
+			RequiredDot,
+			GraceRequiredDot,
+			RootMotionCollisionCharacters.Num());
+		bLastLoggedRootMotionCollisionBlocked = true;
+		LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
+		return true;
+	}
+
 	if (bLastLoggedRootMotionCollisionBlocked || BestRejectedCharacter)
 	{
 		UE_LOG(LogTemp, Warning,
@@ -481,6 +503,83 @@ bool USyncAbilityMotionComponent::IsRootMotionCollisionCharacterInFront(const AC
 
 	const float MinForwardDot = FMath::Cos(FMath::DegreesToRadians(RootMotionCollisionForwardAngleDegrees));
 	return FVector::DotProduct(Forward, ToOther) >= MinForwardDot;
+}
+
+bool USyncAbilityMotionComponent::HasFallbackRootMotionBlockingCharacterCollision(
+	float RequiredDot,
+	float GraceRequiredDot,
+	float& OutAngle,
+	float& OutDot,
+	ACharacter*& OutCharacter) const
+{
+	OutAngle = 0.f;
+	OutDot = -1.f;
+	OutCharacter = nullptr;
+
+	const ACharacter* Character = GetOwnerCharacter();
+	const UWorld* World = GetWorld();
+	if (!Character || !World || !RootMotionCollisionProbeComponent)
+	{
+		return false;
+	}
+
+	TArray<FOverlapResult> Overlaps;
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SyncAbilityMotionRootMotionFallback), false, Character);
+	QueryParams.AddIgnoredActor(Character);
+
+	const FCollisionShape ProbeShape = FCollisionShape::MakeCapsule(
+		RootMotionCollisionProbeComponent->GetUnscaledCapsuleRadius(),
+		RootMotionCollisionProbeComponent->GetUnscaledCapsuleHalfHeight());
+
+	const bool bFoundAnyOverlap = World->OverlapMultiByChannel(
+		Overlaps,
+		RootMotionCollisionProbeComponent->GetComponentLocation(),
+		RootMotionCollisionProbeComponent->GetComponentQuat(),
+		ECC_Pawn,
+		ProbeShape,
+		QueryParams);
+
+	if (!bFoundAnyOverlap)
+	{
+		return false;
+	}
+
+	FVector Forward = Character->GetActorForwardVector();
+	Forward.Z = 0.f;
+	if (!Forward.Normalize())
+	{
+		return false;
+	}
+
+	for (const FOverlapResult& Overlap : Overlaps)
+	{
+		ACharacter* OtherCharacter = Cast<ACharacter>(Overlap.GetActor());
+		UCapsuleComponent* OtherCapsule = OtherCharacter ? OtherCharacter->GetCapsuleComponent() : nullptr;
+		if (!OtherCharacter || OtherCharacter == Character || !OtherCapsule || Overlap.GetComponent() != OtherCapsule)
+		{
+			continue;
+		}
+
+		FVector ToOther = OtherCharacter->GetActorLocation() - Character->GetActorLocation();
+		ToOther.Z = 0.f;
+		if (!ToOther.Normalize())
+		{
+			continue;
+		}
+
+		const float Dot = FVector::DotProduct(Forward, ToOther);
+		if (Dot < GraceRequiredDot)
+		{
+			continue;
+		}
+
+		OutDot = Dot;
+		OutAngle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(Dot, -1.f, 1.f)));
+		OutCharacter = OtherCharacter;
+		return true;
+	}
+
+	return false;
 }
 
 void USyncAbilityMotionComponent::AddRootMotionCollisionCharacter(ACharacter* OtherCharacter)
