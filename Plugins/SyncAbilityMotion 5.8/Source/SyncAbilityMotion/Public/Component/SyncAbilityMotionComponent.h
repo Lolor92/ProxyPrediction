@@ -6,6 +6,9 @@
 #include "SyncAbilityMotionComponent.generated.h"
 
 class ACharacter;
+class AActor;
+class UCapsuleComponent;
+class UPrimitiveComponent;
 
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class SYNCABILITYMOTION_API USyncAbilityMotionComponent : public UActorComponent
@@ -25,6 +28,10 @@ public:
 
 	const FSyncAbilityMotionState& GetAbilityMotionState() const { return AbilityMotionState; }
 
+	void ConfigureRootMotionCollisionProbe(bool bEnabled, float ProbeDistance, float ForwardAngleDegrees);
+	void ClearRootMotionCollisionProbe();
+	bool HasRootMotionBlockingCharacterCollision();
+
 protected:
 	UPROPERTY(ReplicatedUsing=OnRep_AbilityMotionState)
 	FSyncAbilityMotionState AbilityMotionState;
@@ -35,6 +42,39 @@ protected:
 	UFUNCTION()
 	void OnRep_AbilityMotionState();
 
+	UFUNCTION()
+	void OnRootMotionCollisionProbeBeginOverlap(
+		UPrimitiveComponent* OverlappedComponent,
+		AActor* OtherActor,
+		UPrimitiveComponent* OtherComp,
+		int32 OtherBodyIndex,
+		bool bFromSweep,
+		const FHitResult& SweepResult);
+
+	UFUNCTION()
+	void OnRootMotionCollisionProbeEndOverlap(
+		UPrimitiveComponent* OverlappedComponent,
+		AActor* OtherActor,
+		UPrimitiveComponent* OtherComp,
+		int32 OtherBodyIndex);
+
 	void ApplyAbilityMotionState(const FSyncAbilityMotionState& NewState);
 	ACharacter* GetOwnerCharacter() const;
+
+private:
+	void EnsureRootMotionCollisionProbe();
+	void RebuildRootMotionCollisionOverlaps();
+	bool IsRootMotionCollisionCharacterInFront(const ACharacter* OtherCharacter) const;
+	void AddRootMotionCollisionCharacter(ACharacter* OtherCharacter);
+	void RemoveRootMotionCollisionCharacter(ACharacter* OtherCharacter);
+
+	UPROPERTY(Transient)
+	TObjectPtr<UCapsuleComponent> RootMotionCollisionProbeComponent = nullptr;
+
+	UPROPERTY(Transient)
+	TArray<TWeakObjectPtr<ACharacter>> RootMotionCollisionCharacters;
+
+	bool bRootMotionCollisionProbeEnabled = false;
+	float RootMotionCollisionProbeDistance = 0.f;
+	float RootMotionCollisionForwardAngleDegrees = 0.f;
 };
