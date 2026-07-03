@@ -79,4 +79,5 @@ private:
 	float RootMotionCollisionProbeDistance = 0.f;
 	float RootMotionCollisionForwardAngleDegrees = 0.f;
 	bool bLastLoggedRootMotionCollisionBlocked = false;
+	float LastRootMotionCollisionBlockTimeSeconds = -1000.f;
 };
