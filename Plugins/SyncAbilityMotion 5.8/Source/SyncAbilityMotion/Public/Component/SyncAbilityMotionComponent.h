@@ -29,7 +29,7 @@ public:
 
 	const FSyncAbilityMotionState& GetAbilityMotionState() const { return AbilityMotionState; }
 
-	void ConfigureRootMotionCollisionProbe(bool bEnabled, float ProbeDistance, float ForwardAngleDegrees);
+	void ConfigureRootMotionCollisionProbe(bool bEnabled, float ProbeDistance, float ForwardAngleDegrees, float FallbackProbeDistance);
 	void ClearRootMotionCollisionProbe();
 	bool HasRootMotionBlockingCharacterCollision();
 
@@ -83,6 +83,7 @@ private:
 
 	bool bRootMotionCollisionProbeEnabled = false;
 	float RootMotionCollisionProbeDistance = 0.f;
+	float RootMotionCollisionFallbackProbeDistance = 0.f;
 	float RootMotionCollisionForwardAngleDegrees = 0.f;
 	bool bLastLoggedRootMotionCollisionBlocked = false;
 	float LastRootMotionCollisionBlockTimeSeconds = -1000.f;
