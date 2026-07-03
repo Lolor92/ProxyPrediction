@@ -92,8 +92,8 @@ void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 	RootMotionCollisionForwardAngleDegrees = ClampedForwardAngle;
 
 	RootMotionCollisionProbeComponent->SetCapsuleSize(
-		OwnerCapsule->GetScaledCapsuleRadius(),
-		OwnerCapsule->GetScaledCapsuleHalfHeight(),
+		OwnerCapsule->GetUnscaledCapsuleRadius(),
+		OwnerCapsule->GetUnscaledCapsuleHalfHeight(),
 		false);
 	RootMotionCollisionProbeComponent->SetRelativeLocation(FVector(ClampedProbeDistance, 0.f, 0.f));
 
