@@ -93,11 +93,16 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 		|| CurrentMontage != LastTrackedMontage)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION MONTAGE_TRACK Owner=%s Ability=%s Montage=%s Seq=%u"),
+			TEXT("SAM_COLLISION MONTAGE_TRACK Owner=%s Ability=%s Montage=%s Seq=%u ProbeDist=%.1f FallbackDist=%.1f Angle=%.1f PrevRootMotion=%d PrevCachedBlocked=%d"),
 			*GetNameSafe(Character),
 			*GetNameSafe(Ability),
 			*GetNameSafe(CurrentMontage),
-			CurrentActivationSequenceId);
+			CurrentActivationSequenceId,
+			Ability->GetRootMotionCharacterCollisionProbeDistance(),
+			Ability->GetRootMotionCharacterCollisionFallbackProbeDistance(),
+			Ability->GetRootMotionCharacterCollisionForwardAngleDegrees(),
+			SyncMotion->GetAbilityMotionState().bRootMotionEnabled ? 1 : 0,
+			Ability->IsRootMotionCharacterCollisionPauseEnabled() ? 1 : 0);
 
 		LastTrackedAbility = Ability;
 		LastTrackedAbilityActivationSequenceId = CurrentActivationSequenceId;
@@ -134,7 +139,8 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 	SyncMotion->ConfigureRootMotionCollisionProbe(
 		bShouldWatchCharacterCollision,
 		Ability->GetRootMotionCharacterCollisionProbeDistance(),
-		Ability->GetRootMotionCharacterCollisionForwardAngleDegrees());
+		Ability->GetRootMotionCharacterCollisionForwardAngleDegrees(),
+		Ability->GetRootMotionCharacterCollisionFallbackProbeDistance());
 
 	const bool bPausedByCharacterCollision =
 		bShouldWatchCharacterCollision &&
