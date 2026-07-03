@@ -39,6 +39,9 @@ public:
 	float GetComboWindowDuration() const { return ComboWindowDuration; }
 	bool IsComboWindowOpen() const { return bComboWindowOpen; }
 	uint32 GetActivationSequenceId() const { return ActivationSequenceId; }
+	bool IsRootMotionCharacterCollisionPauseEnabled() const { return bPauseRootMotionOnCharacterCollision; }
+	float GetRootMotionCharacterCollisionForwardAngleDegrees() const { return RootMotionCharacterCollisionForwardAngleDegrees; }
+	float GetRootMotionCharacterCollisionProbeDistance() const { return RootMotionCharacterCollisionProbeDistance; }
 	bool ShouldPauseRootMotionForCharacterCollision(const ACharacter* Character) const;
 
 protected:
