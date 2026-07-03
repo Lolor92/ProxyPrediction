@@ -10,7 +10,7 @@
 
 namespace SyncAbilityMotionCollisionProbe
 {
-	constexpr float LostOverlapGraceSeconds = 0.08f;
+	constexpr float LostOverlapGraceSeconds = 0.12f;
 	constexpr float AngleReleaseGraceDegrees = 5.f;
 }
 

@@ -62,7 +62,7 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Root Motion", meta=(EditCondition="bPauseRootMotionOnCharacterCollision",
 		ClampMin="0.0", UIMin="0.0", Units="cm"))
-	float RootMotionCharacterCollisionProbeDistance = 25.f;
+	float RootMotionCharacterCollisionProbeDistance = 40.f;
 
 	UFUNCTION(BlueprintCallable, Category="Ability|Combo")
 	void OpenComboWindow();
