@@ -154,12 +154,14 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 	for (int32 Index = RootMotionCollisionCharacters.Num() - 1; Index >= 0; --Index)
 	{
 		ACharacter* OtherCharacter = RootMotionCollisionCharacters[Index].Get();
-		if (!OtherCharacter || !RootMotionCollisionProbeComponent->IsOverlappingActor(OtherCharacter))
+		UCapsuleComponent* OtherCapsule = OtherCharacter ? OtherCharacter->GetCapsuleComponent() : nullptr;
+		if (!OtherCharacter || !OtherCapsule || !RootMotionCollisionProbeComponent->IsOverlappingComponent(OtherCapsule))
 		{
 			UE_LOG(LogTemp, Warning,
-				TEXT("SAM_COLLISION OVERLAP_STALE Owner=%s Other=%s"),
+				TEXT("SAM_COLLISION OVERLAP_STALE Owner=%s Other=%s OtherCapsule=%s"),
 				*GetNameSafe(GetOwner()),
-				*GetNameSafe(OtherCharacter));
+				*GetNameSafe(OtherCharacter),
+				*GetNameSafe(OtherCapsule));
 
 			RootMotionCollisionCharacters.RemoveAtSwap(Index, 1, EAllowShrinking::No);
 			continue;
@@ -219,7 +221,7 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		UE_LOG(LogTemp, Warning,
 			TEXT("SAM_COLLISION UNBLOCKED Owner=%s Reason=%s BestOther=%s BestAngle=%.1f MaxAngle=%.1f BestDot=%.3f RequiredDot=%.3f CachedOverlaps=%d"),
 			*GetNameSafe(GetOwner()),
-			BestRejectedCharacter ? TEXT("ANGLE_REJECT") : TEXT("NO_OVERLAP"),
+			BestRejectedCharacter ? TEXT("ANGLE_REJECT") : TEXT("NO_CAPSULE_OVERLAP"),
 			*GetNameSafe(BestRejectedCharacter),
 			BestRejectedAngle,
 			RootMotionCollisionForwardAngleDegrees,
@@ -259,14 +261,24 @@ void USyncAbilityMotionComponent::OnRootMotionCollisionProbeBeginOverlap(
 	bool bFromSweep,
 	const FHitResult& SweepResult)
 {
+	ACharacter* OtherCharacter = Cast<ACharacter>(OtherActor);
+	const UCapsuleComponent* OtherCapsule = OtherCharacter ? OtherCharacter->GetCapsuleComponent() : nullptr;
+	const bool bIsCharacterCapsule = OtherCapsule && OtherComp == OtherCapsule;
+
 	UE_LOG(LogTemp, Warning,
-		TEXT("SAM_COLLISION OVERLAP_BEGIN Owner=%s Other=%s OtherComp=%s FromSweep=%d"),
+		TEXT("SAM_COLLISION OVERLAP_BEGIN Owner=%s Other=%s OtherComp=%s IsCapsule=%d FromSweep=%d"),
 		*GetNameSafe(GetOwner()),
 		*GetNameSafe(OtherActor),
 		*GetNameSafe(OtherComp),
+		bIsCharacterCapsule ? 1 : 0,
 		bFromSweep ? 1 : 0);
 
-	AddRootMotionCollisionCharacter(Cast<ACharacter>(OtherActor));
+	if (!bIsCharacterCapsule)
+	{
+		return;
+	}
+
+	AddRootMotionCollisionCharacter(OtherCharacter);
 }
 
 void USyncAbilityMotionComponent::OnRootMotionCollisionProbeEndOverlap(
@@ -275,16 +287,22 @@ void USyncAbilityMotionComponent::OnRootMotionCollisionProbeEndOverlap(
 	UPrimitiveComponent* OtherComp,
 	int32 OtherBodyIndex)
 {
+	ACharacter* OtherCharacter = Cast<ACharacter>(OtherActor);
+	UCapsuleComponent* OtherCapsule = OtherCharacter ? OtherCharacter->GetCapsuleComponent() : nullptr;
+	const bool bIsCharacterCapsule = OtherCapsule && OtherComp == OtherCapsule;
+	const bool bStillOverlappingCapsule =
+		RootMotionCollisionProbeComponent && OtherCapsule &&
+		RootMotionCollisionProbeComponent->IsOverlappingComponent(OtherCapsule);
+
 	UE_LOG(LogTemp, Warning,
-		TEXT("SAM_COLLISION OVERLAP_END Owner=%s Other=%s OtherComp=%s StillOverlapping=%d"),
+		TEXT("SAM_COLLISION OVERLAP_END Owner=%s Other=%s OtherComp=%s IsCapsule=%d StillOverlappingCapsule=%d"),
 		*GetNameSafe(GetOwner()),
 		*GetNameSafe(OtherActor),
 		*GetNameSafe(OtherComp),
-		RootMotionCollisionProbeComponent && RootMotionCollisionProbeComponent->IsOverlappingActor(OtherActor) ? 1 : 0);
+		bIsCharacterCapsule ? 1 : 0,
+		bStillOverlappingCapsule ? 1 : 0);
 
-	ACharacter* OtherCharacter = Cast<ACharacter>(OtherActor);
-	if (!OtherCharacter || !RootMotionCollisionProbeComponent ||
-		RootMotionCollisionProbeComponent->IsOverlappingActor(OtherCharacter))
+	if (!bIsCharacterCapsule || bStillOverlappingCapsule)
 	{
 		return;
 	}
@@ -371,17 +389,22 @@ void USyncAbilityMotionComponent::RebuildRootMotionCollisionOverlaps()
 
 	if (!RootMotionCollisionProbeComponent) return;
 
-	TArray<AActor*> OverlappingActors;
-	RootMotionCollisionProbeComponent->GetOverlappingActors(OverlappingActors, ACharacter::StaticClass());
+	TArray<UPrimitiveComponent*> OverlappingComponents;
+	RootMotionCollisionProbeComponent->GetOverlappingComponents(OverlappingComponents);
 
 	UE_LOG(LogTemp, Warning,
-		TEXT("SAM_COLLISION OVERLAP_REBUILD Owner=%s Count=%d"),
+		TEXT("SAM_COLLISION OVERLAP_REBUILD Owner=%s ComponentCount=%d"),
 		*GetNameSafe(GetOwner()),
-		OverlappingActors.Num());
+		OverlappingComponents.Num());
 
-	for (AActor* OverlappingActor : OverlappingActors)
+	for (UPrimitiveComponent* OverlappingComponent : OverlappingComponents)
 	{
-		AddRootMotionCollisionCharacter(Cast<ACharacter>(OverlappingActor));
+		ACharacter* OtherCharacter = Cast<ACharacter>(OverlappingComponent ? OverlappingComponent->GetOwner() : nullptr);
+		const UCapsuleComponent* OtherCapsule = OtherCharacter ? OtherCharacter->GetCapsuleComponent() : nullptr;
+		if (OtherCapsule && OverlappingComponent == OtherCapsule)
+		{
+			AddRootMotionCollisionCharacter(OtherCharacter);
+		}
 	}
 }
 
