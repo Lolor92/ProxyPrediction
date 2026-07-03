@@ -66,6 +66,12 @@ private:
 	void EnsureRootMotionCollisionProbe();
 	void RebuildRootMotionCollisionOverlaps();
 	bool IsRootMotionCollisionCharacterInFront(const ACharacter* OtherCharacter) const;
+	bool HasFallbackRootMotionBlockingCharacterCollision(
+		float RequiredDot,
+		float GraceRequiredDot,
+		float& OutAngle,
+		float& OutDot,
+		ACharacter*& OutCharacter) const;
 	void AddRootMotionCollisionCharacter(ACharacter* OtherCharacter);
 	void RemoveRootMotionCollisionCharacter(ACharacter* OtherCharacter);
 
