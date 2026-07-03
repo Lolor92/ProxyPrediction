@@ -28,6 +28,10 @@
 		{
 			"Name": "GameplayAbilities",
 			"Enabled": true
+		},
+		{
+			"Name": "SyncAbilityMotion",
+			"Enabled": true
 		}
 	]
 }

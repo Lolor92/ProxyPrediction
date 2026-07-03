@@ -95,22 +95,7 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 	const float SafeStepDistance = FMath::Max(MaxSweepStepDistance, 1.f);
 	const int32 NumSteps = FMath::Max(1, FMath::CeilToInt(SweepDistance / SafeStepDistance));
 	const FCollisionShape Shape = MakeCollisionShape();
-	
-	float DebugRadius = 25.f;
-	switch (CollisionShape)
-	{
-	case EPP_CollisionShape::Sphere:
-		DebugRadius = FMath::Max(SphereRadius, 1.f);
-		break;
-	case EPP_CollisionShape::Capsule:
-		DebugRadius = FMath::Max(CapsuleRadius, 1.f);
-		break;
-	case EPP_CollisionShape::Box:
-	default:
-		DebugRadius = BoxExtent.GetMax();
-		break;
-	}
-	
+
 	for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
 	{
 		const float StartAlpha = static_cast<float>(StepIndex) / static_cast<float>(NumSteps);
@@ -126,17 +111,23 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 		{
 			const float DrawTime = 0.25f;
 			const FColor DebugColor = bHit ? FColor::Red : FColor::Green;
+			const FQuat ShapeRotation = CurrentTransform.GetRotation();
 
 			switch (CollisionShape)
 			{
 			case EPP_CollisionShape::Sphere:
+				DrawDebugSphere(World, StepEnd, FMath::Max(SphereRadius, 1.f), 16, DebugColor, false, DrawTime);
 				break;
 
 			case EPP_CollisionShape::Capsule:
+				DrawDebugCapsule(World, StepEnd, FMath::Max(CapsuleHalfHeight, 1.f),
+					FMath::Max(CapsuleRadius, 1.f), ShapeRotation, DebugColor, false, DrawTime);
 				break;
 
 			case EPP_CollisionShape::Box:
 			default:
+				DrawDebugBox(World, StepEnd, BoxExtent.ComponentMax(FVector(1.f)), ShapeRotation, DebugColor,
+					false, DrawTime);
 				break;
 			}
 		}

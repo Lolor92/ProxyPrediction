@@ -1,11 +1,12 @@
 #include "Component/SyncInputComponent.h"
+#include "Ability/SyncAbilityMotionGameplayAbility.h"
+#include "AbilitySystemComponent.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "InputAction.h"
-#include "AbilitySystemComponent.h"
 #include "FunctionLibrary/SyncInputFunctionLibrary.h"
 #include "InputActionValue.h"
 
@@ -87,6 +88,8 @@ void USyncInputComponent::InstallForPawn(APawn* Pawn)
 void USyncInputComponent::UninstallFromPawn()
 {
 	RemoveMappingContextsForLocalPlayer();
+	ClearAllComboChains();
+	StopAllHeldActivationRetries();
 
 	if (APlayerController* PC = CachedPlayerController.Get())
 	{
@@ -194,6 +197,43 @@ APlayerController* USyncInputComponent::GetOwningPlayerController() const
 	return OwnerPawn ? Cast<APlayerController>(OwnerPawn->GetController()) : nullptr;
 }
 
+bool USyncInputComponent::DoesSpecMatchInputTag(const FGameplayAbilitySpec& Spec, const FGameplayTag& InputTag) const
+{
+	return Spec.GetDynamicSpecSourceTags().HasTag(InputTag) ||
+		(Spec.Ability && Spec.Ability->GetAssetTags().HasTag(InputTag));
+}
+
+bool USyncInputComponent::HasAbilityForInputTag(FGameplayTag InputTag) const
+{
+	if (!AbilitySystemComponent) return false;
+
+	for (const FGameplayAbilitySpec& Spec : AbilitySystemComponent->GetActivatableAbilities())
+	{
+		if (DoesSpecMatchInputTag(Spec, InputTag))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool USyncInputComponent::CanLocallyActivateSpec(const FGameplayAbilitySpec& Spec) const
+{
+	if (!AbilitySystemComponent || !Spec.Ability)
+	{
+		return false;
+	}
+
+	const FGameplayAbilityActorInfo* ActorInfo = AbilitySystemComponent->AbilityActorInfo.Get();
+	if (!ActorInfo)
+	{
+		return false;
+	}
+
+	return Spec.Ability->CanActivateAbility(Spec.Handle, ActorInfo);
+}
+
 void USyncInputComponent::HandleActionPressed(FGameplayTag InputTag)
 {
 	OnSyncInputPressed.Broadcast(InputTag);
@@ -204,37 +244,70 @@ void USyncInputComponent::HandleActionPressed(FGameplayTag InputTag)
 	}
 	if (!AbilitySystemComponent) return;
 
-	// 1) Activate any ability whose AbilityTags contain InputTag (server-authoritative)
-	FGameplayTagContainer ActivationTags; ActivationTags.AddTag(InputTag);
-	AbilitySystemComponent->TryActivateAbilitiesByTag(ActivationTags);
+	TryHandleAbilityPressed(InputTag, true);
 
-	// 2) Also forward "pressed" to already-active matching specs (dynamic OR ability tags)
+	if (ShouldRetryHeldActivationForInputTag(InputTag) && HasAbilityForInputTag(InputTag))
+	{
+		StartHeldActivationRetry(InputTag);
+	}
+}
+
+bool USyncInputComponent::TryHandleAbilityPressed(FGameplayTag InputTag, bool bSendInputPressedEvent)
+{
+	if (!AbilitySystemComponent) return false;
+
 	for (FGameplayAbilitySpec& Spec : AbilitySystemComponent->GetActivatableAbilities())
 	{
-		const bool bMatches = Spec.GetDynamicSpecSourceTags().HasTag(InputTag) ||
-			(Spec.Ability && Spec.Ability->GetAssetTags().HasTag(InputTag));
-		if (!bMatches) continue;
+		if (!DoesSpecMatchInputTag(Spec, InputTag)) continue;
 
-		AbilitySystemComponent->AbilitySpecInputPressed(Spec);
-
-		FPredictionKey PredictionKey;
-		if (UGameplayAbility* PrimaryInstance = Spec.GetPrimaryInstance())
+		bool bComboHandled = false;
+		if (TryActivateComboAbility(Spec, bComboHandled))
 		{
-			PredictionKey = PrimaryInstance->GetCurrentActivationInfo().GetActivationPredictionKey();
+			return true;
 		}
-		AbilitySystemComponent->InvokeReplicatedEvent(
-			EAbilityGenericReplicatedEvent::InputPressed, Spec.Handle, PredictionKey);
 
-		if (!Spec.IsActive())
+		if (bComboHandled)
 		{
-			AbilitySystemComponent->TryActivateAbility(Spec.Handle);
+			return false;
+		}
+
+		if (!CanLocallyActivateSpec(Spec))
+		{
+			continue;
+		}
+
+		const bool bActivated = AbilitySystemComponent->TryActivateAbility(Spec.Handle);
+		if (bActivated)
+		{
+			UpdateComboChain(Spec.Handle, Spec);
+		}
+
+		if (bSendInputPressedEvent)
+		{
+			AbilitySystemComponent->AbilitySpecInputPressed(Spec);
+
+			FPredictionKey PredictionKey;
+			if (UGameplayAbility* PrimaryInstance = Spec.GetPrimaryInstance())
+			{
+				PredictionKey = PrimaryInstance->GetCurrentActivationInfo().GetActivationPredictionKey();
+			}
+			AbilitySystemComponent->InvokeReplicatedEvent(
+				EAbilityGenericReplicatedEvent::InputPressed, Spec.Handle, PredictionKey);
+		}
+
+		if (bActivated)
+		{
+			return true;
 		}
 	}
+
+	return false;
 }
 
 void USyncInputComponent::HandleActionReleased(FGameplayTag InputTag)
 {
 	OnSyncInputReleased.Broadcast(InputTag);
+	StopHeldActivationRetry(InputTag);
 	
 	if (!AbilitySystemComponent)
 	{
@@ -244,7 +317,7 @@ void USyncInputComponent::HandleActionReleased(FGameplayTag InputTag)
 
 	for (FGameplayAbilitySpec& Spec : AbilitySystemComponent->GetActivatableAbilities())
 	{
-		if (Spec.GetDynamicSpecSourceTags().HasTag(InputTag))
+		if (DoesSpecMatchInputTag(Spec, InputTag))
 		{
 			if (Spec.IsActive())
 			{
@@ -260,6 +333,184 @@ void USyncInputComponent::HandleActionReleased(FGameplayTag InputTag)
 			}
 		}
 	}
+}
+
+bool USyncInputComponent::TryActivateComboAbility(
+	const FGameplayAbilitySpec& RequestedAbilitySpec,
+	bool& bOutComboHandled)
+{
+	bOutComboHandled = false;
+	if (!AbilitySystemComponent) return false;
+
+	FSyncInputActiveComboChain* ComboChain = ActiveComboChains.Find(RequestedAbilitySpec.Handle);
+	if (!ComboChain || !ComboChain->NextAbilityClass) return false;
+
+	bOutComboHandled = true;
+
+	for (FGameplayAbilitySpec& ComboSpec : AbilitySystemComponent->GetActivatableAbilities())
+	{
+		if (!ComboSpec.Ability || !ComboSpec.Ability->GetClass()->IsChildOf(ComboChain->NextAbilityClass)) continue;
+
+		if (!CanLocallyActivateSpec(ComboSpec))
+		{
+			return false;
+		}
+
+		const bool bActivated = AbilitySystemComponent->TryActivateAbility(ComboSpec.Handle);
+		if (bActivated)
+		{
+			UpdateComboChain(RequestedAbilitySpec.Handle, ComboSpec);
+		}
+
+		return true;
+	}
+
+	ClearComboChain(RequestedAbilitySpec.Handle);
+	return true;
+}
+
+void USyncInputComponent::UpdateComboChain(
+	const FGameplayAbilitySpecHandle StarterHandle,
+	const FGameplayAbilitySpec& CurrentAbilitySpec)
+{
+	USyncAbilityMotionGameplayAbility* CurrentAbility =
+		Cast<USyncAbilityMotionGameplayAbility>(CurrentAbilitySpec.GetPrimaryInstance());
+	if (!CurrentAbility)
+	{
+		CurrentAbility = Cast<USyncAbilityMotionGameplayAbility>(CurrentAbilitySpec.Ability);
+	}
+
+	if (!CurrentAbility || !CurrentAbility->GetComboAbilityClass() ||
+		CurrentAbility->GetComboWindowDuration() <= 0.f)
+	{
+		ClearComboChain(StarterHandle);
+		return;
+	}
+
+	FSyncInputActiveComboChain& ComboChain = ActiveComboChains.FindOrAdd(StarterHandle);
+	ComboChain.CurrentAbilityHandle = CurrentAbilitySpec.Handle;
+	ComboChain.NextAbilityClass = CurrentAbility->GetComboAbilityClass();
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ComboChain.TimerHandle);
+
+		FTimerDelegate TimerDelegate =
+			FTimerDelegate::CreateUObject(this, &ThisClass::ClearComboChain, StarterHandle);
+
+		World->GetTimerManager().SetTimer(
+			ComboChain.TimerHandle,
+			TimerDelegate,
+			CurrentAbility->GetComboWindowDuration(),
+			false);
+	}
+}
+
+void USyncInputComponent::ClearComboChain(FGameplayAbilitySpecHandle StarterHandle)
+{
+	if (FSyncInputActiveComboChain* ComboChain = ActiveComboChains.Find(StarterHandle))
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(ComboChain->TimerHandle);
+		}
+	}
+
+	ActiveComboChains.Remove(StarterHandle);
+}
+
+void USyncInputComponent::ClearAllComboChains()
+{
+	UWorld* World = GetWorld();
+	for (TPair<FGameplayAbilitySpecHandle, FSyncInputActiveComboChain>& ComboChainPair : ActiveComboChains)
+	{
+		if (World)
+		{
+			World->GetTimerManager().ClearTimer(ComboChainPair.Value.TimerHandle);
+		}
+	}
+
+	ActiveComboChains.Reset();
+}
+
+bool USyncInputComponent::ShouldRetryHeldActivationForInputTag(FGameplayTag InputTag) const
+{
+	return bRetryHeldAbilityActivation &&
+		InputTag.IsValid() &&
+		!HeldActivationRetryExcludedInputTags.HasTag(InputTag);
+}
+
+void USyncInputComponent::StartHeldActivationRetry(FGameplayTag InputTag)
+{
+	if (!ShouldRetryHeldActivationForInputTag(InputTag)) return;
+
+	HeldActivationInputTags.Add(InputTag);
+
+	UWorld* World = GetWorld();
+	if (!World) return;
+
+	FTimerHandle& TimerHandle = HeldActivationRetryTimers.FindOrAdd(InputTag);
+	if (World->GetTimerManager().IsTimerActive(TimerHandle)) return;
+
+	const float RetryInterval = FMath::Max(0.02f, HeldActivationRetryInterval);
+	FTimerDelegate TimerDelegate = FTimerDelegate::CreateUObject(
+		this,
+		&ThisClass::RetryHeldActivation,
+		InputTag);
+
+	World->GetTimerManager().SetTimer(TimerHandle, TimerDelegate, RetryInterval, true);
+}
+
+void USyncInputComponent::StopHeldActivationRetry(FGameplayTag InputTag)
+{
+	HeldActivationInputTags.Remove(InputTag);
+
+	if (FTimerHandle* TimerHandle = HeldActivationRetryTimers.Find(InputTag))
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(*TimerHandle);
+		}
+	}
+
+	HeldActivationRetryTimers.Remove(InputTag);
+}
+
+void USyncInputComponent::StopAllHeldActivationRetries()
+{
+	UWorld* World = GetWorld();
+	for (TPair<FGameplayTag, FTimerHandle>& RetryTimerPair : HeldActivationRetryTimers)
+	{
+		if (World)
+		{
+			World->GetTimerManager().ClearTimer(RetryTimerPair.Value);
+		}
+	}
+
+	HeldActivationRetryTimers.Reset();
+	HeldActivationInputTags.Reset();
+}
+
+void USyncInputComponent::RetryHeldActivation(FGameplayTag InputTag)
+{
+	if (!HeldActivationInputTags.Contains(InputTag) || !ShouldRetryHeldActivationForInputTag(InputTag))
+	{
+		StopHeldActivationRetry(InputTag);
+		return;
+	}
+
+	if (!AbilitySystemComponent)
+	{
+		AbilitySystemComponent = USyncInputFunctionLibrary::GetAbilitySystemComponent(GetOwner());
+	}
+
+	if (!AbilitySystemComponent)
+	{
+		StopHeldActivationRetry(InputTag);
+		return;
+	}
+
+	TryHandleAbilityPressed(InputTag, false);
 }
 
 void USyncInputComponent::Move(const FInputActionValue& Value)

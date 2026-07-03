@@ -26,8 +26,13 @@ void USyncAbilityMotionGameplayAbility::ActivateAbility(const FGameplayAbilitySp
 	const FGameplayEventData* TriggerEventData)
 {
 	ActivationSequenceId = (ActivationSequenceId == MAX_uint32) ? 1u : (ActivationSequenceId + 1u);
+	ResetComboWindow();
+
+	RotateAvatarToControllerYawOnActivate();
 
 	Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
+
+	OpenComboWindow();
 }
 
 void USyncAbilityMotionGameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle,
@@ -45,6 +50,8 @@ void USyncAbilityMotionGameplayAbility::EndAbility(const FGameplayAbilitySpecHan
 			}
 		}
 	}
+
+	ResetComboWindow();
 
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
@@ -214,6 +221,40 @@ bool USyncAbilityMotionGameplayAbility::ShouldPauseRootMotionForCharacterCollisi
 	}
 
 	return false;
+}
+
+void USyncAbilityMotionGameplayAbility::OpenComboWindow()
+{
+	CloseComboWindow();
+
+	if (!ComboAbilityClass || ComboWindowDuration <= 0.f) return;
+
+	bComboWindowOpen = true;
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimer(
+			ComboWindowTimerHandle,
+			this,
+			&ThisClass::CloseComboWindow,
+			ComboWindowDuration,
+			false);
+	}
+}
+
+void USyncAbilityMotionGameplayAbility::CloseComboWindow()
+{
+	bComboWindowOpen = false;
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ComboWindowTimerHandle);
+	}
+}
+
+void USyncAbilityMotionGameplayAbility::ResetComboWindow()
+{
+	CloseComboWindow();
 }
 
 void USyncAbilityMotionGameplayAbility::RotateAvatarToControllerYawOnActivate() const

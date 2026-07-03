@@ -30,6 +30,7 @@ public class SyncInput : ModuleRules
 				"EnhancedInput",
 				"InputCore",
 				"GameplayAbilities",
+				"SyncAbilityMotion",
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);

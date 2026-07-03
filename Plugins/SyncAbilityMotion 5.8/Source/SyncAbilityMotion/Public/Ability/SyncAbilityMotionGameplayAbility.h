@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "TimerManager.h"
 #include "Abilities/GameplayAbility.h"
 #include "Data/SyncAbilityMotionTypes.h"
 #include "SyncAbilityMotionGameplayAbility.generated.h"
@@ -28,6 +29,15 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Montage", meta=(DisplayName="Montage Lockout"))
 	FSyncAbilityMotionMontageLockout MontageLockout;
 
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo")
+	TSubclassOf<UGameplayAbility> ComboAbilityClass = nullptr;
+
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo", meta=(ClampMin="0.0", Units="Seconds"))
+	float ComboWindowDuration = 2.f;
+
+	TSubclassOf<UGameplayAbility> GetComboAbilityClass() const { return ComboAbilityClass; }
+	float GetComboWindowDuration() const { return ComboWindowDuration; }
+	bool IsComboWindowOpen() const { return bComboWindowOpen; }
 	uint32 GetActivationSequenceId() const { return ActivationSequenceId; }
 	bool ShouldPauseRootMotionForCharacterCollision(const ACharacter* Character) const;
 
@@ -51,6 +61,18 @@ protected:
 		ClampMin="0.0", UIMin="0.0", Units="cm"))
 	float RootMotionCharacterCollisionProbeDistance = 25.f;
 
+	UFUNCTION(BlueprintCallable, Category="Ability|Combo")
+	void OpenComboWindow();
+
+	UFUNCTION(BlueprintCallable, Category="Ability|Combo")
+	void CloseComboWindow();
+
 private:
+	void ResetComboWindow();
+
+	FTimerHandle ComboWindowTimerHandle;
+
+	bool bComboWindowOpen = false;
+
 	uint32 ActivationSequenceId = 0;
 };
