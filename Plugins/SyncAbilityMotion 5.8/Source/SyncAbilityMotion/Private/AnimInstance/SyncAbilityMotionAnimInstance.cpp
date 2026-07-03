@@ -80,6 +80,7 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 		LastTrackedAbilityActivationSequenceId = 0;
 		LastTrackedMontage = nullptr;
 		bReleasedRootMotionThisMontage = false;
+		SyncMotion->ClearRootMotionCollisionProbe();
 		SyncMotion->ResetAbilityMotionState();
 		return;
 	}
@@ -110,9 +111,23 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 		bReleasedRootMotionThisMontage = true;
 	}
 
-	const bool bPausedByCharacterCollision =
+	const bool bShouldWatchCharacterCollision =
 		!bReleasedRootMotionThisMontage &&
-		Ability->ShouldPauseRootMotionForCharacterCollision(Character);
+		Ability->IsRootMotionCharacterCollisionPauseEnabled();
+
+	SyncMotion->ConfigureRootMotionCollisionProbe(
+		bShouldWatchCharacterCollision,
+		Ability->GetRootMotionCharacterCollisionProbeDistance(),
+		Ability->GetRootMotionCharacterCollisionForwardAngleDegrees());
+
+	const bool bPausedByCharacterCollision =
+		bShouldWatchCharacterCollision &&
+		SyncMotion->HasRootMotionBlockingCharacterCollision();
+
+	if (!bShouldWatchCharacterCollision)
+	{
+		SyncMotion->ClearRootMotionCollisionProbe();
+	}
 
 	FSyncAbilityMotionState DesiredState;
 	DesiredState.bCanBlendMontage = bReachedReleasePoint;
