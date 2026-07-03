@@ -40,6 +40,8 @@ protected:
 	bool GetAbilityPercentMontagePlayed(float& OutPercent, USyncAbilityMotionGameplayAbility*& OutAbility);
 	UAbilitySystemComponent* GetAbilitySystemComponentSafe();
 	USyncAbilityMotionComponent* GetMotionComponentSafe();
+	void ApplyAbilityMovementCorrectionOverride(const USyncAbilityMotionGameplayAbility* Ability);
+	void RestoreAbilityMovementCorrectionOverride();
 
 	UPROPERTY()
 	TObjectPtr<ACharacter> Character = nullptr;
@@ -64,6 +66,10 @@ protected:
 
 	UPROPERTY()
 	bool bReleasedRootMotionThisMontage = false;
+
+	bool bHasSavedMovementCorrectionFlags = false;
+	bool bSavedIgnoreClientMovementErrorChecksAndCorrection = false;
+	bool bSavedClientIgnoreMovementCorrection = false;
 
 	UPROPERTY(BlueprintReadOnly, Category="Anim|Movement", meta=(AllowPrivateAccess="true"))
 	float GroundSpeed = 0.f;
