@@ -3,7 +3,7 @@
 #include "AnimInstance/SyncAbilityMotionAnimInstance.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Engine/EngineTypes.h"
+#include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "Movement/SyncAbilityMotionCharacterMovementComponent.h"
