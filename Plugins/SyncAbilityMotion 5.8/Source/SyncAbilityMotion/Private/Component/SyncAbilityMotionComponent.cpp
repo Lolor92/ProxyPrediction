@@ -6,6 +6,7 @@
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Movement/SyncAbilityMotionCharacterMovementComponent.h"
 #include "Net/UnrealNetwork.h"
 
@@ -151,6 +152,75 @@ void USyncAbilityMotionComponent::ResetAbilityMotionState()
 	DefaultState.bMovementInputSuppressed = false;
 
 	SetAbilityMotionState(DefaultState);
+}
+
+void USyncAbilityMotionComponent::SetServerMovementCorrectionIgnoreForAbility(bool bEnabled)
+{
+	ACharacter* Character = GetOwnerCharacter();
+	if (!Character)
+	{
+		return;
+	}
+
+	if (Character->HasAuthority())
+	{
+		ApplyServerMovementCorrectionIgnoreForAbility(bEnabled);
+		return;
+	}
+
+	if (bLastRequestedServerMovementCorrectionIgnore == bEnabled)
+	{
+		return;
+	}
+
+	bLastRequestedServerMovementCorrectionIgnore = bEnabled;
+	ServerSetServerMovementCorrectionIgnoreForAbility(bEnabled);
+}
+
+void USyncAbilityMotionComponent::ServerSetServerMovementCorrectionIgnoreForAbility_Implementation(bool bEnabled)
+{
+	ApplyServerMovementCorrectionIgnoreForAbility(bEnabled);
+}
+
+void USyncAbilityMotionComponent::ApplyServerMovementCorrectionIgnoreForAbility(bool bEnabled)
+{
+	ACharacter* Character = GetOwnerCharacter();
+	UCharacterMovementComponent* MoveComp = Character ? Character->GetCharacterMovement() : nullptr;
+	if (!MoveComp)
+	{
+		return;
+	}
+
+	if (bEnabled)
+	{
+		if (!bHasSavedServerMovementCorrectionIgnore)
+		{
+			bSavedServerIgnoreClientMovementErrorChecksAndCorrection = MoveComp->bIgnoreClientMovementErrorChecksAndCorrection;
+			bHasSavedServerMovementCorrectionIgnore = true;
+
+			UE_LOG(LogTemp, Warning,
+				TEXT("SAM_COLLISION SERVER_CORRECTION_IGNORE_BEGIN Owner=%s SavedIgnoreError=%d"),
+				*GetNameSafe(Character),
+				bSavedServerIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0);
+		}
+
+		MoveComp->bIgnoreClientMovementErrorChecksAndCorrection = true;
+		return;
+	}
+
+	if (!bHasSavedServerMovementCorrectionIgnore)
+	{
+		return;
+	}
+
+	MoveComp->bIgnoreClientMovementErrorChecksAndCorrection = bSavedServerIgnoreClientMovementErrorChecksAndCorrection;
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("SAM_COLLISION SERVER_CORRECTION_IGNORE_END Owner=%s RestoredIgnoreError=%d"),
+		*GetNameSafe(Character),
+		bSavedServerIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0);
+
+	bHasSavedServerMovementCorrectionIgnore = false;
 }
 
 void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(

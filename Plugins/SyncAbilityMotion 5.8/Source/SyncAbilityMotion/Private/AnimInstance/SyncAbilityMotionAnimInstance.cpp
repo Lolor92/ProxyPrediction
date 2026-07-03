@@ -76,6 +76,7 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 
 	if (!bHasAbilityContext || !Ability)
 	{
+		SyncMotion->SetServerMovementCorrectionIgnoreForAbility(false);
 		RestoreAbilityMovementCorrectionOverride();
 		LastTrackedAbility = nullptr;
 		LastTrackedAbilityActivationSequenceId = 0;
@@ -117,6 +118,7 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 	}
 
 	ApplyAbilityMovementCorrectionOverride(Ability);
+	SyncMotion->SetServerMovementCorrectionIgnoreForAbility(Ability->ShouldIgnoreMovementCorrectionsDuringAbility());
 
 	const bool bReachedReleasePoint =
 		!Ability->MontageLockout.bUseMontageProgressLockout ||

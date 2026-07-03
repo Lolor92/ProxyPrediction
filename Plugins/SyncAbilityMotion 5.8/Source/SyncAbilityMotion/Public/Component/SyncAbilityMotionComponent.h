@@ -32,6 +32,7 @@ public:
 	void ConfigureRootMotionCollisionProbe(bool bEnabled, float ProbeDistance, float ForwardAngleDegrees, float FallbackProbeDistance);
 	void ClearRootMotionCollisionProbe();
 	bool HasRootMotionBlockingCharacterCollision();
+	void SetServerMovementCorrectionIgnoreForAbility(bool bEnabled);
 
 protected:
 	UPROPERTY(ReplicatedUsing=OnRep_AbilityMotionState)
@@ -39,6 +40,9 @@ protected:
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetAbilityMotionState(const FSyncAbilityMotionState& NewState);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetServerMovementCorrectionIgnoreForAbility(bool bEnabled);
 
 	UFUNCTION()
 	void OnRep_AbilityMotionState();
@@ -64,6 +68,7 @@ protected:
 
 private:
 	void EnsureRootMotionCollisionProbe();
+	void ApplyServerMovementCorrectionIgnoreForAbility(bool bEnabled);
 	void RebuildRootMotionCollisionOverlaps();
 	bool IsRootMotionCollisionCharacterInFront(const ACharacter* OtherCharacter) const;
 	bool HasFallbackRootMotionBlockingCharacterCollision(
@@ -88,4 +93,8 @@ private:
 	float RootMotionCollisionForwardAngleDegrees = 0.f;
 	bool bLastLoggedRootMotionCollisionBlocked = false;
 	float LastRootMotionCollisionBlockTimeSeconds = -1000.f;
+
+	bool bLastRequestedServerMovementCorrectionIgnore = false;
+	bool bHasSavedServerMovementCorrectionIgnore = false;
+	bool bSavedServerIgnoreClientMovementErrorChecksAndCorrection = false;
 };
