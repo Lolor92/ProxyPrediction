@@ -379,7 +379,7 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		HasFallbackRootMotionBlockingCharacterCollision(RequiredDot, GraceRequiredDot, FallbackAngle, FallbackDot, FallbackCharacter))
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION BLOCKED_FALLBACK Owner=%s Other=%s Angle=%.1f MaxAngle=%.1f GraceAngle=%.1f Dot=%.3f RequiredDot=%.3f GraceRequiredDot=%.3f CachedOverlaps=%d"),
+			TEXT("SAM_COLLISION BLOCKED_FALLBACK Owner=%s Other=%s ContactAngle=%.1f MaxAngle=%.1f GraceAngle=%.1f ContactDot=%.3f RequiredDot=%.3f GraceRequiredDot=%.3f CachedOverlaps=%d"),
 			*GetNameSafe(GetOwner()),
 			*GetNameSafe(FallbackCharacter),
 			FallbackAngle,
@@ -618,7 +618,15 @@ bool USyncAbilityMotionComponent::HasFallbackRootMotionBlockingCharacterCollisio
 
 	const ACharacter* Character = GetOwnerCharacter();
 	const UWorld* World = GetWorld();
-	if (!Character || !World || !RootMotionCollisionProbeComponent)
+	const UCapsuleComponent* OwnerCapsule = Character ? Character->GetCapsuleComponent() : nullptr;
+	if (!Character || !World || !OwnerCapsule)
+	{
+		return false;
+	}
+
+	FVector Forward = Character->GetActorForwardVector();
+	Forward.Z = 0.f;
+	if (!Forward.Normalize())
 	{
 		return false;
 	}
@@ -627,14 +635,17 @@ bool USyncAbilityMotionComponent::HasFallbackRootMotionBlockingCharacterCollisio
 	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(SyncAbilityMotionRootMotionFallback), false, Character);
 	QueryParams.AddIgnoredActor(Character);
 
+	const float OwnerRadius = OwnerCapsule->GetUnscaledCapsuleRadius();
+	const float HalfProbeDistance = RootMotionCollisionProbeDistance * 0.5f;
 	const FCollisionShape ProbeShape = FCollisionShape::MakeCapsule(
-		RootMotionCollisionProbeComponent->GetUnscaledCapsuleRadius(),
-		RootMotionCollisionProbeComponent->GetUnscaledCapsuleHalfHeight());
+		OwnerRadius + HalfProbeDistance + SyncAbilityMotionCollisionProbe::ForwardContactPadding,
+		OwnerCapsule->GetUnscaledCapsuleHalfHeight());
+	const FVector ProbeLocation = Character->GetActorLocation() + Forward * HalfProbeDistance;
 
 	const bool bFoundAnyOverlap = World->OverlapMultiByChannel(
 		Overlaps,
-		RootMotionCollisionProbeComponent->GetComponentLocation(),
-		RootMotionCollisionProbeComponent->GetComponentQuat(),
+		ProbeLocation,
+		FQuat::Identity,
 		ECC_Pawn,
 		ProbeShape,
 		QueryParams);
