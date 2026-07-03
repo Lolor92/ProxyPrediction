@@ -42,6 +42,7 @@ public:
 	bool IsRootMotionCharacterCollisionPauseEnabled() const { return bPauseRootMotionOnCharacterCollision; }
 	float GetRootMotionCharacterCollisionForwardAngleDegrees() const { return RootMotionCharacterCollisionForwardAngleDegrees; }
 	float GetRootMotionCharacterCollisionProbeDistance() const { return RootMotionCharacterCollisionProbeDistance; }
+	float GetRootMotionCharacterCollisionFallbackProbeDistance() const { return FMath::Max(RootMotionCharacterCollisionProbeDistance, RootMotionCharacterCollisionFallbackProbeDistance); }
 	bool ShouldPauseRootMotionForCharacterCollision(const ACharacter* Character) const;
 
 protected:
@@ -63,6 +64,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Root Motion", meta=(EditCondition="bPauseRootMotionOnCharacterCollision",
 		ClampMin="0.0", UIMin="0.0", Units="cm"))
 	float RootMotionCharacterCollisionProbeDistance = 40.f;
+
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Root Motion", meta=(EditCondition="bPauseRootMotionOnCharacterCollision",
+		ClampMin="0.0", UIMin="0.0", Units="cm"))
+	float RootMotionCharacterCollisionFallbackProbeDistance = 40.f;
 
 	UFUNCTION(BlueprintCallable, Category="Ability|Combo")
 	void OpenComboWindow();
