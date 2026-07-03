@@ -78,4 +78,5 @@ private:
 	bool bRootMotionCollisionProbeEnabled = false;
 	float RootMotionCollisionProbeDistance = 0.f;
 	float RootMotionCollisionForwardAngleDegrees = 0.f;
+	bool bLastLoggedRootMotionCollisionBlocked = false;
 };
