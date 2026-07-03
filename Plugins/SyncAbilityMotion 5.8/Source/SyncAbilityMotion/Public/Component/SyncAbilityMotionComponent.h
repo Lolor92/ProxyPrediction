@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Data/SyncAbilityMotionTypes.h"
+#include "Engine/HitResult.h"
 #include "SyncAbilityMotionComponent.generated.h"
 
 class ACharacter;
