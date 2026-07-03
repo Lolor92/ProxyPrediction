@@ -14,6 +14,7 @@ namespace SyncAbilityMotionCollisionProbe
 	constexpr float LostOverlapGraceSeconds = 0.12f;
 	constexpr float AngleReleaseGraceDegrees = 5.f;
 	constexpr float ForwardContactPadding = 8.f;
+	constexpr float ContactCenterAngleToleranceDegrees = 15.f;
 
 	bool IsForwardContactBlocking(
 		const ACharacter* Character,
@@ -45,6 +46,21 @@ namespace SyncAbilityMotionCollisionProbe
 		FVector ToOther = OtherCharacter->GetActorLocation() - Character->GetActorLocation();
 		ToOther.Z = 0.f;
 		if (ToOther.IsNearlyZero())
+		{
+			return false;
+		}
+
+		const FVector CenterDirection = ToOther.GetSafeNormal2D();
+		const float CenterDot = FVector::DotProduct(Forward, CenterDirection);
+		const float RequiredAngleDegrees = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(RequiredDot, -1.f, 1.f)));
+		const float GraceAngleDegrees = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(GraceRequiredDot, -1.f, 1.f)));
+		const float MaxCenterContactAngleDegrees = FMath::Clamp(
+			(bAllowGraceAngle ? GraceAngleDegrees : RequiredAngleDegrees) +
+			SyncAbilityMotionCollisionProbe::ContactCenterAngleToleranceDegrees,
+			0.f,
+			180.f);
+		const float MinCenterContactDot = FMath::Cos(FMath::DegreesToRadians(MaxCenterContactAngleDegrees));
+		if (CenterDot < MinCenterContactDot)
 		{
 			return false;
 		}
@@ -189,7 +205,7 @@ void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 	if (bSettingsChanged)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION PROBE_CONFIG Owner=%s Dist=%.1f FallbackDist=%.1f Angle=%.1f Radius=%.1f HalfHeight=%.1f Grace=%.2f AngleGrace=%.1f ContactPadding=%.1f"),
+			TEXT("SAM_COLLISION PROBE_CONFIG Owner=%s Dist=%.1f FallbackDist=%.1f Angle=%.1f Radius=%.1f HalfHeight=%.1f Grace=%.2f AngleGrace=%.1f ContactPadding=%.1f SideScrapeTol=%.1f"),
 			*GetNameSafe(Character),
 			ClampedProbeDistance,
 			ClampedFallbackProbeDistance,
@@ -198,7 +214,8 @@ void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 			OwnerCapsule->GetUnscaledCapsuleHalfHeight(),
 			SyncAbilityMotionCollisionProbe::LostOverlapGraceSeconds,
 			SyncAbilityMotionCollisionProbe::AngleReleaseGraceDegrees,
-			SyncAbilityMotionCollisionProbe::ForwardContactPadding);
+			SyncAbilityMotionCollisionProbe::ForwardContactPadding,
+			SyncAbilityMotionCollisionProbe::ContactCenterAngleToleranceDegrees);
 
 		RootMotionCollisionProbeComponent->UpdateComponentToWorld();
 		RootMotionCollisionProbeComponent->UpdateOverlaps();
