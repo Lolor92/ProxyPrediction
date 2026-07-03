@@ -92,6 +92,13 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 		|| CurrentActivationSequenceId != LastTrackedAbilityActivationSequenceId
 		|| CurrentMontage != LastTrackedMontage)
 	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SAM_COLLISION MONTAGE_TRACK Owner=%s Ability=%s Montage=%s Seq=%u"),
+			*GetNameSafe(Character),
+			*GetNameSafe(Ability),
+			*GetNameSafe(CurrentMontage),
+			CurrentActivationSequenceId);
+
 		LastTrackedAbility = Ability;
 		LastTrackedAbilityActivationSequenceId = CurrentActivationSequenceId;
 		LastTrackedMontage = CurrentMontage;
@@ -108,6 +115,15 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 
 	if (bReachedReleasePoint && bHasMovementInput)
 	{
+		if (!bReleasedRootMotionThisMontage)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("SAM_COLLISION ROOT_RELEASED_BY_INPUT Owner=%s Percent=%.1f UnlockPercent=%.1f"),
+				*GetNameSafe(Character),
+				Percent,
+				Ability->MontageLockout.MontageProgressBeforeInterrupt);
+		}
+
 		bReleasedRootMotionThisMontage = true;
 	}
 
@@ -143,6 +159,20 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 	}
 
 	if (SyncMotion->GetAbilityMotionState() == DesiredState) return;
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("SAM_COLLISION STATE_CHANGE Owner=%s Percent=%.1f RootMotion=%d PausedByCollision=%d Released=%d WatchCollision=%d ReachedRelease=%d HasInput=%d BlendMontage=%d LowerBody=%d SuppressInput=%d"),
+		*GetNameSafe(Character),
+		Percent,
+		DesiredState.bRootMotionEnabled ? 1 : 0,
+		bPausedByCharacterCollision ? 1 : 0,
+		bReleasedRootMotionThisMontage ? 1 : 0,
+		bShouldWatchCharacterCollision ? 1 : 0,
+		bReachedReleasePoint ? 1 : 0,
+		bHasMovementInput ? 1 : 0,
+		DesiredState.bCanBlendMontage ? 1 : 0,
+		DesiredState.bShouldBlendLowerBody ? 1 : 0,
+		DesiredState.bMovementInputSuppressed ? 1 : 0);
 
 	SyncMotion->SetAbilityMotionState(DesiredState);
 }
