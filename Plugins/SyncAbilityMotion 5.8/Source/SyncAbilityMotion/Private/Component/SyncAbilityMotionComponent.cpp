@@ -140,7 +140,8 @@ void USyncAbilityMotionComponent::ResetAbilityMotionState()
 void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 	bool bEnabled,
 	float ProbeDistance,
-	float ForwardAngleDegrees)
+	float ForwardAngleDegrees,
+	float FallbackProbeDistance)
 {
 	const bool bShouldEnableProbe = bEnabled && ProbeDistance > KINDA_SMALL_NUMBER;
 	if (!bShouldEnableProbe)
@@ -161,14 +162,17 @@ void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 	}
 
 	const float ClampedProbeDistance = FMath::Max(0.f, ProbeDistance);
+	const float ClampedFallbackProbeDistance = FMath::Max(ClampedProbeDistance, FallbackProbeDistance);
 	const float ClampedForwardAngle = FMath::Clamp(ForwardAngleDegrees, 0.f, 180.f);
 	const bool bSettingsChanged =
 		!bRootMotionCollisionProbeEnabled ||
 		!FMath::IsNearlyEqual(RootMotionCollisionProbeDistance, ClampedProbeDistance) ||
+		!FMath::IsNearlyEqual(RootMotionCollisionFallbackProbeDistance, ClampedFallbackProbeDistance) ||
 		!FMath::IsNearlyEqual(RootMotionCollisionForwardAngleDegrees, ClampedForwardAngle);
 
 	bRootMotionCollisionProbeEnabled = true;
 	RootMotionCollisionProbeDistance = ClampedProbeDistance;
+	RootMotionCollisionFallbackProbeDistance = ClampedFallbackProbeDistance;
 	RootMotionCollisionForwardAngleDegrees = ClampedForwardAngle;
 
 	RootMotionCollisionProbeComponent->SetCapsuleSize(
@@ -185,9 +189,10 @@ void USyncAbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 	if (bSettingsChanged)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION PROBE_CONFIG Owner=%s Dist=%.1f Angle=%.1f Radius=%.1f HalfHeight=%.1f Grace=%.2f AngleGrace=%.1f ContactPadding=%.1f"),
+			TEXT("SAM_COLLISION PROBE_CONFIG Owner=%s Dist=%.1f FallbackDist=%.1f Angle=%.1f Radius=%.1f HalfHeight=%.1f Grace=%.2f AngleGrace=%.1f ContactPadding=%.1f"),
 			*GetNameSafe(Character),
 			ClampedProbeDistance,
+			ClampedFallbackProbeDistance,
 			ClampedForwardAngle,
 			OwnerCapsule->GetUnscaledCapsuleRadius(),
 			OwnerCapsule->GetUnscaledCapsuleHalfHeight(),
@@ -215,6 +220,8 @@ void USyncAbilityMotionComponent::ClearRootMotionCollisionProbe()
 	bRootMotionCollisionProbeEnabled = false;
 	bLastLoggedRootMotionCollisionBlocked = false;
 	LastRootMotionCollisionBlockTimeSeconds = -1000.f;
+	RootMotionCollisionProbeDistance = 0.f;
+	RootMotionCollisionFallbackProbeDistance = 0.f;
 	RootMotionCollisionCharacters.Reset();
 
 	if (RootMotionCollisionProbeComponent)
@@ -379,7 +386,7 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		HasFallbackRootMotionBlockingCharacterCollision(RequiredDot, GraceRequiredDot, FallbackAngle, FallbackDot, FallbackCharacter))
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_COLLISION BLOCKED_FALLBACK Owner=%s Other=%s ContactAngle=%.1f MaxAngle=%.1f GraceAngle=%.1f ContactDot=%.3f RequiredDot=%.3f GraceRequiredDot=%.3f CachedOverlaps=%d"),
+			TEXT("SAM_COLLISION BLOCKED_FALLBACK Owner=%s Other=%s ContactAngle=%.1f MaxAngle=%.1f GraceAngle=%.1f ContactDot=%.3f RequiredDot=%.3f GraceRequiredDot=%.3f CachedOverlaps=%d ProbeDist=%.1f FallbackDist=%.1f"),
 			*GetNameSafe(GetOwner()),
 			*GetNameSafe(FallbackCharacter),
 			FallbackAngle,
@@ -388,7 +395,9 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 			FallbackDot,
 			RequiredDot,
 			GraceRequiredDot,
-			RootMotionCollisionCharacters.Num());
+			RootMotionCollisionCharacters.Num(),
+			RootMotionCollisionProbeDistance,
+			RootMotionCollisionFallbackProbeDistance);
 		bLastLoggedRootMotionCollisionBlocked = true;
 		LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
 		return true;
@@ -636,7 +645,8 @@ bool USyncAbilityMotionComponent::HasFallbackRootMotionBlockingCharacterCollisio
 	QueryParams.AddIgnoredActor(Character);
 
 	const float OwnerRadius = OwnerCapsule->GetUnscaledCapsuleRadius();
-	const float HalfProbeDistance = RootMotionCollisionProbeDistance * 0.5f;
+	const float ManualProbeDistance = FMath::Max(RootMotionCollisionProbeDistance, RootMotionCollisionFallbackProbeDistance);
+	const float HalfProbeDistance = ManualProbeDistance * 0.5f;
 	const FCollisionShape ProbeShape = FCollisionShape::MakeCapsule(
 		OwnerRadius + HalfProbeDistance + SyncAbilityMotionCollisionProbe::ForwardContactPadding,
 		OwnerCapsule->GetUnscaledCapsuleHalfHeight());
@@ -667,7 +677,7 @@ bool USyncAbilityMotionComponent::HasFallbackRootMotionBlockingCharacterCollisio
 		if (!SyncAbilityMotionCollisionProbe::IsForwardContactBlocking(
 			Character,
 			OtherCharacter,
-			RootMotionCollisionProbeDistance,
+			ManualProbeDistance,
 			RequiredDot,
 			GraceRequiredDot,
 			true,
