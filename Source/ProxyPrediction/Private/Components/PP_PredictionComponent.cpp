@@ -1,5 +1,7 @@
 #include "Components/PP_PredictionComponent.h"
 #include "TimerManager.h"
+#include "AbilitySystemBlueprintLibrary.h"
+#include "AbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Components/CapsuleComponent.h"
@@ -9,6 +11,8 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerState.h"
+#include "GameplayEffect.h"
 
 
 UPP_PredictionComponent::UPP_PredictionComponent()
@@ -65,6 +69,7 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
 	ApplyReactionTransform(OwnerActor, TargetActor, TransformSettings);
+	ApplyTargetEffects(OwnerActor, TargetActor, Reaction);
 
 	const bool bServerPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 	
@@ -539,6 +544,50 @@ bool UPP_PredictionComponent::PlayReactionMontageOnActor(AActor* TargetActor, co
 
 
 	return true;
+}
+
+void UPP_PredictionComponent::ApplyTargetEffects(AActor* InstigatorActor, AActor* TargetActor,
+	const FPP_ReactionDataEntry& Reaction) const
+{
+	if (!InstigatorActor || !TargetActor || Reaction.TargetEffects.IsEmpty()) return;
+
+	UAbilitySystemComponent* SourceASC = GetAbilitySystemComponentFromActor(InstigatorActor);
+	UAbilitySystemComponent* TargetASC = GetAbilitySystemComponentFromActor(TargetActor);
+	if (!TargetASC) return;
+
+	UAbilitySystemComponent* SpecSourceASC = SourceASC ? SourceASC : TargetASC;
+	for (const TSubclassOf<UGameplayEffect>& EffectClass : Reaction.TargetEffects)
+	{
+		if (!EffectClass) continue;
+
+		FGameplayEffectContextHandle Context = SpecSourceASC->MakeEffectContext();
+		Context.AddSourceObject(InstigatorActor);
+
+		FGameplayEffectSpecHandle Spec = SpecSourceASC->MakeOutgoingSpec(EffectClass, 1.f, Context);
+		if (Spec.IsValid())
+		{
+			SpecSourceASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
+		}
+	}
+}
+
+UAbilitySystemComponent* UPP_PredictionComponent::GetAbilitySystemComponentFromActor(AActor* Actor)
+{
+	if (!Actor) return nullptr;
+
+	if (ACharacter* Character = Cast<ACharacter>(Actor))
+	{
+		if (APlayerState* PlayerState = Character->GetPlayerState<APlayerState>())
+		{
+			if (UAbilitySystemComponent* PlayerStateASC =
+				UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(PlayerState))
+			{
+				return PlayerStateASC;
+			}
+		}
+	}
+
+	return UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Actor);
 }
 
 void UPP_PredictionComponent::ApplyReactionTransform(AActor* InstigatorActor, AActor* TargetActor,

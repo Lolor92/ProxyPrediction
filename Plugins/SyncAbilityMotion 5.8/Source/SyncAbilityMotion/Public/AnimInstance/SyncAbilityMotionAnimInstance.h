@@ -117,4 +117,19 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category="Anim|Movement", meta=(AllowPrivateAccess="true"))
 	float MovementOffsetYaw = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State");
+	bool bIsBlocking = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State");
+	bool bIsKnockdown = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State");
+	bool bIsFlinching = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State");
+	bool bIsFrozen = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State");
+	bool bIsStunned = false;
 };

@@ -149,10 +149,6 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 
 	if (bReachedReleasePoint && bHasMovementInput)
 	{
-		if (!bReleasedRootMotionThisMontage)
-		{
-					}
-
 		bReleasedRootMotionThisMontage = true;
 	}
 

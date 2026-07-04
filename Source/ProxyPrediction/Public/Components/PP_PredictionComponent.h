@@ -7,6 +7,7 @@
 #include "PP_PredictionComponent.generated.h"
 
 class AActor;
+class UAbilitySystemComponent;
 
 USTRUCT(BlueprintType)
 struct FPP_ReactionPredictionContext
@@ -93,6 +94,8 @@ private:
 	
 	bool PlayReactionMontageOnActor(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction, float StartPosition,
 		bool bForceRestart) const;
+	void ApplyTargetEffects(AActor* InstigatorActor, AActor* TargetActor, const FPP_ReactionDataEntry& Reaction) const;
+	static UAbilitySystemComponent* GetAbilitySystemComponentFromActor(AActor* Actor);
 
 	void ApplyReactionTransform(AActor* InstigatorActor, AActor* TargetActor,
 		const FPP_ReactionTransformSettings& TransformSettings) const;

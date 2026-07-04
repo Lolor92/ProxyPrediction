@@ -65,6 +65,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Rotation")
 	bool bRotateToControllerYawOnActivate = false;
 
+	// Allows this ability to break in over another active ability such as stagger or knockdown.
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Interrupt")
+	bool bInterruptOtherAbilitiesOnActivate = false;
+
 	/** If enabled, this ability can pause root motion when its owner is pushing into another character capsule.
 	 *  Useful for slower bash / shove style attacks so the attacker does not visually drive through the target.
 	 */
@@ -118,6 +122,7 @@ protected:
 
 private:
 	void ResetComboWindow();
+	void InterruptOtherActiveAbilities() const;
 
 	FTimerHandle ComboWindowTimerHandle;
 
