@@ -101,6 +101,12 @@ void RefreshLocalCameraAfterAbilityYaw(ACharacter* Character)
 		if (!SpringArm) continue;
 
 		SpringArm->UpdateComponentToWorld();
+
+		// Important: UpdateComponentToWorld is not enough for SpringArm.
+		// TickComponent forces the spring arm to recompute its desired arm/socket
+		// using the current control rotation after the actor yaw snap.
+		SpringArm->TickComponent(0.f, LEVELTICK_All, nullptr);
+
 		SpringArm->UpdateChildTransforms();
 	}
 
