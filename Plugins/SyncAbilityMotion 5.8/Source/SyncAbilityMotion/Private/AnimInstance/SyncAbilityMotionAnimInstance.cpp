@@ -76,10 +76,14 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 
 	if (!bHasAbilityContext || !Ability)
 	{
+		SyncMotion->SetServerMovementCorrectionIgnoreForAbility(false);
+		RestoreAbilityMovementCorrectionOverride();
 		LastTrackedAbility = nullptr;
 		LastTrackedAbilityActivationSequenceId = 0;
 		LastTrackedMontage = nullptr;
 		bReleasedRootMotionThisMontage = false;
+		bRootMotionCollisionPauseHeldUntilRelease = false;
+		SyncMotion->ClearRootMotionCollisionProbe();
 		SyncMotion->ResetAbilityMotionState();
 		return;
 	}
@@ -91,11 +95,21 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 		|| CurrentActivationSequenceId != LastTrackedAbilityActivationSequenceId
 		|| CurrentMontage != LastTrackedMontage)
 	{
+		SyncMotion->SetServerMovementCorrectionIgnoreForAbility(false);
+		RestoreAbilityMovementCorrectionOverride();
+
+		
+		SyncMotion->ClearRootMotionCollisionProbe();
+
 		LastTrackedAbility = Ability;
 		LastTrackedAbilityActivationSequenceId = CurrentActivationSequenceId;
 		LastTrackedMontage = CurrentMontage;
 		bReleasedRootMotionThisMontage = false;
+		bRootMotionCollisionPauseHeldUntilRelease = false;
 	}
+
+	ApplyAbilityMovementCorrectionOverride(Ability);
+	SyncMotion->SetServerMovementCorrectionIgnoreForAbility(Ability->ShouldIgnoreMovementCorrectionsDuringAbility());
 
 	const bool bReachedReleasePoint =
 		!Ability->MontageLockout.bUseMontageProgressLockout ||
@@ -107,12 +121,53 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 
 	if (bReachedReleasePoint && bHasMovementInput)
 	{
+		if (!bReleasedRootMotionThisMontage)
+		{
+					}
+
 		bReleasedRootMotionThisMontage = true;
 	}
 
-	const bool bPausedByCharacterCollision =
+	const bool bShouldWatchCharacterCollision =
 		!bReleasedRootMotionThisMontage &&
-		Ability->ShouldPauseRootMotionForCharacterCollision(Character);
+		Ability->IsRootMotionCharacterCollisionPauseEnabled();
+
+	SyncMotion->ConfigureRootMotionCollisionProbe(
+		bShouldWatchCharacterCollision,
+		Ability->GetRootMotionCharacterCollisionProbeDistance(),
+		Ability->GetRootMotionCharacterCollisionForwardAngleDegrees(),
+		Ability->GetRootMotionCharacterCollisionFallbackProbeDistance());
+
+	const bool bRawPausedByCharacterCollision =
+		bShouldWatchCharacterCollision &&
+		SyncMotion->HasRootMotionBlockingCharacterCollision();
+
+	if (Ability->ShouldHoldRootMotionCollisionPauseUntilRelease())
+	{
+		if (bRawPausedByCharacterCollision && !bReachedReleasePoint)
+		{
+			bRootMotionCollisionPauseHeldUntilRelease = true;
+		}
+
+		if (bReachedReleasePoint)
+		{
+			bRootMotionCollisionPauseHeldUntilRelease = false;
+		}
+	}
+	else
+	{
+		bRootMotionCollisionPauseHeldUntilRelease = false;
+	}
+
+	const bool bPausedByCharacterCollision =
+		Ability->ShouldHoldRootMotionCollisionPauseUntilRelease()
+			? (!bReachedReleasePoint && (bRawPausedByCharacterCollision || bRootMotionCollisionPauseHeldUntilRelease))
+			: bRawPausedByCharacterCollision;
+
+	if (!bShouldWatchCharacterCollision)
+	{
+		SyncMotion->ClearRootMotionCollisionProbe();
+	}
 
 	FSyncAbilityMotionState DesiredState;
 	DesiredState.bCanBlendMontage = bReachedReleasePoint;
@@ -129,6 +184,7 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 
 	if (SyncMotion->GetAbilityMotionState() == DesiredState) return;
 
+	
 	SyncMotion->SetAbilityMotionState(DesiredState);
 }
 
@@ -187,4 +243,34 @@ USyncAbilityMotionComponent* USyncAbilityMotionAnimInstance::GetMotionComponentS
 	}
 
 	return MotionComponent;
+}
+
+void USyncAbilityMotionAnimInstance::ApplyAbilityMovementCorrectionOverride(const USyncAbilityMotionGameplayAbility* Ability)
+{
+if (!CharacterMovementComponent || !Ability || !Ability->ShouldIgnoreMovementCorrectionsDuringAbility())
+{
+return;
+}
+
+if (!bHasSavedMovementCorrectionFlags)
+{
+bSavedIgnoreClientMovementErrorChecksAndCorrection = CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection;
+bHasSavedMovementCorrectionFlags = true;
+
+}
+
+CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = true;
+}
+
+void USyncAbilityMotionAnimInstance::RestoreAbilityMovementCorrectionOverride()
+{
+if (!CharacterMovementComponent || !bHasSavedMovementCorrectionFlags)
+{
+return;
+}
+
+CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bSavedIgnoreClientMovementErrorChecksAndCorrection;
+
+
+bHasSavedMovementCorrectionFlags = false;
 }

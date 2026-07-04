@@ -36,10 +36,23 @@ public:
 	bool bUseControllerRotationYaw = true;
 
 protected:
+	/** Builds and publishes the local ability movement state used by the character and simulated proxies. */
 	void UpdateAbilityMotionReplication();
+
+	/** Resolves the currently animating SyncAbilityMotion ability and returns its montage percent. */
 	bool GetAbilityPercentMontagePlayed(float& OutPercent, USyncAbilityMotionGameplayAbility*& OutAbility);
+
+	/** Cached ASC accessor used by the anim instance update path. */
 	UAbilitySystemComponent* GetAbilitySystemComponentSafe();
+
+	/** Cached SyncAbilityMotion component accessor used by the anim instance update path. */
 	USyncAbilityMotionComponent* GetMotionComponentSafe();
+
+	/** Applies local correction-ignore flags for abilities that need extra prediction smoothing. */
+	void ApplyAbilityMovementCorrectionOverride(const USyncAbilityMotionGameplayAbility* Ability);
+
+	/** Restores local movement correction flags after the ability ends or changes. */
+	void RestoreAbilityMovementCorrectionOverride();
 
 	UPROPERTY()
 	TObjectPtr<ACharacter> Character = nullptr;
@@ -53,17 +66,27 @@ protected:
 	UPROPERTY()
 	TObjectPtr<USyncAbilityMotionComponent> MotionComponent = nullptr;
 
+	/** Ability instance that owned the previous anim update. Used to detect ability changes. */
 	UPROPERTY()
 	TObjectPtr<const USyncAbilityMotionGameplayAbility> LastTrackedAbility = nullptr;
 
+	/** Activation sequence for the tracked ability. Prevents stale state when the same ability class is reused. */
 	UPROPERTY()
 	uint32 LastTrackedAbilityActivationSequenceId = 0;
 
+	/** Montage that owned the previous anim update. Used to reset per-montage movement state. */
 	UPROPERTY()
 	TObjectPtr<const UAnimMontage> LastTrackedMontage = nullptr;
 
+	/** True after player movement input releases root motion at the montage lockout point. */
 	UPROPERTY()
 	bool bReleasedRootMotionThisMontage = false;
+
+	/** Per-montage latch used by fast abilities that should not resume root motion until their release point after a collision pause. */
+	bool bRootMotionCollisionPauseHeldUntilRelease = false;
+
+	bool bHasSavedMovementCorrectionFlags = false;
+	bool bSavedIgnoreClientMovementErrorChecksAndCorrection = false;
 
 	UPROPERTY(BlueprintReadOnly, Category="Anim|Movement", meta=(AllowPrivateAccess="true"))
 	float GroundSpeed = 0.f;

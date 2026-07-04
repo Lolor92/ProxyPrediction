@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CollisionShape.h"
+#include "Data/PP_ReactionData.h"
 #include "Engine/EngineTypes.h"
 #include "GameplayTagContainer.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
@@ -45,6 +46,10 @@ public:
 	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Predicted Reaction")
 	FGameplayTag PredictedReactionTag;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Predicted Reaction|Transform",
+		meta=(ShowOnlyInnerProperties))
+	FPP_ReactionTransformSettings ReactionTransformSettings;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Socket")
 	FName SourceSocketName = TEXT("MainHandWeaponSocket");
