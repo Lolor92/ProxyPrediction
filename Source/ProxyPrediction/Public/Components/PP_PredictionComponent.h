@@ -59,6 +59,30 @@ struct FPP_DeferredPredictedReactionCorrection
 	double TimeSeconds = 0.0;
 };
 
+USTRUCT()
+struct FPP_OwnerPendingFinalReactionCorrection
+{
+GENERATED_BODY()
+
+UPROPERTY()
+TWeakObjectPtr<AActor> TargetActor;
+
+UPROPERTY()
+FGameplayTag ReactionTag;
+
+UPROPERTY()
+int32 PredictionId = INDEX_NONE;
+
+UPROPERTY()
+FVector ServerFinalLocation = FVector::ZeroVector;
+
+UPROPERTY()
+FRotator ServerFinalRotation = FRotator::ZeroRotator;
+
+UPROPERTY()
+double TimeSeconds = 0.0;
+};
+
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class PROXYPREDICTION_API UPP_PredictionComponent : public UActorComponent
 {
@@ -75,11 +99,11 @@ public:
 	void ServerConfirmPredictedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings);
 	
-	UFUNCTION(NetMulticast, Unreliable)
+	UFUNCTION(NetMulticast, Reliable)
 	void MulticastPlayConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings);
 
-	UFUNCTION(NetMulticast, Unreliable)
+	UFUNCTION(NetMulticast, Reliable)
 	void MulticastFinishConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, FVector ServerFinalLocation, FRotator ServerFinalRotation);
 	
@@ -119,6 +143,14 @@ private:
 		FGameplayTag ReactionTag);
 	void RemoveExpiredDeferredPredictedReactionCorrections();
 
+void AddOwnerPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+FGameplayTag ReactionTag, const FVector& ServerFinalLocation, const FRotator& ServerFinalRotation);
+bool ConsumeOwnerPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+FGameplayTag ReactionTag, FVector& OutServerFinalLocation, FRotator& OutServerFinalRotation);
+bool ApplyOwnerPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+FGameplayTag ReactionTag, const TCHAR* Reason);
+void RemoveExpiredOwnerPendingFinalReactionCorrections();
+
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context,AActor* TargetActor,
 		AActor* InstigatorActor, FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings);
@@ -141,6 +173,18 @@ private:
 	UPROPERTY(Transient)
 	TArray<FPP_DeferredPredictedReactionCorrection> DeferredPredictedReactionCorrections;
 
+UPROPERTY(Transient)
+TArray<FPP_OwnerPendingFinalReactionCorrection> OwnerPendingFinalReactionCorrections;
+
+UPROPERTY(Transient)
+int32 OwnerReactionCorrectionSuppressionCount = 0;
+
+UPROPERTY(Transient)
+bool bSavedOwnerIgnoreClientMovementErrorChecksAndCorrection = false;
+
+UPROPERTY(Transient)
+bool bSavedOwnerClientIgnoreMovementCorrections = false;
+
 	UPROPERTY(Transient)
 	TMap<TWeakObjectPtr<AActor>, int32> PredictedReactionCollisionIgnoreCounts;
 
@@ -160,5 +204,8 @@ private:
 	bool bApplyInstantFinalCorrection = true;
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Centimeters"))
-	float MaxInstantFinalCorrectionDistance = 2.0f;
+	float MaxInstantFinalCorrectionDistance = 500.0f;
+
+UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", ClampMax="0.25", Units="Seconds"))
+float ProxyFinalCorrectionDelaySeconds = 0.05f;
 };
