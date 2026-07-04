@@ -80,6 +80,39 @@ void LogSyncAbilityMotionCameraState(const TCHAR* Phase, const FString& AbilityN
 		Camera ? *Camera->GetRelativeRotation().ToCompactString() : TEXT("None"),
 		Camera && Camera->bUsePawnControlRotation);
 }
+
+void RefreshLocalCameraAfterAbilityYaw(ACharacter* Character)
+{
+	if (!Character || !Character->IsLocallyControlled())
+	{
+		return;
+	}
+
+	if (USceneComponent* Root = Character->GetRootComponent())
+	{
+		Root->UpdateComponentToWorld();
+		Root->UpdateChildTransforms();
+	}
+
+	TArray<USpringArmComponent*> SpringArms;
+	Character->GetComponents(SpringArms);
+	for (USpringArmComponent* SpringArm : SpringArms)
+	{
+		if (!SpringArm) continue;
+
+		SpringArm->UpdateComponentToWorld();
+		SpringArm->UpdateChildTransforms();
+	}
+
+	TArray<UCameraComponent*> Cameras;
+	Character->GetComponents(Cameras);
+	for (UCameraComponent* Camera : Cameras)
+	{
+		if (!Camera) continue;
+
+		Camera->UpdateComponentToWorld();
+	}
+}
 }
 
 USyncAbilityMotionGameplayAbility::USyncAbilityMotionGameplayAbility()
@@ -351,7 +384,8 @@ void USyncAbilityMotionGameplayAbility::RotateAvatarToControllerYawOnActivate() 
 
 	FRotator NewRot = Character->GetActorRotation();
 	NewRot.Yaw = Controller->GetControlRotation().Yaw;
-	Character->SetActorRotation(NewRot, ETeleportType::ResetPhysics);
+	Character->SetActorRotation(NewRot, ETeleportType::TeleportPhysics);
+	RefreshLocalCameraAfterAbilityYaw(Character);
 
 	LogSyncAbilityMotionCameraState(TEXT("AfterRotateToControllerYaw"), AbilityName, Character, Controller);
 
