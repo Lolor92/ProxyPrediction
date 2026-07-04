@@ -210,5 +210,6 @@ void UPP_CollisionNotifyState::TryPlayPredictedReaction(AActor* AttackerActor, A
 
 	if (!PredictedReactionTag.IsValid()) return;
 
-	PredictionComponent->PlayPredictedReactionOnTargetProxy(HitActor, PredictedReactionTag);
+	PredictionComponent->PlayPredictedReactionOnTargetProxy(HitActor, PredictedReactionTag,
+		ReactionTransformSettings);
 }

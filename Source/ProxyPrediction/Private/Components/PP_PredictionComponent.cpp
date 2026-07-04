@@ -17,7 +17,8 @@ UPP_PredictionComponent::UPP_PredictionComponent()
 	SetIsReplicatedByDefault(true);
 }
 
-bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetActor, FGameplayTag ReactionTag)
+bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetActor, FGameplayTag ReactionTag,
+	FPP_ReactionTransformSettings TransformSettings)
 {
 
 	if (!ReactionData || !ReactionTag.IsValid()) return false;
@@ -32,6 +33,8 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 	AddPendingPredictedReaction(Context, TargetActor, ReactionTag);
 	
 	const float StartPosition = GetReactionStartPosition(Reaction);
+
+	ApplyReactionTransform(GetOwner(), TargetActor, TransformSettings);
 	
 	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 	
@@ -41,14 +44,13 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 		return false;
 	}
 
-
-	ServerConfirmPredictedReaction(Context, TargetActor, ReactionTag);
+	ServerConfirmPredictedReaction(Context, TargetActor, ReactionTag, TransformSettings);
 
 	return true;
 }
 
 void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_ReactionPredictionContext Context,
-	AActor* TargetActor, FGameplayTag ReactionTag)
+	AActor* TargetActor, FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings)
 {
 	AActor* OwnerActor = GetOwner();
 
@@ -61,6 +63,8 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return;
 
 	const float StartPosition = GetReactionStartPosition(Reaction);
+
+	ApplyReactionTransform(OwnerActor, TargetActor, TransformSettings);
 
 	const bool bServerPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 	
@@ -83,8 +87,9 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 				if (!StrongThis || !StrongTarget) return;
 
 				const FVector ServerFinalLocation = StrongTarget->GetActorLocation();
+				const FRotator ServerFinalRotation = StrongTarget->GetActorRotation();
 				StrongThis->MulticastFinishConfirmedReaction(CapturedContext, StrongTarget,
-					CapturedReactionTag, ServerFinalLocation);
+					CapturedReactionTag, ServerFinalLocation, ServerFinalRotation);
 			},
 			RemainingDuration,
 			false);
@@ -93,14 +98,15 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 	if (UPP_PredictionComponent* TargetPredictionComponent =
 	TargetActor->FindComponentByClass<UPP_PredictionComponent>())
 	{
-		TargetPredictionComponent->ClientPlayOwnerConfirmedReaction(Context, TargetActor, OwnerActor, ReactionTag);
+		TargetPredictionComponent->ClientPlayOwnerConfirmedReaction(Context, TargetActor, OwnerActor, ReactionTag,
+			TransformSettings);
 	}
 	
-	MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag);
+	MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag, TransformSettings);
 }
 
 void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation(FPP_ReactionPredictionContext Context,
-	AActor* TargetActor, FGameplayTag ReactionTag)
+	AActor* TargetActor, FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings)
 {
 	AActor* OwnerActor = GetOwner();
 
@@ -123,6 +129,8 @@ void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation(FPP_
 	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return;
 
 	const float StartPosition = GetReactionStartPosition(Reaction);
+
+	ApplyReactionTransform(OwnerActor, TargetActor, TransformSettings);
 
 	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 }
@@ -149,7 +157,8 @@ bool UPP_PredictionComponent::ConsumePendingPredictedReaction(const FPP_Reaction
 }
 
 void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FPP_ReactionPredictionContext Context,
-	AActor* TargetActor, AActor* InstigatorActor, FGameplayTag ReactionTag)
+	AActor* TargetActor, AActor* InstigatorActor, FGameplayTag ReactionTag,
+	FPP_ReactionTransformSettings TransformSettings)
 {
 	AActor* OwnerActor = GetOwner();
 
@@ -186,6 +195,8 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	// The owning victim starts this montage later than the server because this RPC arrives after latency.
 	// While the local reaction plays, ignore both newly generated server corrections and already in-flight
 	// corrections on this client. Normal reconciliation resumes when the local montage window is finished.
+	ApplyReactionTransform(InstigatorActor, TargetActor, TransformSettings);
+
 	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 	
 	if (!bPlayed)
@@ -233,7 +244,7 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 }
 
 void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FPP_ReactionPredictionContext Context,
-	AActor* TargetActor, FGameplayTag ReactionTag, FVector ServerFinalLocation)
+	AActor* TargetActor, FGameplayTag ReactionTag, FVector ServerFinalLocation, FRotator ServerFinalRotation)
 {
 	AActor* OwnerActor = GetOwner();
 
@@ -256,15 +267,28 @@ void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FP
 	const FVector ClientFinalLocation = TargetActor->GetActorLocation();
 	const FVector Delta = ServerFinalLocation - ClientFinalLocation;
 	const float Distance = Delta.Size();
+	const FRotator ClientFinalRotation = TargetActor->GetActorRotation();
+	const float RotationDistance = FMath::Max3(
+		FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Pitch - ClientFinalRotation.Pitch)),
+		FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Yaw - ClientFinalRotation.Yaw)),
+		FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Roll - ClientFinalRotation.Roll)));
 
 
-	if (Distance <= FinalCorrectionTolerance) return;
+	if (Distance <= FinalCorrectionTolerance && RotationDistance <= FinalRotationCorrectionTolerance) return;
 
 	if (!bApplyInstantFinalCorrection) return;
 
 	if (Distance > MaxInstantFinalCorrectionDistance) return;
 
-	TargetActor->SetActorLocation(ServerFinalLocation, false, nullptr, ETeleportType::TeleportPhysics);
+	if (Distance > FinalCorrectionTolerance)
+	{
+		TargetActor->SetActorLocation(ServerFinalLocation, false, nullptr, ETeleportType::TeleportPhysics);
+	}
+
+	if (RotationDistance > FinalRotationCorrectionTolerance)
+	{
+		TargetActor->SetActorRotation(ServerFinalRotation, ETeleportType::TeleportPhysics);
+	}
 }
 
 void UPP_PredictionComponent::AddDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context,
@@ -515,4 +539,240 @@ bool UPP_PredictionComponent::PlayReactionMontageOnActor(AActor* TargetActor, co
 
 
 	return true;
+}
+
+void UPP_PredictionComponent::ApplyReactionTransform(AActor* InstigatorActor, AActor* TargetActor,
+	const FPP_ReactionTransformSettings& TransformSettings) const
+{
+	if (!InstigatorActor || !TargetActor) return;
+
+	const FPP_ReactionRotationSettings& RotationSettings = TransformSettings.RotationSettings;
+	if (RotationSettings.RotationDirection != EPP_ReactionRotationDirection::None)
+	{
+		AActor* ReferenceActor = ResolveReactionReferenceActor(InstigatorActor, TargetActor,
+			RotationSettings.ReferenceActorSource);
+
+		ApplyReactionTransformToRecipients(InstigatorActor, TargetActor, ReferenceActor,
+			RotationSettings.Recipient,
+			[this, &RotationSettings](AActor* RecipientActor, AActor* InReferenceActor)
+			{
+				ApplyReactionRotation(RecipientActor, InReferenceActor, RotationSettings);
+			});
+	}
+
+	const FPP_ReactionMovementSettings& MovementSettings = TransformSettings.MovementSettings;
+	if (MovementSettings.MoveDirection != EPP_ReactionMoveDirection::None)
+	{
+		AActor* ReferenceActor = ResolveReactionReferenceActor(InstigatorActor, TargetActor,
+			MovementSettings.ReferenceActorSource);
+
+		ApplyReactionTransformToRecipients(InstigatorActor, TargetActor, ReferenceActor,
+			MovementSettings.Recipient,
+			[this, &MovementSettings](AActor* RecipientActor, AActor* InReferenceActor)
+			{
+				ApplyReactionMovement(RecipientActor, InReferenceActor, MovementSettings);
+			});
+	}
+}
+
+void UPP_PredictionComponent::ApplyReactionTransformToRecipients(AActor* InstigatorActor, AActor* TargetActor,
+	AActor* ReferenceActor, EPP_ReactionTransformRecipient Recipient,
+	TFunctionRef<void(AActor* RecipientActor, AActor* ReferenceActor)> ApplyFunction) const
+{
+	if (!ReferenceActor) return;
+
+	auto ApplyToRecipient = [ReferenceActor, &ApplyFunction](AActor* RecipientActor)
+	{
+		if (!RecipientActor || RecipientActor == ReferenceActor) return;
+		ApplyFunction(RecipientActor, ReferenceActor);
+	};
+
+	switch (Recipient)
+	{
+	case EPP_ReactionTransformRecipient::Instigator:
+		ApplyToRecipient(InstigatorActor);
+		break;
+
+	case EPP_ReactionTransformRecipient::Target:
+		ApplyToRecipient(TargetActor);
+		break;
+
+	case EPP_ReactionTransformRecipient::Both:
+		ApplyToRecipient(InstigatorActor);
+		if (TargetActor != InstigatorActor)
+		{
+			ApplyToRecipient(TargetActor);
+		}
+		break;
+
+	default:
+		break;
+	}
+}
+
+void UPP_PredictionComponent::ApplyReactionMovement(AActor* RecipientActor, AActor* ReferenceActor,
+	const FPP_ReactionMovementSettings& MovementSettings) const
+{
+	if (!RecipientActor || !ReferenceActor) return;
+
+	if (MovementSettings.MoveDirection != EPP_ReactionMoveDirection::KeepCurrentDistance
+		&& MovementSettings.MoveDistance <= 0.f)
+	{
+		return;
+	}
+
+	const FVector ReferenceLocation = ReferenceActor->GetActorLocation();
+	const FVector RecipientLocation = RecipientActor->GetActorLocation();
+
+	FVector ReferenceForward = ReferenceActor->GetActorForwardVector();
+	ReferenceForward.Z = 0.f;
+	ReferenceForward = ReferenceForward.GetSafeNormal();
+	if (ReferenceForward.IsNearlyZero()) return;
+
+	FVector ReferenceRight = ReferenceActor->GetActorRightVector();
+	ReferenceRight.Z = 0.f;
+	ReferenceRight = ReferenceRight.GetSafeNormal();
+	if (ReferenceRight.IsNearlyZero())
+	{
+		ReferenceRight = FVector::CrossProduct(FVector::UpVector, ReferenceForward).GetSafeNormal();
+	}
+
+	const FVector RelativeLocation = RecipientLocation - ReferenceLocation;
+	const float CurrentForwardProjection = FVector::DotProduct(RelativeLocation, ReferenceForward);
+	const float CurrentLateralProjection = FVector::DotProduct(RelativeLocation, ReferenceRight);
+
+	float TargetForwardProjection = CurrentForwardProjection;
+	float TargetLateralProjection = CurrentLateralProjection;
+
+	switch (MovementSettings.MoveDirection)
+	{
+	case EPP_ReactionMoveDirection::KeepCurrentDistance:
+		break;
+
+	case EPP_ReactionMoveDirection::MoveCloser:
+		TargetForwardProjection -= MovementSettings.MoveDistance;
+		break;
+
+	case EPP_ReactionMoveDirection::MoveAway:
+		TargetForwardProjection += MovementSettings.MoveDistance;
+		break;
+
+	case EPP_ReactionMoveDirection::SnapToDistance:
+		TargetForwardProjection = MovementSettings.MoveDistance;
+		break;
+
+	case EPP_ReactionMoveDirection::None:
+	default:
+		return;
+	}
+
+	switch (MovementSettings.LateralOffsetMode)
+	{
+	case EPP_ReactionLateralOffsetMode::KeepCurrent:
+		break;
+
+	case EPP_ReactionLateralOffsetMode::AddOffset:
+		TargetLateralProjection += MovementSettings.LateralOffset;
+		break;
+
+	case EPP_ReactionLateralOffsetMode::SnapToOffset:
+		TargetLateralProjection = MovementSettings.LateralOffset;
+		break;
+
+	default:
+		break;
+	}
+
+	if (FMath::IsNearlyEqual(TargetForwardProjection, CurrentForwardProjection)
+		&& FMath::IsNearlyEqual(TargetLateralProjection, CurrentLateralProjection))
+	{
+		return;
+	}
+
+	FVector NewLocation = ReferenceLocation
+		+ (ReferenceForward * TargetForwardProjection)
+		+ (ReferenceRight * TargetLateralProjection);
+	NewLocation.Z = RecipientLocation.Z;
+
+	RecipientActor->SetActorLocation(NewLocation, MovementSettings.bSweep, nullptr,
+		ToTeleportType(MovementSettings.TeleportType));
+}
+
+void UPP_PredictionComponent::ApplyReactionRotation(AActor* RecipientActor, AActor* ReferenceActor,
+	const FPP_ReactionRotationSettings& RotationSettings) const
+{
+	if (!RecipientActor || !ReferenceActor) return;
+
+	const FVector ReferenceLocation = ReferenceActor->GetActorLocation();
+	const FVector RecipientLocation = RecipientActor->GetActorLocation();
+	FRotator DesiredRotation = RecipientActor->GetActorRotation();
+
+	switch (RotationSettings.RotationDirection)
+	{
+	case EPP_ReactionRotationDirection::FaceReferenceActor:
+		{
+			FVector ToReference = ReferenceLocation - RecipientLocation;
+			ToReference.Z = 0.f;
+			if (const FVector FacingDirection = ToReference.GetSafeNormal(); !FacingDirection.IsNearlyZero())
+			{
+				DesiredRotation = FacingDirection.Rotation();
+			}
+			break;
+		}
+
+	case EPP_ReactionRotationDirection::FaceAwayFromReference:
+		{
+			FVector AwayFromReference = RecipientLocation - ReferenceLocation;
+			AwayFromReference.Z = 0.f;
+			if (const FVector FacingDirection = AwayFromReference.GetSafeNormal(); !FacingDirection.IsNearlyZero())
+			{
+				DesiredRotation = FacingDirection.Rotation();
+			}
+			break;
+		}
+
+	case EPP_ReactionRotationDirection::FaceOppositeReferenceForward:
+		{
+			FVector OppositeDirection = -ReferenceActor->GetActorForwardVector();
+			OppositeDirection.Z = 0.f;
+			if (const FVector FacingDirection = OppositeDirection.GetSafeNormal(); !FacingDirection.IsNearlyZero())
+			{
+				DesiredRotation = FacingDirection.Rotation();
+			}
+			break;
+		}
+
+	case EPP_ReactionRotationDirection::FaceDirection:
+		DesiredRotation = RotationSettings.DirectionToFace;
+		break;
+
+	case EPP_ReactionRotationDirection::None:
+	default:
+		return;
+	}
+
+	RecipientActor->SetActorRotation(DesiredRotation, ToTeleportType(RotationSettings.TeleportType));
+}
+
+AActor* UPP_PredictionComponent::ResolveReactionReferenceActor(AActor* InstigatorActor, AActor* TargetActor,
+	EPP_ReactionReferenceActorSource ReferenceActorSource)
+{
+	switch (ReferenceActorSource)
+	{
+	case EPP_ReactionReferenceActorSource::Instigator:
+		return InstigatorActor;
+
+	case EPP_ReactionReferenceActorSource::Target:
+		return TargetActor;
+
+	default:
+		return nullptr;
+	}
+}
+
+ETeleportType UPP_PredictionComponent::ToTeleportType(EPP_ReactionTeleportType TeleportType)
+{
+	return TeleportType == EPP_ReactionTeleportType::ResetPhysics
+		? ETeleportType::ResetPhysics
+		: ETeleportType::None;
 }

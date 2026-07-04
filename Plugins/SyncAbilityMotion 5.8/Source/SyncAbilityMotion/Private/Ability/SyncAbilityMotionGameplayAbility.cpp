@@ -5,10 +5,82 @@
 #include "Animation/AnimMontage.h"
 #include "Component/SyncAbilityMotionComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/Controller.h"
+#include "GameFramework/SpringArmComponent.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogSyncAbilityMotionCamera, Log, All);
+
+namespace
+{
+const TCHAR* SyncAbilityMotionNetModeToString(const UWorld* World)
+{
+	if (!World) return TEXT("NoWorld");
+
+	switch (World->GetNetMode())
+	{
+	case NM_Client:
+		return TEXT("Client");
+	case NM_DedicatedServer:
+		return TEXT("DedicatedServer");
+	case NM_ListenServer:
+		return TEXT("ListenServer");
+	case NM_Standalone:
+		return TEXT("Standalone");
+	default:
+		return TEXT("Unknown");
+	}
+}
+
+void LogSyncAbilityMotionCameraState(const TCHAR* Phase, const FString& AbilityName, const ACharacter* Character,
+	const AController* Controller)
+{
+	if (!Character) return;
+
+	const UCameraComponent* Camera = Character->FindComponentByClass<UCameraComponent>();
+	const USpringArmComponent* SpringArm = Character->FindComponentByClass<USpringArmComponent>();
+	const FRotator ControlRotation = Controller ? Controller->GetControlRotation() : FRotator::ZeroRotator;
+	const FRotator ActorRotation = Character->GetActorRotation();
+	const FRotator BaseAimRotation = Character->GetBaseAimRotation();
+	const float ControlActorYawDelta = FRotator::NormalizeAxis(ControlRotation.Yaw - ActorRotation.Yaw);
+
+	UE_LOG(LogSyncAbilityMotionCamera, Warning,
+		TEXT("AbilityCamera Phase=%s Ability=%s Character=%s NetMode=%s Local=%d Authority=%d ")
+		TEXT("ControlRot=%s ActorLoc=%s ActorRot=%s BaseAimRot=%s ControlActorYawDelta=%.2f ")
+		TEXT("SpringArm=%s SpringArmWorldLoc=%s SpringArmWorldRot=%s SpringArmRelLoc=%s SpringArmRelRot=%s ")
+		TEXT("SpringArmTargetArm=%.2f SpringArmSocketOffset=%s SpringArmTargetOffset=%s SpringArmUsePawnControlRot=%d ")
+		TEXT("Camera=%s CameraWorldLoc=%s CameraWorldRot=%s CameraRelLoc=%s CameraRelRot=%s CameraUsePawnControlRot=%d"),
+		Phase,
+		*AbilityName,
+		*GetNameSafe(Character),
+		SyncAbilityMotionNetModeToString(Character->GetWorld()),
+		Character->IsLocallyControlled(),
+		Character->HasAuthority(),
+		*ControlRotation.ToCompactString(),
+		*Character->GetActorLocation().ToCompactString(),
+		*ActorRotation.ToCompactString(),
+		*BaseAimRotation.ToCompactString(),
+		ControlActorYawDelta,
+		*GetNameSafe(SpringArm),
+		SpringArm ? *SpringArm->GetComponentLocation().ToCompactString() : TEXT("None"),
+		SpringArm ? *SpringArm->GetComponentRotation().ToCompactString() : TEXT("None"),
+		SpringArm ? *SpringArm->GetRelativeLocation().ToCompactString() : TEXT("None"),
+		SpringArm ? *SpringArm->GetRelativeRotation().ToCompactString() : TEXT("None"),
+		SpringArm ? SpringArm->TargetArmLength : 0.f,
+		SpringArm ? *SpringArm->SocketOffset.ToCompactString() : TEXT("None"),
+		SpringArm ? *SpringArm->TargetOffset.ToCompactString() : TEXT("None"),
+		SpringArm && SpringArm->bUsePawnControlRotation,
+		*GetNameSafe(Camera),
+		Camera ? *Camera->GetComponentLocation().ToCompactString() : TEXT("None"),
+		Camera ? *Camera->GetComponentRotation().ToCompactString() : TEXT("None"),
+		Camera ? *Camera->GetRelativeLocation().ToCompactString() : TEXT("None"),
+		Camera ? *Camera->GetRelativeRotation().ToCompactString() : TEXT("None"),
+		Camera && Camera->bUsePawnControlRotation);
+}
+}
 
 USyncAbilityMotionGameplayAbility::USyncAbilityMotionGameplayAbility()
 {
@@ -274,7 +346,37 @@ void USyncAbilityMotionGameplayAbility::RotateAvatarToControllerYawOnActivate() 
 		: Character->GetController();
 	if (!Controller) return;
 
+	const FString AbilityName = GetName();
+	LogSyncAbilityMotionCameraState(TEXT("BeforeRotateToControllerYaw"), AbilityName, Character, Controller);
+
 	FRotator NewRot = Character->GetActorRotation();
 	NewRot.Yaw = Controller->GetControlRotation().Yaw;
 	Character->SetActorRotation(NewRot, ETeleportType::ResetPhysics);
+
+	LogSyncAbilityMotionCameraState(TEXT("AfterRotateToControllerYaw"), AbilityName, Character, Controller);
+
+	if (UWorld* World = Character->GetWorld())
+	{
+		TWeakObjectPtr<ACharacter> WeakCharacter(Character);
+		TWeakObjectPtr<AController> WeakController(Controller);
+
+		World->GetTimerManager().SetTimerForNextTick(FTimerDelegate::CreateLambda(
+			[WeakCharacter, WeakController, AbilityName]()
+			{
+				LogSyncAbilityMotionCameraState(TEXT("NextTickAfterRotateToControllerYaw"), AbilityName,
+					WeakCharacter.Get(), WeakController.Get());
+			}));
+
+		FTimerHandle DelayedCameraLogHandle;
+		World->GetTimerManager().SetTimer(
+			DelayedCameraLogHandle,
+			FTimerDelegate::CreateLambda(
+				[WeakCharacter, WeakController, AbilityName]()
+				{
+					LogSyncAbilityMotionCameraState(TEXT("DelayedAfterRotateToControllerYaw"), AbilityName,
+						WeakCharacter.Get(), WeakController.Get());
+				}),
+			0.05f,
+			false);
+	}
 }

@@ -67,19 +67,20 @@ public:
 	UPP_PredictionComponent();
 
 	UFUNCTION(BlueprintCallable, Category = "SyncPrediction|Reaction")
-	bool PlayPredictedReactionOnTargetProxy(AActor* TargetActor, FGameplayTag ReactionTag);
+	bool PlayPredictedReactionOnTargetProxy(AActor* TargetActor, FGameplayTag ReactionTag,
+		FPP_ReactionTransformSettings TransformSettings);
 
 	UFUNCTION(Server, Reliable)
 	void ServerConfirmPredictedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
-		FGameplayTag ReactionTag);
+		FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings);
 	
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
-		FGameplayTag ReactionTag);
+		FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings);
 
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastFinishConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
-		FGameplayTag ReactionTag, FVector ServerFinalLocation);
+		FGameplayTag ReactionTag, FVector ServerFinalLocation, FRotator ServerFinalRotation);
 	
 private:
 	bool CanPlayPredictedReactionOnTargetProxy(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction) const;
@@ -92,6 +93,19 @@ private:
 	
 	bool PlayReactionMontageOnActor(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction, float StartPosition,
 		bool bForceRestart) const;
+
+	void ApplyReactionTransform(AActor* InstigatorActor, AActor* TargetActor,
+		const FPP_ReactionTransformSettings& TransformSettings) const;
+	void ApplyReactionMovement(AActor* RecipientActor, AActor* ReferenceActor,
+		const FPP_ReactionMovementSettings& MovementSettings) const;
+	void ApplyReactionRotation(AActor* RecipientActor, AActor* ReferenceActor,
+		const FPP_ReactionRotationSettings& RotationSettings) const;
+	void ApplyReactionTransformToRecipients(AActor* InstigatorActor, AActor* TargetActor, AActor* ReferenceActor,
+		EPP_ReactionTransformRecipient Recipient,
+		TFunctionRef<void(AActor* RecipientActor, AActor* ReferenceActor)> ApplyFunction) const;
+	static AActor* ResolveReactionReferenceActor(AActor* InstigatorActor, AActor* TargetActor,
+		EPP_ReactionReferenceActorSource ReferenceActorSource);
+	static ETeleportType ToTeleportType(EPP_ReactionTeleportType TeleportType);
 	
 	bool ConsumePendingPredictedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 	FGameplayTag ReactionTag);
@@ -104,7 +118,7 @@ private:
 
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context,AActor* TargetActor,
-		AActor* InstigatorActor, FGameplayTag ReactionTag);
+		AActor* InstigatorActor, FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings);
 	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SyncPrediction|Reaction", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UPP_ReactionData> ReactionData = nullptr;
@@ -135,6 +149,9 @@ private:
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Centimeters"))
 	float FinalCorrectionTolerance = 2.0f;
+
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Degrees"))
+	float FinalRotationCorrectionTolerance = 1.0f;
 
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction")
 	bool bApplyInstantFinalCorrection = true;
