@@ -14,73 +14,6 @@
 #include "GameFramework/PlayerState.h"
 #include "GameplayEffect.h"
 
-namespace
-{
-static FString PP_NetModeToString(const UWorld* World)
-{
-if (!World) return TEXT("NoWorld");
-
-switch (World->GetNetMode())
-{
-case NM_Standalone: return TEXT("Standalone");
-case NM_DedicatedServer: return TEXT("DedicatedServer");
-case NM_ListenServer: return TEXT("ListenServer");
-case NM_Client: return TEXT("Client");
-default: return TEXT("UnknownNetMode");
-}
-}
-
-static FString PP_RoleToString(const AActor* Actor)
-{
-if (!Actor) return TEXT("NoActor");
-
-return FString::Printf(TEXT("LocalRole=%d RemoteRole=%d Auth=%d"),
-static_cast<int32>(Actor->GetLocalRole()),
-static_cast<int32>(Actor->GetRemoteRole()),
-Actor->HasAuthority() ? 1 : 0);
-}
-
-static FString PP_PawnFlagsToString(const AActor* Actor)
-{
-const APawn* Pawn = Cast<APawn>(Actor);
-return FString::Printf(TEXT("Pawn=%d LocalCtrl=%d"),
-Pawn ? 1 : 0,
-(Pawn && Pawn->IsLocallyControlled()) ? 1 : 0);
-}
-
-static FString PP_VecToString(const FVector& Vec)
-{
-return FString::Printf(TEXT("(%.2f %.2f %.2f)"), Vec.X, Vec.Y, Vec.Z);
-}
-
-static FString PP_RotToString(const FRotator& Rot)
-{
-return FString::Printf(TEXT("(P%.2f Y%.2f R%.2f)"), Rot.Pitch, Rot.Yaw, Rot.Roll);
-}
-
-static void PP_LogActorState(const TCHAR* Label, const UWorld* World, const AActor* Actor)
-{
-const ACharacter* Character = Cast<ACharacter>(Actor);
-const UCharacterMovementComponent* Move = Character ? Character->GetCharacterMovement() : nullptr;
-
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_STATE %s Time=%.3f Net=%s Actor=%s %s %s Loc=%s Rot=%s Vel=%s MoveMode=%d IgnoreErr=%d IgnoreCorr=%d RepMove=%d"),
-Label,
-World ? World->GetTimeSeconds() : -1.f,
-*PP_NetModeToString(World),
-*GetNameSafe(Actor),
-*PP_RoleToString(Actor),
-*PP_PawnFlagsToString(Actor),
-Actor ? *PP_VecToString(Actor->GetActorLocation()) : TEXT("(null)"),
-Actor ? *PP_RotToString(Actor->GetActorRotation()) : TEXT("(null)"),
-Move ? *PP_VecToString(Move->Velocity) : TEXT("(no move)"),
-Move ? static_cast<int32>(Move->MovementMode) : -1,
-Move && Move->bIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0,
-Move && Move->bClientIgnoreMovementCorrections ? 1 : 0,
-Actor && Actor->IsReplicatingMovement() ? 1 : 0);
-}
-}
-
 
 UPP_PredictionComponent::UPP_PredictionComponent()
 {
@@ -98,37 +31,18 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return false;
 	
 	if (!CanPlayPredictedReactionOnTargetProxy(TargetActor, Reaction)) return false;
-const FPP_ReactionPredictionContext Context = MakeReactionPredictionContext();
+	
+	const FPP_ReactionPredictionContext Context = MakeReactionPredictionContext();
+	
+	AddPendingPredictedReaction(Context, TargetActor, ReactionTag);
+	
+	const float StartPosition = GetReactionStartPosition(Reaction);
 
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_PREDICT_BEGIN Time=%.3f Ctx=%d Owner=%s Target=%s Tag=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(GetOwner()),
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString());
-PP_LogActorState(TEXT("ProxyPredict_Owner_Before"), GetWorld(), GetOwner());
-PP_LogActorState(TEXT("ProxyPredict_Target_Before"), GetWorld(), TargetActor);
-
-AddPendingPredictedReaction(Context, TargetActor, ReactionTag);
-
-const float StartPosition = GetReactionStartPosition(Reaction);
-
-ApplyReactionTransform(GetOwner(), TargetActor, TransformSettings);
-
-PP_LogActorState(TEXT("ProxyPredict_Owner_AfterTransform"), GetWorld(), GetOwner());
-PP_LogActorState(TEXT("ProxyPredict_Target_AfterTransform"), GetWorld(), TargetActor);
-
-const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
-
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_PREDICT_MONTAGE Time=%.3f Ctx=%d Played=%d StartPos=%.3f Montage=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-bPlayed ? 1 : 0,
-StartPosition,
-*GetNameSafe(Reaction.Montage));
-if (!bPlayed)
+	ApplyReactionTransform(GetOwner(), TargetActor, TransformSettings);
+	
+	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+	
+	if (!bPlayed)
 	{
 		ConsumePendingPredictedReaction(Context, TargetActor, ReactionTag);
 		return false;
@@ -154,32 +68,10 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_SERVER_CONFIRM_BEGIN Time=%.3f Ctx=%d Owner=%s Target=%s Tag=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(OwnerActor),
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString());
-PP_LogActorState(TEXT("ServerConfirm_Owner_Before"), GetWorld(), OwnerActor);
-PP_LogActorState(TEXT("ServerConfirm_Target_Before"), GetWorld(), TargetActor);
+	ApplyReactionTransform(OwnerActor, TargetActor, TransformSettings);
+	ApplyTargetEffects(OwnerActor, TargetActor, Reaction);
 
-ApplyReactionTransform(OwnerActor, TargetActor, TransformSettings);
-
-PP_LogActorState(TEXT("ServerConfirm_Owner_AfterTransform"), GetWorld(), OwnerActor);
-PP_LogActorState(TEXT("ServerConfirm_Target_AfterTransform"), GetWorld(), TargetActor);
-
-ApplyTargetEffects(OwnerActor, TargetActor, Reaction);
-
-const bool bServerPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
-
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_SERVER_CONFIRM_MONTAGE Time=%.3f Ctx=%d Played=%d StartPos=%.3f Montage=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-bServerPlayed ? 1 : 0,
-StartPosition,
-*GetNameSafe(Reaction.Montage));
+	const bool bServerPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 	
 	if (UWorld* World = GetWorld())
 	{
@@ -283,20 +175,9 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 	if (!TargetActor || !ReactionData || !ReactionTag.IsValid()) return;
 
 	FPP_ReactionDataEntry Reaction;
-if (!ReactionData->FindReaction(ReactionTag, Reaction)) return;
+	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return;
 
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_CLIENT_BEGIN Time=%.3f Ctx=%d Owner=%s Target=%s Instigator=%s Tag=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(OwnerActor),
-*GetNameSafe(TargetActor),
-*GetNameSafe(InstigatorActor),
-*ReactionTag.ToString());
-PP_LogActorState(TEXT("OwnerClient_Target_Before"), GetWorld(), TargetActor);
-PP_LogActorState(TEXT("OwnerClient_Instigator_Before"), GetWorld(), InstigatorActor);
-
-ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
+	ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
 	if (!TargetCharacter) return;
 
 	UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement();
@@ -321,20 +202,7 @@ ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
 	// corrections on this client. Normal reconciliation resumes when the local montage window is finished.
 	ApplyReactionTransform(InstigatorActor, TargetActor, TransformSettings);
 
-PP_LogActorState(TEXT("OwnerClient_Target_AfterTransform"), GetWorld(), TargetActor);
-PP_LogActorState(TEXT("OwnerClient_Instigator_AfterTransform"), GetWorld(), InstigatorActor);
-
-const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
-
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_CLIENT_MONTAGE Time=%.3f Ctx=%d Played=%d StartPos=%.3f Montage=%s PrevIgnoreErr=%d PrevIgnoreCorr=%d"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-bPlayed ? 1 : 0,
-StartPosition,
-*GetNameSafe(Reaction.Montage),
-bPreviousIgnoreClientErrorChecks ? 1 : 0,
-bPreviousClientIgnoreMovementCorrections ? 1 : 0);
+	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 	
 	if (!bPlayed)
 	{
@@ -365,28 +233,10 @@ bPreviousClientIgnoreMovementCorrections ? 1 : 0);
 				bPreviousIgnoreClientErrorChecks, bPreviousClientIgnoreMovementCorrections]()
 			{
 				if (UCharacterMovementComponent* StrongMovementComponent = WeakMovementComponent.Get())
-{
-AActor* StrongTargetActor = WeakTarget.Get();
-
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_CLIENT_RESTORE_CORRECTIONS Time=%.3f Ctx=%d Target=%s Tag=%s RestoreIgnoreErr=%d RestoreIgnoreCorr=%d"),
-StrongTargetActor && StrongTargetActor->GetWorld() ? StrongTargetActor->GetWorld()->GetTimeSeconds() : -1.f,
-CapturedContext.PredictionId,
-*GetNameSafe(StrongTargetActor),
-*CapturedReactionTag.ToString(),
-bPreviousIgnoreClientErrorChecks ? 1 : 0,
-bPreviousClientIgnoreMovementCorrections ? 1 : 0);
-PP_LogActorState(TEXT("OwnerClient_Target_BeforeRestoreCorrections"),
-StrongTargetActor ? StrongTargetActor->GetWorld() : nullptr,
-StrongTargetActor);
-
-StrongMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientErrorChecks;
-StrongMovementComponent->bClientIgnoreMovementCorrections = bPreviousClientIgnoreMovementCorrections;
-
-PP_LogActorState(TEXT("OwnerClient_Target_AfterRestoreCorrections"),
-StrongTargetActor ? StrongTargetActor->GetWorld() : nullptr,
-StrongTargetActor);
-}
+				{
+					StrongMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = bPreviousIgnoreClientErrorChecks;
+					StrongMovementComponent->bClientIgnoreMovementCorrections = bPreviousClientIgnoreMovementCorrections;
+				}
 			},
 			RemainingDuration,
 			false);
@@ -408,23 +258,11 @@ void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FP
 	if (!TargetActor || !ReactionTag.IsValid()) return;
 
 	const APawn* TargetPawn = Cast<APawn>(TargetActor);
-const bool bTargetLocallyControlled = TargetPawn && TargetPawn->IsLocallyControlled();
-if (bTargetLocallyControlled)
-{
-const FVector ClientFinalLocation = TargetActor->GetActorLocation();
-const float Distance = FVector::Dist(ServerFinalLocation, ClientFinalLocation);
-
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_MULTICAST_FINAL_SKIP_LOCAL_TARGET Time=%.3f Ctx=%d Target=%s Tag=%s DistToServer=%.2f ClientLoc=%s ServerLoc=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Distance,
-*PP_VecToString(ClientFinalLocation),
-*PP_VecToString(ServerFinalLocation));
-return;
-}
+	const bool bTargetLocallyControlled = TargetPawn && TargetPawn->IsLocallyControlled();
+	if (bTargetLocallyControlled)
+	{
+		return;
+	}
 
 	if (!ConsumeDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag))
 	{
