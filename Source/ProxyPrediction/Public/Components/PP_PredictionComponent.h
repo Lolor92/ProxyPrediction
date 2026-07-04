@@ -59,6 +59,30 @@ struct FPP_DeferredPredictedReactionCorrection
 	double TimeSeconds = 0.0;
 };
 
+USTRUCT()
+struct FPP_OwnerPendingFinalReactionCorrection
+{
+GENERATED_BODY()
+
+UPROPERTY()
+TWeakObjectPtr<AActor> TargetActor;
+
+UPROPERTY()
+FGameplayTag ReactionTag;
+
+UPROPERTY()
+int32 PredictionId = INDEX_NONE;
+
+UPROPERTY()
+FVector ServerFinalLocation = FVector::ZeroVector;
+
+UPROPERTY()
+FRotator ServerFinalRotation = FRotator::ZeroRotator;
+
+UPROPERTY()
+double TimeSeconds = 0.0;
+};
+
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class PROXYPREDICTION_API UPP_PredictionComponent : public UActorComponent
 {
@@ -118,6 +142,12 @@ private:
 	bool ConsumeDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag);
 	void RemoveExpiredDeferredPredictedReactionCorrections();
+
+void AddOwnerPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+FGameplayTag ReactionTag, const FVector& ServerFinalLocation, const FRotator& ServerFinalRotation);
+bool ConsumeOwnerPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+FGameplayTag ReactionTag, FVector& OutServerFinalLocation, FRotator& OutServerFinalRotation);
+void RemoveExpiredOwnerPendingFinalReactionCorrections();
 
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context,AActor* TargetActor,
