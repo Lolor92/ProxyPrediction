@@ -35,6 +35,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement")
 	bool bUseControllerRotationYaw = true;
 
+	/** When true, movement smoothly turns the character toward camera/controller yaw instead of snapping via bUseControllerRotationYaw. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement|Rotation")
+	bool bSmoothFaceCameraYawWhenMoving = true;
+
+	/** Degrees per second. Higher is snappier but still avoids a hard teleport-snap. Try 720-1440. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement|Rotation", meta=(ClampMin="0.0"))
+	float CameraFacingYawRotationSpeed = 1080.f;
+
+	/** If yaw error is tiny, snap the final bit to prevent micro-jitter. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement|Rotation", meta=(ClampMin="0.0"))
+	float CameraFacingYawSnapTolerance = 1.0f;
+
 protected:
 	/** Builds and publishes the local ability movement state used by the character and simulated proxies. */
 	void UpdateAbilityMotionReplication();

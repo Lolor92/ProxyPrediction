@@ -58,8 +58,36 @@ void USyncAbilityMotionAnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 
 	if (bDriveControllerYawFromAbilityState)
 	{
-		Character->bUseControllerRotationYaw = bAllowControllerYaw;
-		bUseControllerRotationYaw = bAllowControllerYaw;
+		// Do not enable bUseControllerRotationYaw while moving.
+		// That makes ACharacter copy controller yaw directly, which causes the visible snap
+		// when the camera is already rotated away from the character.
+		const bool bShouldSmoothFaceCameraYaw = bAllowControllerYaw && bSmoothFaceCameraYawWhenMoving;
+
+		Character->bUseControllerRotationYaw = bAllowControllerYaw && !bShouldSmoothFaceCameraYaw;
+		bUseControllerRotationYaw = Character->bUseControllerRotationYaw;
+
+		if (bShouldSmoothFaceCameraYaw && DeltaSeconds > 0.f)
+		{
+			FRotator CurrentRotation = Character->GetActorRotation();
+			FRotator TargetRotation = CurrentRotation;
+			TargetRotation.Yaw = AimRotation.Yaw;
+
+			const float YawDelta = FMath::Abs(FMath::FindDeltaAngleDegrees(CurrentRotation.Yaw, TargetRotation.Yaw));
+			if (YawDelta <= CameraFacingYawSnapTolerance)
+			{
+				Character->SetActorRotation(TargetRotation);
+			}
+			else
+			{
+				const FRotator NewRotation = FMath::RInterpConstantTo(
+					CurrentRotation,
+					TargetRotation,
+					DeltaSeconds,
+					CameraFacingYawRotationSpeed);
+
+				Character->SetActorRotation(NewRotation);
+			}
+		}
 	}
 }
 
