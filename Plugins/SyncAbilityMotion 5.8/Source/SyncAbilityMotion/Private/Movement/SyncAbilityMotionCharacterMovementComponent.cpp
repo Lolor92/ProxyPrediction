@@ -139,7 +139,7 @@ void USyncAbilityMotionCharacterMovementComponent::RefreshAbilityRootMotionMode(
 		Cast<USyncAbilityMotionAnimInstance>(MeshComp->GetAnimInstance());
 	if (!AnimInstance) return;
 
-	const bool bRootMotionEnabled = !bAbilityRootMotionSuppressed;
+	const bool bRootMotionEnabled = !bAbilityRootMotionSuppressed && !bIgnoreServerRootMotionMontageTrackCorrection;
 	AnimInstance->bRootMotionEnabled = bRootMotionEnabled;
 	AnimInstance->SetRootMotionMode(bRootMotionEnabled
 		? ERootMotionMode::RootMotionFromMontagesOnly
@@ -154,6 +154,7 @@ void USyncAbilityMotionCharacterMovementComponent::SetAbilityMovementInputSuppre
 void USyncAbilityMotionCharacterMovementComponent::SetIgnoreServerRootMotionMontageTrackCorrection(bool bInIgnore)
 {
 	bIgnoreServerRootMotionMontageTrackCorrection = bInIgnore;
+	RefreshAbilityRootMotionMode();
 }
 
 void USyncAbilityMotionCharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
