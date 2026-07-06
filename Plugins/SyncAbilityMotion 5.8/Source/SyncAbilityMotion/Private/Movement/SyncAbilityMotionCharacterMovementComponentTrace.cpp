@@ -1,5 +1,6 @@
 #include "Movement/SyncAbilityMotionCharacterMovementComponent.h"
 
+#include "AnimInstance/SyncAbilityMotionAnimInstance.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -8,16 +9,30 @@
 void USyncAbilityMotionCharacterMovementComponent::TickComponent(float DeltaTime, enum ELevelTick TickType,
 	FActorComponentTickFunction* ThisTickFunction)
 {
+	const bool bTraceOwnerReaction = bIgnoreServerRootMotionMontageTrackCorrection && CharacterOwner &&
+		CharacterOwner->IsLocallyControlled();
+
+	USkeletalMeshComponent* MeshComp = CharacterOwner ? CharacterOwner->GetMesh() : nullptr;
+	UAnimInstance* AnimInstance = MeshComp ? MeshComp->GetAnimInstance() : nullptr;
+
+	if (bTraceOwnerReaction && AnimInstance)
+	{
+		if (USyncAbilityMotionAnimInstance* SyncAnimInstance = Cast<USyncAbilityMotionAnimInstance>(AnimInstance))
+		{
+			SyncAnimInstance->bRootMotionEnabled = true;
+		}
+
+		AnimInstance->SetRootMotionMode(ERootMotionMode::RootMotionFromMontagesOnly);
+	}
+
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (!bIgnoreServerRootMotionMontageTrackCorrection || !CharacterOwner || !CharacterOwner->IsLocallyControlled())
+	if (!bTraceOwnerReaction)
 	{
 		bHasOwnerReactionTraceLocation = false;
 		return;
 	}
 
-	USkeletalMeshComponent* MeshComp = CharacterOwner->GetMesh();
-	UAnimInstance* AnimInstance = MeshComp ? MeshComp->GetAnimInstance() : nullptr;
 	const FAnimMontageInstance* MontageInstance = CharacterOwner->GetRootMotionAnimMontageInstance();
 	const FVector CurrentLoc = CharacterOwner->GetActorLocation();
 	const FVector DeltaLoc = bHasOwnerReactionTraceLocation ? CurrentLoc - LastOwnerReactionTraceLocation : FVector::ZeroVector;
