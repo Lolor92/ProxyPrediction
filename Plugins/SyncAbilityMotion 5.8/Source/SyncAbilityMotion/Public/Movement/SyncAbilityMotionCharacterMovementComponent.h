@@ -57,6 +57,15 @@ private:
 	bool bIgnoreServerRootMotionMontageTrackCorrection = false;
 
 	UPROPERTY(Transient)
+	bool bHasSavedOwnerReactionCorrectionFlags = false;
+
+	UPROPERTY(Transient)
+	bool bSavedOwnerReactionClientIgnoreMovementCorrections = false;
+
+	UPROPERTY(Transient)
+	bool bSavedOwnerReactionIgnoreErrorChecksAndCorrection = false;
+
+	UPROPERTY(Transient)
 	bool bHasOwnerReactionTraceLocation = false;
 
 	UPROPERTY(Transient)
