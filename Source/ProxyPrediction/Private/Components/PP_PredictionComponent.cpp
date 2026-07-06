@@ -13,41 +13,14 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
-#include "HAL/IConsoleManager.h"
 #include "GameplayEffect.h"
 #include "Component/SyncAbilityMotionComponent.h"
 #include "Movement/SyncAbilityMotionCharacterMovementComponent.h"
 
 
-
 namespace
 {
-static TAutoConsoleVariable<int32> CVarPPReactionDebug(
-TEXT("pp.ReactionDebug"),
-0,
-TEXT("Enable lightweight reaction prediction correction logs. 0=off, 1=on."),
-ECVF_Default);
 
-static TAutoConsoleVariable<int32> CVarPPReactionProxyVerbose(
-TEXT("pp.ReactionProxyVerbose"),
-0,
-TEXT("Enable verbose simulated-proxy reaction correction logs. 0=off, 1=on."),
-ECVF_Default);
-
-static bool PP_ShouldLogReactionDebug()
-{
-return CVarPPReactionDebug.GetValueOnGameThread() != 0;
-}
-
-static bool PP_ShouldLogProxyVerbose()
-{
-return PP_ShouldLogReactionDebug() && CVarPPReactionProxyVerbose.GetValueOnGameThread() != 0;
-}
-
-static FString PP_VecCompact(const FVector& Vec)
-{
-return FString::Printf(TEXT("(%.1f %.1f %.1f)"), Vec.X, Vec.Y, Vec.Z);
-}
 
 static void PP_PrepareCharacterForReactionRootMotion(AActor* Actor, const TCHAR* Role, int32 PredictionId,
 FGameplayTag ReactionTag)
@@ -58,38 +31,13 @@ if (!Character) return;
 UCharacterMovementComponent* MovementComponent = Character->GetCharacterMovement();
 if (!MovementComponent) return;
 
-const FVector BeforeLocation = Character->GetActorLocation();
-const FVector BeforeVelocity = MovementComponent->Velocity;
-const FVector BeforeAcceleration = MovementComponent->GetCurrentAcceleration();
-const FVector BeforePendingInput = Character->GetPendingMovementInputVector();
-const uint8 BeforeMovementMode = static_cast<uint8>(MovementComponent->MovementMode);
-const bool bHadAnimRootMotion = MovementComponent->HasAnimRootMotion();
-const bool bHadRootMotionSources = MovementComponent->CurrentRootMotion.HasActiveRootMotionSources();
-
 MovementComponent->StopMovementImmediately();
 MovementComponent->ClearAccumulatedForces();
 Character->ConsumeMovementInputVector();
 MovementComponent->Velocity = FVector::ZeroVector;
 MovementComponent->UpdateComponentVelocity();
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PREP_ROOT_MOTION Time=%.3f Role=%s Ctx=%d Actor=%s Tag=%s Loc=%s VelBefore=%s AccelBefore=%s PendingInputBefore=%s MoveModeBefore=%d HasAnimRM=%d HasRMSources=%d VelAfter=%s"),
-Character->GetWorld() ? Character->GetWorld()->GetTimeSeconds() : -1.f,
-Role ? Role : TEXT("None"),
-PredictionId,
-*GetNameSafe(Character),
-*ReactionTag.ToString(),
-*PP_VecCompact(BeforeLocation),
-*PP_VecCompact(BeforeVelocity),
-*PP_VecCompact(BeforeAcceleration),
-*PP_VecCompact(BeforePendingInput),
-BeforeMovementMode,
-bHadAnimRootMotion ? 1 : 0,
-bHadRootMotionSources ? 1 : 0,
-*PP_VecCompact(MovementComponent->Velocity));
-}
+
 }
 
 static void PP_SetOwnerMontageTrackCorrectionSuppressed(UCharacterMovementComponent* MovementComponent,
@@ -102,17 +50,7 @@ static void PP_SetOwnerMontageTrackCorrectionSuppressed(UCharacterMovementCompon
 
 	SyncMoveComponent->SetIgnoreServerRootMotionMontageTrackCorrection(bSuppressed);
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_TRACK_CORRECTION_%s Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s"),
-			bSuppressed ? TEXT("SUPPRESS_BEGIN") : TEXT("SUPPRESS_END"),
-			TargetActor && TargetActor->GetWorld() ? TargetActor->GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(TargetActor),
-			*ReactionTag.ToString(),
-			Reason ? Reason : TEXT("None"));
-	}
+
 }
 }
 
@@ -178,21 +116,6 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_SERVER_START_PRE Time=%.3f Ctx=%d Owner=%s Target=%s Tag=%s OwnerLoc=%s OwnerRot=%s TargetLoc=%s TargetRot=%s StartPos=%.3f"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(OwnerActor),
-			*GetNameSafe(TargetActor),
-			*ReactionTag.ToString(),
-			*PP_VecCompact(OwnerActor->GetActorLocation()),
-			*OwnerActor->GetActorRotation().ToCompactString(),
-			*PP_VecCompact(TargetActor->GetActorLocation()),
-			*TargetActor->GetActorRotation().ToCompactString(),
-			StartPosition);
-	}
 
 	ApplyReactionTransform(OwnerActor, TargetActor, TransformSettings);
 
@@ -202,38 +125,12 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 	TransformSettings.ServerStartLocation = ServerStartLocation;
 	TransformSettings.ServerStartRotation = ServerStartRotation;
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_SERVER_START_POST_TRANSFORM Time=%.3f Ctx=%d Owner=%s Target=%s Tag=%s OwnerLoc=%s OwnerRot=%s TargetLoc=%s TargetRot=%s StartPos=%.3f"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(OwnerActor),
-			*GetNameSafe(TargetActor),
-			*ReactionTag.ToString(),
-			*PP_VecCompact(OwnerActor->GetActorLocation()),
-			*OwnerActor->GetActorRotation().ToCompactString(),
-			*PP_VecCompact(TargetActor->GetActorLocation()),
-			*TargetActor->GetActorRotation().ToCompactString(),
-			StartPosition);
-	}
 
 	ApplyTargetEffects(OwnerActor, TargetActor, Reaction);
 
-	const bool bServerPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+	PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_SERVER_START_PLAY Time=%.3f Ctx=%d Target=%s Tag=%s Played=%d TargetLoc=%s TargetRot=%s"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(TargetActor),
-			*ReactionTag.ToString(),
-			bServerPlayed ? 1 : 0,
-			*PP_VecCompact(TargetActor->GetActorLocation()),
-			*TargetActor->GetActorRotation().ToCompactString());
-	}
+
 	
 	if (UWorld* World = GetWorld())
 	{
@@ -265,28 +162,14 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 	if (UPP_PredictionComponent* TargetPredictionComponent =
 	TargetActor->FindComponentByClass<UPP_PredictionComponent>())
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_SERVER_SEND_OWNER_RPC Time=%.3f Ctx=%d Owner=%s Target=%s TargetComp=%s Tag=%s TargetOwner=%s"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(OwnerActor),
-			*GetNameSafe(TargetActor),
-			*GetNameSafe(TargetPredictionComponent),
-			*ReactionTag.ToString(),
-			*GetNameSafe(TargetActor->GetOwner()));
+
 
 		TargetPredictionComponent->ClientPlayOwnerConfirmedReaction(Context, TargetActor, OwnerActor, ReactionTag,
 			ServerStartLocation, ServerStartRotation, TransformSettings);
 	}
 	else
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_SERVER_NO_TARGET_COMPONENT Time=%.3f Ctx=%d Owner=%s Target=%s Tag=%s"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(OwnerActor),
-			*GetNameSafe(TargetActor),
-			*ReactionTag.ToString());
+
 	}
 	
 	MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag,
@@ -311,45 +194,14 @@ if (bConsumedPendingPrediction)
 {
 AddDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag);
 
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_CONFIRM_CONSUMED_PENDING Time=%.3f Ctx=%d Owner=%s Target=%s Tag=%s TargetLocal=%d"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(OwnerActor),
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-bTargetLocallyControlled ? 1 : 0);
-}
 
 return;
 }
 
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_CONFIRM_NO_PENDING Time=%.3f Ctx=%d Owner=%s Target=%s Tag=%s TargetLocal=%d"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(OwnerActor),
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-bTargetLocallyControlled ? 1 : 0);
-}
 
 if (bTargetLocallyControlled)
 {
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_CONFIRM_SKIP_LOCAL_TARGET Time=%.3f Ctx=%d Owner=%s Target=%s Tag=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(OwnerActor),
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString());
-}
+
 return;
 }
 
@@ -363,22 +215,10 @@ ApplyLatestOlderProxyPendingFinalReactionCorrection(Context, TargetActor, TEXT("
 TargetActor->SetActorLocationAndRotation(ServerStartLocation, ServerStartRotation,
 	false, nullptr, ETeleportType::TeleportPhysics);
 
-const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_CONFIRM_PLAY_PROXY Time=%.3f Ctx=%d Owner=%s Target=%s Tag=%s Played=%d Loc=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(OwnerActor),
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-bPlayed ? 1 : 0,
-*PP_VecCompact(TargetActor->GetActorLocation()));
-}
-}
 
+}
 
 
 bool UPP_PredictionComponent::ConsumePendingPredictedReaction(const FPP_ReactionPredictionContext& Context,
@@ -408,50 +248,23 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FP
 {
 AActor* OwnerActor = GetOwner();
 
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_RPC_ENTRY Time=%.3f Ctx=%d ComponentOwner=%s Target=%s Instigator=%s Tag=%s OwnerLocal=%d TargetLocal=%d"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(OwnerActor),
-*GetNameSafe(TargetActor),
-*GetNameSafe(InstigatorActor),
-*ReactionTag.ToString(),
-Cast<APawn>(OwnerActor) && Cast<APawn>(OwnerActor)->IsLocallyControlled() ? 1 : 0,
-Cast<APawn>(TargetActor) && Cast<APawn>(TargetActor)->IsLocallyControlled() ? 1 : 0);
 
 if (!OwnerActor || OwnerActor != TargetActor)
 {
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_RPC_REJECT_OWNER_MISMATCH Time=%.3f Ctx=%d ComponentOwner=%s Target=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(OwnerActor),
-*GetNameSafe(TargetActor));
+
 return;
 }
 
 APawn* OwnerPawn = Cast<APawn>(OwnerActor);
 if (!OwnerPawn || !OwnerPawn->IsLocallyControlled())
 {
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_RPC_REJECT_NOT_LOCAL Time=%.3f Ctx=%d Owner=%s IsPawn=%d Local=%d"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(OwnerActor),
-OwnerPawn ? 1 : 0,
-OwnerPawn && OwnerPawn->IsLocallyControlled() ? 1 : 0);
+
 return;
 }
 
 if (!TargetActor || !ReactionData || !ReactionTag.IsValid())
 {
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_RPC_REJECT_BAD_DATA Time=%.3f Ctx=%d Target=%s ReactionData=%d TagValid=%d"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-ReactionData ? 1 : 0,
-ReactionTag.IsValid() ? 1 : 0);
+
 return;
 }
 
@@ -489,39 +302,12 @@ bAppliedCorrectionSuppression = true;
 PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, true, Context, TargetActor, ReactionTag,
 	TEXT("OwnerReactionStart"));
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_TRACK_SUPPRESS_BEGIN Time=%.3f Ctx=%d Target=%s Tag=%s Count=%d Smoothing=%d ErrChecks=%d ClientCorr=%d"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-OwnerReactionCorrectionSuppressionCount,
-static_cast<int32>(MovementComponent->NetworkSmoothingMode),
-MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0,
-MovementComponent->bClientIgnoreMovementCorrections ? 1 : 0);
-}
+
 }
 
 const float StartPosition = GetReactionStartPosition(Reaction);
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_START_PRE Time=%.3f Ctx=%d Target=%s Instigator=%s Tag=%s TargetLoc=%s TargetRot=%s InstigatorLoc=%s InstigatorRot=%s StartPos=%.3f SuppressionCount=%d"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*GetNameSafe(InstigatorActor),
-*ReactionTag.ToString(),
-*PP_VecCompact(TargetActor->GetActorLocation()),
-*TargetActor->GetActorRotation().ToCompactString(),
-InstigatorActor ? *PP_VecCompact(InstigatorActor->GetActorLocation()) : TEXT("(None)"),
-InstigatorActor ? *InstigatorActor->GetActorRotation().ToCompactString() : TEXT("None"),
-StartPosition,
-OwnerReactionCorrectionSuppressionCount);
-}
+
 	if (TransformSettings.bUseServerStartTransform)
 	{
 		TargetActor->SetActorLocationAndRotation(TransformSettings.ServerStartLocation,
@@ -533,40 +319,13 @@ OwnerReactionCorrectionSuppressionCount);
 			false, nullptr, ETeleportType::TeleportPhysics);
 	}
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_START_POST_TRANSFORM Time=%.3f Ctx=%d Target=%s Instigator=%s Tag=%s TargetLoc=%s TargetRot=%s InstigatorLoc=%s InstigatorRot=%s StartPos=%.3f"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*GetNameSafe(InstigatorActor),
-*ReactionTag.ToString(),
-*PP_VecCompact(TargetActor->GetActorLocation()),
-*TargetActor->GetActorRotation().ToCompactString(),
-InstigatorActor ? *PP_VecCompact(InstigatorActor->GetActorLocation()) : TEXT("(None)"),
-InstigatorActor ? *InstigatorActor->GetActorRotation().ToCompactString() : TEXT("None"),
-StartPosition);
-}
 
 if (SyncMovementComponent)
 {
 	SyncMovementComponent->SetAbilityRootMotionSuppressed(true);
 	bAppliedAbilityRootMotionSuppression = true;
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_ABILITY_RM_SUPPRESS_BEGIN Time=%.3f Ctx=%d Target=%s Tag=%s WasSuppressed=%d NowSuppressed=%d Loc=%s Rot=%s"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(TargetActor),
-			*ReactionTag.ToString(),
-			bSavedAbilityRootMotionSuppressed ? 1 : 0,
-			SyncMovementComponent->IsAbilityRootMotionSuppressed() ? 1 : 0,
-			*PP_VecCompact(TargetActor->GetActorLocation()),
-			*TargetActor->GetActorRotation().ToCompactString());
-	}
+
 }
 
 if (OwnerAnimInstance)
@@ -575,36 +334,11 @@ if (OwnerAnimInstance)
 	OwnerAnimInstance->SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
 	bAppliedVisualOnlyRootMotion = true;
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_VISUAL_ONLY_BEGIN Time=%.3f Ctx=%d Target=%s Tag=%s SavedRootMotionMode=%d CurrentRootMotionMode=%d Loc=%s Rot=%s"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(TargetActor),
-			*ReactionTag.ToString(),
-			static_cast<int32>(SavedOwnerRootMotionMode),
-			static_cast<int32>(OwnerAnimInstance->RootMotionMode.GetValue()),
-			*PP_VecCompact(TargetActor->GetActorLocation()),
-			*TargetActor->GetActorRotation().ToCompactString());
-	}
+
 }
 
 const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_START_PLAY Time=%.3f Ctx=%d Target=%s Tag=%s Played=%d TargetLoc=%s TargetRot=%s StartPos=%.3f"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-bPlayed ? 1 : 0,
-*PP_VecCompact(TargetActor->GetActorLocation()),
-*TargetActor->GetActorRotation().ToCompactString(),
-StartPosition);
-}
 
 if (!bPlayed)
 {
@@ -620,38 +354,14 @@ if (SyncMovementComponent && bAppliedAbilityRootMotionSuppression)
 {
 	SyncMovementComponent->SetAbilityRootMotionSuppressed(bSavedAbilityRootMotionSuppressed);
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_ABILITY_RM_SUPPRESS_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreSuppressed=%d Loc=%s Rot=%s"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(TargetActor),
-			*ReactionTag.ToString(),
-			TEXT("OwnerPlayFailed"),
-			bSavedAbilityRootMotionSuppressed ? 1 : 0,
-			*PP_VecCompact(TargetActor->GetActorLocation()),
-			*TargetActor->GetActorRotation().ToCompactString());
-	}
+
 }
 
 if (OwnerAnimInstance && bAppliedVisualOnlyRootMotion)
 {
 	OwnerAnimInstance->SetRootMotionMode(SavedOwnerRootMotionMode);
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_VISUAL_ONLY_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreRootMotionMode=%d Loc=%s Rot=%s"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(TargetActor),
-			*ReactionTag.ToString(),
-			TEXT("OwnerPlayFailed"),
-			static_cast<int32>(SavedOwnerRootMotionMode),
-			*PP_VecCompact(TargetActor->GetActorLocation()),
-			*TargetActor->GetActorRotation().ToCompactString());
-	}
+
 }
 
 if (MovementComponent)
@@ -706,16 +416,6 @@ StrongThis->OwnerReactionCorrectionSuppressionCount =
 FMath::Max(0, StrongThis->OwnerReactionCorrectionSuppressionCount - 1);
 }
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_SUPPRESS_END Time=%.3f Ctx=%d Target=%s Tag=%s Count=%d"),
-StrongTargetActor && StrongTargetActor->GetWorld() ? StrongTargetActor->GetWorld()->GetTimeSeconds() : -1.f,
-CapturedContext.PredictionId,
-*GetNameSafe(StrongTargetActor),
-*CapturedReactionTag.ToString(),
-StrongThis->OwnerReactionCorrectionSuppressionCount);
-}
 
 if (StrongThis->OwnerReactionCorrectionSuppressionCount > 0)
 {
@@ -732,38 +432,14 @@ if (StrongSyncMovementComponent && bCapturedAppliedAbilityRootMotionSuppression)
 {
 	StrongSyncMovementComponent->SetAbilityRootMotionSuppressed(bCapturedSavedAbilityRootMotionSuppressed);
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_ABILITY_RM_SUPPRESS_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreSuppressed=%d Loc=%s Rot=%s"),
-			StrongTargetActor && StrongTargetActor->GetWorld() ? StrongTargetActor->GetWorld()->GetTimeSeconds() : -1.f,
-			CapturedContext.PredictionId,
-			*GetNameSafe(StrongTargetActor),
-			*CapturedReactionTag.ToString(),
-			TEXT("OwnerReactionEnd"),
-			bCapturedSavedAbilityRootMotionSuppressed ? 1 : 0,
-			*PP_VecCompact(StrongTargetActor ? StrongTargetActor->GetActorLocation() : FVector::ZeroVector),
-			StrongTargetActor ? *StrongTargetActor->GetActorRotation().ToCompactString() : TEXT("None"));
-	}
+
 }
 
 if (StrongOwnerAnimInstance && bCapturedAppliedVisualOnlyRootMotion)
 {
 	StrongOwnerAnimInstance->SetRootMotionMode(CapturedSavedOwnerRootMotionMode);
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_VISUAL_ONLY_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreRootMotionMode=%d Loc=%s Rot=%s"),
-			StrongTargetActor && StrongTargetActor->GetWorld() ? StrongTargetActor->GetWorld()->GetTimeSeconds() : -1.f,
-			CapturedContext.PredictionId,
-			*GetNameSafe(StrongTargetActor),
-			*CapturedReactionTag.ToString(),
-			TEXT("OwnerReactionEnd"),
-			static_cast<int32>(CapturedSavedOwnerRootMotionMode),
-			*PP_VecCompact(StrongTargetActor ? StrongTargetActor->GetActorLocation() : FVector::ZeroVector),
-			StrongTargetActor ? *StrongTargetActor->GetActorRotation().ToCompactString() : TEXT("None"));
-	}
+
 }
 
 if (StrongMovementComponent && bCapturedAppliedCorrectionSuppression)
@@ -771,18 +447,7 @@ if (StrongMovementComponent && bCapturedAppliedCorrectionSuppression)
 PP_SetOwnerMontageTrackCorrectionSuppressed(StrongMovementComponent, false, CapturedContext, StrongTargetActor,
 CapturedReactionTag, TEXT("OwnerReactionEnd"));
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_TRACK_SUPPRESS_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Smoothing=%d Loc=%s Rot=%s"),
-StrongTargetActor && StrongTargetActor->GetWorld() ? StrongTargetActor->GetWorld()->GetTimeSeconds() : -1.f,
-CapturedContext.PredictionId,
-*GetNameSafe(StrongTargetActor),
-*CapturedReactionTag.ToString(),
-static_cast<int32>(StrongMovementComponent->NetworkSmoothingMode),
-*PP_VecCompact(StrongTargetActor ? StrongTargetActor->GetActorLocation() : FVector::ZeroVector),
-StrongTargetActor ? *StrongTargetActor->GetActorRotation().ToCompactString() : TEXT("None"));
-}
+
 }
 },
 RemainingDuration,
@@ -803,38 +468,14 @@ if (SyncMovementComponent && bAppliedAbilityRootMotionSuppression)
 {
 	SyncMovementComponent->SetAbilityRootMotionSuppressed(bSavedAbilityRootMotionSuppressed);
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_ABILITY_RM_SUPPRESS_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreSuppressed=%d Loc=%s Rot=%s"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(TargetActor),
-			*ReactionTag.ToString(),
-			TEXT("NoWorld"),
-			bSavedAbilityRootMotionSuppressed ? 1 : 0,
-			*PP_VecCompact(TargetActor->GetActorLocation()),
-			*TargetActor->GetActorRotation().ToCompactString());
-	}
+
 }
 
 if (OwnerAnimInstance && bAppliedVisualOnlyRootMotion)
 {
 	OwnerAnimInstance->SetRootMotionMode(SavedOwnerRootMotionMode);
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_VISUAL_ONLY_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreRootMotionMode=%d Loc=%s Rot=%s"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(TargetActor),
-			*ReactionTag.ToString(),
-			TEXT("NoWorld"),
-			static_cast<int32>(SavedOwnerRootMotionMode),
-			*PP_VecCompact(TargetActor->GetActorLocation()),
-			*TargetActor->GetActorRotation().ToCompactString());
-	}
+
 }
 
 if (MovementComponent)
@@ -845,7 +486,6 @@ TEXT("NoWorld"));
 }
 }
 }
-
 
 
 void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation(FPP_ReactionPredictionContext Context,
@@ -874,23 +514,6 @@ ReactionTag, TEXT("OwnerFinalArrivedAfterReaction"));
 }
 }
 
-if (PP_ShouldLogReactionDebug())
-{
-const FVector ClientLocation = TargetActor->GetActorLocation();
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_FINAL_STORED Time=%.3f Ctx=%d Owner=%s Target=%s Tag=%s Dist=%.2f SuppressionCount=%d Client=%s Server=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(OwnerActor),
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-FVector::Dist(ClientLocation, ServerFinalLocation),
-TargetActor->FindComponentByClass<UPP_PredictionComponent>()
-? TargetActor->FindComponentByClass<UPP_PredictionComponent>()->OwnerReactionCorrectionSuppressionCount
-: -1,
-*PP_VecCompact(ClientLocation),
-*PP_VecCompact(ServerFinalLocation));
-}
 
 return;
 }
@@ -900,32 +523,10 @@ ConsumeDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag);
 const bool bHadPendingPrediction =
 ConsumePendingPredictedReaction(Context, TargetActor, ReactionTag);
 
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_FINAL_RECV Time=%.3f Ctx=%d Owner=%s Target=%s Tag=%s HadDeferred=%d HadPending=%d Client=%s Server=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(OwnerActor),
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-bHadDeferredCorrection ? 1 : 0,
-bHadPendingPrediction ? 1 : 0,
-*PP_VecCompact(TargetActor->GetActorLocation()),
-*PP_VecCompact(ServerFinalLocation));
-}
 
 if (!bHadDeferredCorrection && !bHadPendingPrediction)
 {
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_FINAL_DROP_NO_MARKER Time=%.3f Ctx=%d Target=%s Tag=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString());
-}
+
 return;
 }
 
@@ -958,9 +559,6 @@ CapturedReactionTag, TEXT("ProxyFinalDelayElapsed"));
 ProxyFinalCorrectionDelaySeconds,
 false);
 }
-
-
-
 
 
 void UPP_PredictionComponent::AddDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context,
@@ -1106,16 +704,7 @@ FRotator ServerFinalRotation = FRotator::ZeroRotator;
 if (!ConsumeOwnerPendingFinalReactionCorrection(Context, TargetActor, ReactionTag,
 ServerFinalLocation, ServerFinalRotation))
 {
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_FINAL_NO_STORED Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"));
-}
+
 
 return false;
 }
@@ -1128,46 +717,11 @@ FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Pitch - ClientFinalRotati
 FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Yaw - ClientFinalRotation.Yaw)),
 FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Roll - ClientFinalRotation.Roll)));
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_FINAL_BEFORE_APPLY Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s Dist=%.2f RotDist=%.2f Client=%s Server=%s ClientRot=%s ServerRot=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"),
-Distance,
-RotationDistance,
-*PP_VecCompact(ClientFinalLocation),
-*PP_VecCompact(ServerFinalLocation),
-*ClientFinalRotation.ToCompactString(),
-*ServerFinalRotation.ToCompactString());
-}
 
 const bool bShouldApplyLocation = Distance > FinalCorrectionTolerance;
 const bool bShouldApplyRotation = RotationDistance > FinalRotationCorrectionTolerance;
 const float SmoothSeconds = FMath::Max(0.f, OwnerFinalCorrectionSmoothSeconds);
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_FINAL_SMOOTH_START Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s ApplyLoc=%d ApplyRot=%d Dist=%.2f RotDist=%.2f SmoothSeconds=%.3f CurrentLoc=%s ServerLoc=%s CurrentRot=%s ServerRot=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"),
-bShouldApplyLocation ? 1 : 0,
-bShouldApplyRotation ? 1 : 0,
-Distance,
-RotationDistance,
-SmoothSeconds,
-*PP_VecCompact(ClientFinalLocation),
-*PP_VecCompact(ServerFinalLocation),
-*ClientFinalRotation.ToCompactString(),
-*ServerFinalRotation.ToCompactString());
-}
 
 if (!bShouldApplyLocation && !bShouldApplyRotation)
 {
@@ -1184,18 +738,6 @@ false,
 nullptr,
 ETeleportType::TeleportPhysics);
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_FINAL_SMOOTH_END Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s Instant=1 Loc=%s Rot=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"),
-*PP_VecCompact(TargetActor->GetActorLocation()),
-*TargetActor->GetActorRotation().ToCompactString());
-}
 
 return true;
 }
@@ -1253,18 +795,7 @@ ETeleportType::TeleportPhysics);
 
 InnerWorld->GetTimerManager().ClearTimer(TimerHandle.Get());
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_FINAL_SMOOTH_END Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s Instant=0 Loc=%s Rot=%s"),
-InnerWorld->GetTimeSeconds(),
-CapturedContext.PredictionId,
-*GetNameSafe(StrongTarget),
-*CapturedReactionTag.ToString(),
-*CapturedReason,
-*PP_VecCompact(StrongTarget->GetActorLocation()),
-*StrongTarget->GetActorRotation().ToCompactString());
-}
+
 }
 },
 0.016f,
@@ -1323,17 +854,6 @@ Entry.ServerFinalLocation = ServerFinalLocation;
 Entry.ServerFinalRotation = ServerFinalRotation;
 Entry.TimeSeconds = World->GetTimeSeconds();
 
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_FINAL_BUFFERED Time=%.3f Ctx=%d Target=%s Tag=%s Updated=1 Loc=%s Rot=%s"),
-World->GetTimeSeconds(),
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-*PP_VecCompact(ServerFinalLocation),
-*ServerFinalRotation.ToCompactString());
-}
 
 return;
 }
@@ -1349,17 +869,7 @@ Entry.ServerFinalLocation = ServerFinalLocation;
 Entry.ServerFinalRotation = ServerFinalRotation;
 Entry.TimeSeconds = World->GetTimeSeconds();
 
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_FINAL_BUFFERED Time=%.3f Ctx=%d Target=%s Tag=%s Updated=0 Loc=%s Rot=%s"),
-World->GetTimeSeconds(),
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-*PP_VecCompact(ServerFinalLocation),
-*ServerFinalRotation.ToCompactString());
-}
+
 }
 
 bool UPP_PredictionComponent::ConsumeProxyPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context,
@@ -1401,16 +911,6 @@ FRotator DroppedServerFinalRotation = FRotator::ZeroRotator;
 ConsumeProxyPendingFinalReactionCorrection(Context, TargetActor, ReactionTag,
 DroppedServerFinalLocation, DroppedServerFinalRotation);
 
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_FINAL_DROP_NEWER_ACTIVE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"));
-}
 
 return false;
 }
@@ -1421,16 +921,7 @@ FRotator ServerFinalRotation = FRotator::ZeroRotator;
 if (!ConsumeProxyPendingFinalReactionCorrection(Context, TargetActor, ReactionTag,
 ServerFinalLocation, ServerFinalRotation))
 {
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_FINAL_NO_STORED Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"));
-}
+
 
 return false;
 }
@@ -1443,49 +934,17 @@ FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Pitch - ClientFinalRotati
 FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Yaw - ClientFinalRotation.Yaw)),
 FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Roll - ClientFinalRotation.Roll)));
 
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_FINAL_APPLY_CHECK Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s Dist=%.2f RotDist=%.2f Client=%s Server=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"),
-Distance,
-RotationDistance,
-*PP_VecCompact(ClientFinalLocation),
-*PP_VecCompact(ServerFinalLocation));
-}
 
 if (Distance <= FinalCorrectionTolerance && RotationDistance <= FinalRotationCorrectionTolerance)
 {
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_FINAL_WITHIN_TOLERANCE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"));
-}
+
 
 return true;
 }
 
 if (!bApplyInstantFinalCorrection)
 {
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_FINAL_BLOCKED_BY_SETTING Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"));
-}
+
 
 return false;
 }
@@ -1494,35 +953,14 @@ if (Distance > FinalCorrectionTolerance)
 {
 TargetActor->SetActorLocation(ServerFinalLocation, false, nullptr, ETeleportType::TeleportPhysics);
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_FINAL_APPLY_LOCATION Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s Dist=%.2f NewLoc=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"),
-Distance,
-*PP_VecCompact(TargetActor->GetActorLocation()));
-}
+
 }
 
 if (RotationDistance > FinalRotationCorrectionTolerance)
 {
 TargetActor->SetActorRotation(ServerFinalRotation, ETeleportType::TeleportPhysics);
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_FINAL_APPLY_ROTATION Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RotDist=%.2f"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"),
-RotationDistance);
-}
+
 }
 
 return true;
@@ -1558,17 +996,6 @@ if (BestIndex == INDEX_NONE) return false;
 
 const FPP_OwnerPendingFinalReactionCorrection Entry = ProxyPendingFinalReactionCorrections[BestIndex];
 
-if (PP_ShouldLogProxyVerbose())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_PROXY_PREFLIGHT_APPLY_OLDER_FINAL Time=%.3f NewCtx=%d OldCtx=%d Target=%s OldTag=%s Reason=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-Entry.PredictionId,
-*GetNameSafe(TargetActor),
-*Entry.ReactionTag.ToString(),
-Reason ? Reason : TEXT("None"));
-}
 
 FPP_ReactionPredictionContext OlderContext;
 OlderContext.PredictionId = Entry.PredictionId;
@@ -1798,26 +1225,7 @@ void UPP_PredictionComponent::PrepareOwnerReactionRootMotionState(ACharacter* Ta
 		AnimInstance->SetRootMotionMode(ERootMotionMode::RootMotionFromMontagesOnly);
 	}
 
-	if (PP_ShouldLogReactionDebug())
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_ROOT_MOTION_READY Time=%.3f Ctx=%d Target=%s Tag=%s HadSyncMotion=%d HadSyncMove=%d WasRMSuppressed=%d WasInputSuppressed=%d PrevScale=%.3f NewScale=%.3f HasAnim=%d Vel=%s Accel=%s HasAnimRM=%d HasRMSources=%d"),
-			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-			Context.PredictionId,
-			*GetNameSafe(TargetCharacter),
-			*ReactionTag.ToString(),
-			SyncMotionComponent ? 1 : 0,
-			SyncMoveComponent ? 1 : 0,
-			bWasAbilityRootMotionSuppressed ? 1 : 0,
-			bWasAbilityMovementInputSuppressed ? 1 : 0,
-			SavedRootMotionScale,
-			TargetCharacter->GetAnimRootMotionTranslationScale(),
-			AnimInstance ? 1 : 0,
-			MovementComponent ? *PP_VecCompact(MovementComponent->Velocity) : TEXT("(None)"),
-			MovementComponent ? *PP_VecCompact(MovementComponent->GetCurrentAcceleration()) : TEXT("(None)"),
-			MovementComponent && MovementComponent->HasAnimRootMotion() ? 1 : 0,
-			MovementComponent && MovementComponent->CurrentRootMotion.HasActiveRootMotionSources() ? 1 : 0);
-	}
+
 }
 
 bool UPP_PredictionComponent::PlayReactionMontageOnActor(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction,
