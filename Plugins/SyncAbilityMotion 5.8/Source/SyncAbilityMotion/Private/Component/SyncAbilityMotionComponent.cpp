@@ -326,9 +326,16 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 	ACharacter* BestRejectedCharacter = nullptr;
 	float BestRejectedAngle = 0.f;
 	float BestRejectedDot = -1.f;
-	const float RequiredDot = FMath::Cos(FMath::DegreesToRadians(RootMotionCollisionForwardAngleDegrees));
+	// Diagnostic: side grazes were still treated as frontal blocks at wide angles like 32 degrees.
+	// Clamp the pause cone so only near-frontal capsule contact pauses root motion.
+	constexpr float MaxRootMotionPauseForwardAngleDegrees = 20.f;
+	const float EffectiveForwardAngleDegrees = FMath::Min(
+		RootMotionCollisionForwardAngleDegrees,
+		MaxRootMotionPauseForwardAngleDegrees);
+
+	const float RequiredDot = FMath::Cos(FMath::DegreesToRadians(EffectiveForwardAngleDegrees));
 	const float GraceAngleDegrees = FMath::Clamp(
-		RootMotionCollisionForwardAngleDegrees + SyncAbilityMotionCollisionProbe::AngleReleaseGraceDegrees,
+		EffectiveForwardAngleDegrees + SyncAbilityMotionCollisionProbe::AngleReleaseGraceDegrees,
 		0.f,
 		180.f);
 	const float GraceRequiredDot = FMath::Cos(FMath::DegreesToRadians(GraceAngleDegrees));
@@ -390,14 +397,15 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		if (bContactBlock && !bStrictAngleBlock && !bAngleGraceBlock)
 		{
 			UE_LOG(LogTemp, Warning,
-				TEXT("SAM_COLLISION_CONTACT_ONLY_IGNORED Owner=%s Other=%s Dot=%.3f Angle=%.2f ContactDot=%.3f ContactAngle=%.2f ProbeDistance=%.2f"),
+				TEXT("SAM_COLLISION_CONTACT_ONLY_IGNORED Owner=%s Other=%s Dot=%.3f Angle=%.2f ContactDot=%.3f ContactAngle=%.2f ProbeDistance=%.2f EffectiveForwardAngle=%.2f"),
 				*GetNameSafe(Character),
 				*GetNameSafe(OtherCharacter),
 				Dot,
 				Angle,
 				ContactDot,
 				ContactAngle,
-				RootMotionCollisionProbeDistance);
+				RootMotionCollisionProbeDistance,
+				EffectiveForwardAngleDegrees);
 
 			continue;
 		}
@@ -407,22 +415,24 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 			if (!bLastLoggedRootMotionCollisionBlocked)
 			{
 				UE_LOG(LogTemp, Warning,
-					TEXT("SAM_COLLISION_FRONT_BLOCK Owner=%s Other=%s Dot=%.3f Angle=%.2f ProbeDistance=%.2f"),
+					TEXT("SAM_COLLISION_FRONT_BLOCK Owner=%s Other=%s Dot=%.3f Angle=%.2f ProbeDistance=%.2f EffectiveForwardAngle=%.2f"),
 					*GetNameSafe(Character),
 					*GetNameSafe(OtherCharacter),
 					Dot,
 					Angle,
-					RootMotionCollisionProbeDistance);
+					RootMotionCollisionProbeDistance,
+					EffectiveForwardAngleDegrees);
 			}
 			else if (bAngleGraceBlock)
 			{
 				UE_LOG(LogTemp, Warning,
-					TEXT("SAM_COLLISION_FRONT_GRACE_BLOCK Owner=%s Other=%s Dot=%.3f Angle=%.2f ProbeDistance=%.2f"),
+					TEXT("SAM_COLLISION_FRONT_GRACE_BLOCK Owner=%s Other=%s Dot=%.3f Angle=%.2f ProbeDistance=%.2f EffectiveForwardAngle=%.2f"),
 					*GetNameSafe(Character),
 					*GetNameSafe(OtherCharacter),
 					Dot,
 					Angle,
-					RootMotionCollisionProbeDistance);
+					RootMotionCollisionProbeDistance,
+					EffectiveForwardAngleDegrees);
 			}
 
 			bLastLoggedRootMotionCollisionBlocked = true;

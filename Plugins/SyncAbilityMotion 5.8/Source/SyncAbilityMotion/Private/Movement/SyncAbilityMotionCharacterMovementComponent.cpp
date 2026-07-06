@@ -140,8 +140,8 @@ void USyncAbilityMotionCharacterMovementComponent::SetAbilityRootMotionSuppresse
 	if (CharacterOwner && CharacterOwner->IsLocallyControlled() && bInSuppressed)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("SAM_RM_SUPPRESS_CALLSTACK Owner=%s RootMotion is being suppressed on the local owner"),
-			*GetNameSafe(CharacterOwner));
+		       TEXT("SAM_RM_SUPPRESS_CALLSTACK Owner=%s RootMotion is being suppressed on the local owner"),
+		       *GetNameSafe(CharacterOwner));
 
 		FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
 	}
@@ -262,54 +262,56 @@ FNetworkPredictionData_Client* USyncAbilityMotionCharacterMovementComponent::Get
 
 // SAM_DIAGNOSTIC_HANDLE_IMPACT_IMPL
 void USyncAbilityMotionCharacterMovementComponent::HandleImpact(
-const FHitResult& Hit,
-float TimeSlice,
-const FVector& MoveDelta)
+	const FHitResult& Hit,
+	float TimeSlice,
+	const FVector& MoveDelta)
 {
-const bool bLocalOwner = CharacterOwner && CharacterOwner->IsLocallyControlled();
-const bool bShouldLog =
-bLocalOwner &&
-(
-Velocity.Size2D() > 600.f ||
-MoveDelta.Size2D() > 20.f ||
-Hit.bStartPenetrating ||
-Hit.PenetrationDepth > KINDA_SMALL_NUMBER
-);
+	const bool bLocalOwner = CharacterOwner && CharacterOwner->IsLocallyControlled();
+	const bool bShouldLog =
+		bLocalOwner &&
+		(
+			Velocity.Size2D() > 600.f ||
+			MoveDelta.Size2D() > 20.f ||
+			Hit.bStartPenetrating ||
+			Hit.PenetrationDepth > KINDA_SMALL_NUMBER
+		);
 
-if (bShouldLog)
-{
-UAnimInstance* AnimInstance =
-CharacterOwner && CharacterOwner->GetMesh()
-? CharacterOwner->GetMesh()->GetAnimInstance()
-: nullptr;
+	if (bShouldLog)
+	{
+		UAnimInstance* AnimInstance =
+			CharacterOwner && CharacterOwner->GetMesh()
+				? CharacterOwner->GetMesh()->GetAnimInstance()
+				: nullptr;
 
-UE_LOG(LogTemp, Warning,
-TEXT("SAM_IMPACT Owner=%s Local=%d Auth=%d HitActor=%s HitComp=%s Blocking=%d StartPen=%d PenDepth=%.2f Time=%.3f TimeSlice=%.4f MoveDelta=%s MoveDelta2D=%.2f ImpactPoint=%s ImpactNormal=%s Normal=%s Loc=%s Vel=%s Speed2D=%.2f MoveMode=%d RootMotionMode=%d RM_Suppressed=%d InputSuppressed=%d"),
-*GetNameSafe(CharacterOwner),
-CharacterOwner ? CharacterOwner->IsLocallyControlled() : false,
-CharacterOwner ? CharacterOwner->HasAuthority() : false,
-*GetNameSafe(Hit.GetActor()),
-*GetNameSafe(Hit.GetComponent()),
-Hit.bBlockingHit,
-Hit.bStartPenetrating,
-Hit.PenetrationDepth,
-Hit.Time,
-TimeSlice,
-*MoveDelta.ToCompactString(),
-MoveDelta.Size2D(),
-*Hit.ImpactPoint.ToCompactString(),
-*Hit.ImpactNormal.ToCompactString(),
-*Hit.Normal.ToCompactString(),
-CharacterOwner ? *CharacterOwner->GetActorLocation().ToCompactString() : TEXT("None"),
-*Velocity.ToCompactString(),
-Velocity.Size2D(),
-MovementMode,
-AnimInstance ? AnimInstance->RootMotionMode.GetValue() : -1,
-bAbilityRootMotionSuppressed,
-bAbilityMovementInputSuppressed);
-}
+		UE_LOG(LogTemp, Warning,
+		       TEXT(
+			       "SAM_IMPACT Owner=%s Local=%d Auth=%d HitActor=%s HitComp=%s Blocking=%d StartPen=%d PenDepth=%.2f Time=%.3f TimeSlice=%.4f MoveDelta=%s MoveDelta2D=%.2f ImpactPoint=%s ImpactNormal=%s Normal=%s Loc=%s Vel=%s Speed2D=%.2f MoveMode=%d RootMotionMode=%d RM_Suppressed=%d InputSuppressed=%d"
+		       ),
+		       *GetNameSafe(CharacterOwner),
+		       CharacterOwner ? CharacterOwner->IsLocallyControlled() : false,
+		       CharacterOwner ? CharacterOwner->HasAuthority() : false,
+		       *GetNameSafe(Hit.GetActor()),
+		       *GetNameSafe(Hit.GetComponent()),
+		       Hit.bBlockingHit,
+		       Hit.bStartPenetrating,
+		       Hit.PenetrationDepth,
+		       Hit.Time,
+		       TimeSlice,
+		       *MoveDelta.ToCompactString(),
+		       MoveDelta.Size2D(),
+		       *Hit.ImpactPoint.ToCompactString(),
+		       *Hit.ImpactNormal.ToCompactString(),
+		       *Hit.Normal.ToCompactString(),
+		       CharacterOwner ? *CharacterOwner->GetActorLocation().ToCompactString() : TEXT("None"),
+		       *Velocity.ToCompactString(),
+		       Velocity.Size2D(),
+		       MovementMode,
+		       AnimInstance ? AnimInstance->RootMotionMode.GetValue() : -1,
+		       bAbilityRootMotionSuppressed,
+		       bAbilityMovementInputSuppressed);
+	}
 
-Super::HandleImpact(Hit, TimeSlice, MoveDelta);
+	Super::HandleImpact(Hit, TimeSlice, MoveDelta);
 }
 
 FVector USyncAbilityMotionCharacterMovementComponent::ScaleInputAcceleration(const FVector& InputAcceleration) const
