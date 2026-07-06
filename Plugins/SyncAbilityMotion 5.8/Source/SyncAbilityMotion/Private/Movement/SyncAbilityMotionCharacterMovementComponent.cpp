@@ -4,6 +4,7 @@
 #include "Animation/AnimMontage.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Character.h"
+#include "Misc/OutputDevice.h"
 
 namespace SyncAbilityMotionFlags
 {
@@ -133,6 +134,16 @@ void USyncAbilityMotionCharacterMovementComponent::SetAbilityRootMotionSuppresse
 	       bInSuppressed,
 	       CharacterOwner ? *CharacterOwner->GetActorLocation().ToCompactString() : TEXT("None"),
 	       *Velocity.ToCompactString());
+
+
+	if (CharacterOwner && CharacterOwner->IsLocallyControlled() && bInSuppressed)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("SAM_RM_SUPPRESS_CALLSTACK Owner=%s RootMotion is being suppressed on the local owner"),
+			*GetNameSafe(CharacterOwner));
+
+		FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
+	}
 
 	bAbilityRootMotionSuppressed = bInSuppressed;
 	RefreshAbilityRootMotionMode();
