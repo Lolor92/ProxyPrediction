@@ -230,7 +230,7 @@ void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionPositio
 		const FVector ClientLoc = CharacterOwner ? CharacterOwner->GetActorLocation() : FVector::ZeroVector;
 
 		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_RM_CORRECTION_SKIP_RPC Time=%.3f Character=%s Source=AnimRootMotion TimeStamp=%.3f ServerTrack=%.3f LocalTrack=%.3f Dist=%.2f ClientLoc=%s ServerLoc=%s Montage=%s"),
+			TEXT("PP_REACTION_OWNER_RM_CORRECTION_APPLY_RPC Time=%.3f Character=%s Source=AnimRootMotion TimeStamp=%.3f ServerTrack=%.3f LocalTrack=%.3f Dist=%.2f ClientLoc=%s ServerLoc=%s Montage=%s"),
 			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
 			*GetNameSafe(CharacterOwner),
 			TimeStamp,
@@ -240,10 +240,10 @@ void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionPositio
 			*ClientLoc.ToCompactString(),
 			*ServerLoc.ToCompactString(),
 			MontageInstance ? *GetNameSafe(MontageInstance->Montage) : TEXT("None"));
-
-		return;
 	}
 
+	const FScopedIgnoreMontageTrackCorrection ScopedIgnore(CharacterOwner,
+		bIgnoreServerRootMotionMontageTrackCorrection);
 	Super::ClientAdjustRootMotionPosition_Implementation(TimeStamp, ServerMontageTrackPosition, ServerLoc,
 		ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData, ServerBoneName, bHasBase,
 		bBaseRelativePosition, ServerMovementMode);
@@ -290,7 +290,7 @@ void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionSourceP
 		const FVector ClientLoc = CharacterOwner ? CharacterOwner->GetActorLocation() : FVector::ZeroVector;
 
 		UE_LOG(LogTemp, Warning,
-			TEXT("PP_REACTION_OWNER_RM_CORRECTION_SKIP_RPC Time=%.3f Character=%s Source=RootMotionSource TimeStamp=%.3f ServerTrack=%.3f LocalTrack=%.3f Dist=%.2f ClientLoc=%s ServerLoc=%s Montage=%s"),
+			TEXT("PP_REACTION_OWNER_RM_CORRECTION_APPLY_RPC Time=%.3f Character=%s Source=RootMotionSource TimeStamp=%.3f ServerTrack=%.3f LocalTrack=%.3f Dist=%.2f ClientLoc=%s ServerLoc=%s Montage=%s"),
 			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
 			*GetNameSafe(CharacterOwner),
 			TimeStamp,
@@ -300,10 +300,10 @@ void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionSourceP
 			*ClientLoc.ToCompactString(),
 			*ServerLoc.ToCompactString(),
 			MontageInstance ? *GetNameSafe(MontageInstance->Montage) : TEXT("None"));
-
-		return;
 	}
 
+	const FScopedIgnoreMontageTrackCorrection ScopedIgnore(CharacterOwner,
+		bIgnoreServerRootMotionMontageTrackCorrection && bHasAnimRootMotion);
 	Super::ClientAdjustRootMotionSourcePosition_Implementation(TimeStamp, ServerRootMotion, bHasAnimRootMotion,
 		ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData,
 		ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);
