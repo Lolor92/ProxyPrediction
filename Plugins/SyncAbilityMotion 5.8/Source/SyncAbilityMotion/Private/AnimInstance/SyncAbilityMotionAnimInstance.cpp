@@ -98,6 +98,24 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 	USyncAbilityMotionComponent* SyncMotion = GetMotionComponentSafe();
 	if (!SyncMotion) return;
 
+	auto LogIgnoreTrackCorrectionReason =
+		[this](const TCHAR* Reason, bool bRequestedValue, const USyncAbilityMotionGameplayAbility* Ability)
+	{
+		ACharacter* OwnerCharacter = Character;
+		const UAnimMontage* ActiveMontage = GetCurrentActiveMontage();
+
+		UE_LOG(LogTemp, Warning,
+			TEXT("SAM_IGNORE_RM_TRACK_CORRECTION_REASON Reason=%s Requested=%d Owner=%s Local=%d Auth=%d Ability=%s Montage=%s Loc=%s"),
+			Reason,
+			bRequestedValue,
+			*GetNameSafe(OwnerCharacter),
+			OwnerCharacter ? OwnerCharacter->IsLocallyControlled() : false,
+			OwnerCharacter ? OwnerCharacter->HasAuthority() : false,
+			*GetNameSafe(Ability),
+			*GetNameSafe(ActiveMontage),
+			OwnerCharacter ? *OwnerCharacter->GetActorLocation().ToCompactString() : TEXT("None"));
+	};
+
 	float Percent = 0.f;
 	USyncAbilityMotionGameplayAbility* Ability = nullptr;
 	const bool bHasAbilityContext = GetAbilityPercentMontagePlayed(Percent, Ability);
@@ -109,6 +127,7 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 		if (USyncAbilityMotionCharacterMovementComponent* MoveComp =
 			Cast<USyncAbilityMotionCharacterMovementComponent>(CharacterMovementComponent))
 		{
+			LogIgnoreTrackCorrectionReason(TEXT("NoAbilityContext"), false, Ability);
 			MoveComp->SetIgnoreServerRootMotionMontageTrackCorrection(false);
 		}
 
@@ -135,6 +154,7 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 		if (USyncAbilityMotionCharacterMovementComponent* MoveComp =
 			Cast<USyncAbilityMotionCharacterMovementComponent>(CharacterMovementComponent))
 		{
+			LogIgnoreTrackCorrectionReason(TEXT("AbilityOrMontageChanged"), false, Ability);
 			MoveComp->SetIgnoreServerRootMotionMontageTrackCorrection(false);
 		}
 
@@ -220,6 +240,11 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 	if (USyncAbilityMotionCharacterMovementComponent* MoveComp =
 		Cast<USyncAbilityMotionCharacterMovementComponent>(CharacterMovementComponent))
 	{
+		LogIgnoreTrackCorrectionReason(
+			bIgnoreMovementCorrectionsDuringAbility ? TEXT("AbilityWantsIgnoreTrue") : TEXT("AbilityWantsIgnoreFalse"),
+			bIgnoreMovementCorrectionsDuringAbility,
+			Ability);
+
 		MoveComp->SetIgnoreServerRootMotionMontageTrackCorrection(bIgnoreMovementCorrectionsDuringAbility);
 		MoveComp->SetAbilityRootMotionSuppressed(!DesiredState.bRootMotionEnabled);
 		MoveComp->SetAbilityMovementInputSuppressed(DesiredState.bMovementInputSuppressed);
