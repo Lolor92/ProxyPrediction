@@ -1135,24 +1135,130 @@ RotationDistance,
 *ServerFinalRotation.ToCompactString());
 }
 
+const bool bShouldApplyLocation = Distance > FinalCorrectionTolerance;
+const bool bShouldApplyRotation = RotationDistance > FinalRotationCorrectionTolerance;
+const float SmoothSeconds = FMath::Max(0.f, OwnerFinalCorrectionSmoothSeconds);
+
 if (PP_ShouldLogReactionDebug())
 {
 UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_FINAL_DIAGNOSTIC_ONLY Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s WouldApplyLoc=%d WouldApplyRot=%d Dist=%.2f RotDist=%.2f CurrentLoc=%s ServerLoc=%s CurrentRot=%s ServerRot=%s"),
+TEXT("PP_REACTION_OWNER_FINAL_SMOOTH_START Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s ApplyLoc=%d ApplyRot=%d Dist=%.2f RotDist=%.2f SmoothSeconds=%.3f CurrentLoc=%s ServerLoc=%s CurrentRot=%s ServerRot=%s"),
 GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
 Context.PredictionId,
 *GetNameSafe(TargetActor),
 *ReactionTag.ToString(),
 Reason ? Reason : TEXT("None"),
-Distance > FinalCorrectionTolerance ? 1 : 0,
-RotationDistance > FinalRotationCorrectionTolerance ? 1 : 0,
+bShouldApplyLocation ? 1 : 0,
+bShouldApplyRotation ? 1 : 0,
 Distance,
 RotationDistance,
-*PP_VecCompact(TargetActor->GetActorLocation()),
+SmoothSeconds,
+*PP_VecCompact(ClientFinalLocation),
 *PP_VecCompact(ServerFinalLocation),
-*TargetActor->GetActorRotation().ToCompactString(),
+*ClientFinalRotation.ToCompactString(),
 *ServerFinalRotation.ToCompactString());
 }
+
+if (!bShouldApplyLocation && !bShouldApplyRotation)
+{
+return true;
+}
+
+UWorld* World = GetWorld();
+if (!World || SmoothSeconds <= KINDA_SMALL_NUMBER)
+{
+TargetActor->SetActorLocationAndRotation(
+bShouldApplyLocation ? ServerFinalLocation : ClientFinalLocation,
+bShouldApplyRotation ? ServerFinalRotation : ClientFinalRotation,
+false,
+nullptr,
+ETeleportType::TeleportPhysics);
+
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_OWNER_FINAL_SMOOTH_END Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s Instant=1 Loc=%s Rot=%s"),
+GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+Context.PredictionId,
+*GetNameSafe(TargetActor),
+*ReactionTag.ToString(),
+Reason ? Reason : TEXT("None"),
+*PP_VecCompact(TargetActor->GetActorLocation()),
+*TargetActor->GetActorRotation().ToCompactString());
+}
+
+return true;
+}
+
+TWeakObjectPtr<AActor> WeakTarget(TargetActor);
+const FVector StartLocation = ClientFinalLocation;
+const FQuat StartQuat = ClientFinalRotation.Quaternion();
+const FVector TargetLocation = ServerFinalLocation;
+const FQuat TargetQuat = ServerFinalRotation.Quaternion();
+const float StartTime = World->GetTimeSeconds();
+const FPP_ReactionPredictionContext CapturedContext = Context;
+const FGameplayTag CapturedReactionTag = ReactionTag;
+const FString CapturedReason = Reason ? FString(Reason) : FString(TEXT("None"));
+
+TSharedRef<FTimerHandle> TimerHandle = MakeShared<FTimerHandle>();
+
+World->GetTimerManager().SetTimer(
+TimerHandle.Get(),
+[WeakTarget, StartLocation, StartQuat, TargetLocation, TargetQuat, StartTime, SmoothSeconds,
+bShouldApplyLocation, bShouldApplyRotation, CapturedContext, CapturedReactionTag, CapturedReason, TimerHandle]()
+{
+AActor* StrongTarget = WeakTarget.Get();
+if (!StrongTarget)
+{
+return;
+}
+
+UWorld* InnerWorld = StrongTarget->GetWorld();
+if (!InnerWorld)
+{
+return;
+}
+
+const float RawAlpha = FMath::Clamp((InnerWorld->GetTimeSeconds() - StartTime) / SmoothSeconds, 0.f, 1.f);
+const float SmoothAlpha = RawAlpha * RawAlpha * (3.f - 2.f * RawAlpha);
+
+const FVector CurrentLocation = bShouldApplyLocation
+? FMath::Lerp(StartLocation, TargetLocation, SmoothAlpha)
+: StrongTarget->GetActorLocation();
+
+const FRotator CurrentRotation = bShouldApplyRotation
+? FQuat::Slerp(StartQuat, TargetQuat, SmoothAlpha).Rotator()
+: StrongTarget->GetActorRotation();
+
+StrongTarget->SetActorLocationAndRotation(CurrentLocation, CurrentRotation, false, nullptr, ETeleportType::TeleportPhysics);
+
+if (RawAlpha >= 1.f)
+{
+StrongTarget->SetActorLocationAndRotation(
+bShouldApplyLocation ? TargetLocation : StrongTarget->GetActorLocation(),
+bShouldApplyRotation ? TargetQuat.Rotator() : StrongTarget->GetActorRotation(),
+false,
+nullptr,
+ETeleportType::TeleportPhysics);
+
+InnerWorld->GetTimerManager().ClearTimer(TimerHandle.Get());
+
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_OWNER_FINAL_SMOOTH_END Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s Instant=0 Loc=%s Rot=%s"),
+InnerWorld->GetTimeSeconds(),
+CapturedContext.PredictionId,
+*GetNameSafe(StrongTarget),
+*CapturedReactionTag.ToString(),
+*CapturedReason,
+*PP_VecCompact(StrongTarget->GetActorLocation()),
+*StrongTarget->GetActorRotation().ToCompactString());
+}
+}
+},
+0.016f,
+true);
 
 return true;
 }
