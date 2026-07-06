@@ -446,8 +446,22 @@ ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
 if (!TargetCharacter) return;
 
 UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement();
+USyncAbilityMotionCharacterMovementComponent* SyncMovementComponent =
+	Cast<USyncAbilityMotionCharacterMovementComponent>(MovementComponent);
+USkeletalMeshComponent* TargetMesh = TargetCharacter->GetMesh();
+UAnimInstance* OwnerAnimInstance = TargetMesh ? TargetMesh->GetAnimInstance() : nullptr;
+
+ERootMotionMode::Type SavedOwnerRootMotionMode = OwnerAnimInstance
+	? OwnerAnimInstance->RootMotionMode.GetValue()
+	: ERootMotionMode::RootMotionFromMontagesOnly;
+
+const bool bSavedAbilityRootMotionSuppressed = SyncMovementComponent
+	? SyncMovementComponent->IsAbilityRootMotionSuppressed()
+	: false;
 
 bool bAppliedCorrectionSuppression = false;
+bool bAppliedVisualOnlyRootMotion = false;
+bool bAppliedAbilityRootMotionSuppression = false;
 
 if (MovementComponent)
 {
@@ -511,7 +525,46 @@ InstigatorActor ? *InstigatorActor->GetActorRotation().ToCompactString() : TEXT(
 StartPosition);
 }
 
-PrepareOwnerReactionRootMotionState(TargetCharacter, Context, ReactionTag);
+if (SyncMovementComponent)
+{
+	SyncMovementComponent->SetAbilityRootMotionSuppressed(true);
+	bAppliedAbilityRootMotionSuppression = true;
+
+	if (PP_ShouldLogReactionDebug())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_ABILITY_RM_SUPPRESS_BEGIN Time=%.3f Ctx=%d Target=%s Tag=%s WasSuppressed=%d NowSuppressed=%d Loc=%s Rot=%s"),
+			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+			Context.PredictionId,
+			*GetNameSafe(TargetActor),
+			*ReactionTag.ToString(),
+			bSavedAbilityRootMotionSuppressed ? 1 : 0,
+			SyncMovementComponent->IsAbilityRootMotionSuppressed() ? 1 : 0,
+			*PP_VecCompact(TargetActor->GetActorLocation()),
+			*TargetActor->GetActorRotation().ToCompactString());
+	}
+}
+
+if (OwnerAnimInstance)
+{
+	SavedOwnerRootMotionMode = OwnerAnimInstance->RootMotionMode.GetValue();
+	OwnerAnimInstance->SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
+	bAppliedVisualOnlyRootMotion = true;
+
+	if (PP_ShouldLogReactionDebug())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_VISUAL_ONLY_BEGIN Time=%.3f Ctx=%d Target=%s Tag=%s SavedRootMotionMode=%d CurrentRootMotionMode=%d Loc=%s Rot=%s"),
+			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+			Context.PredictionId,
+			*GetNameSafe(TargetActor),
+			*ReactionTag.ToString(),
+			static_cast<int32>(SavedOwnerRootMotionMode),
+			static_cast<int32>(OwnerAnimInstance->RootMotionMode.GetValue()),
+			*PP_VecCompact(TargetActor->GetActorLocation()),
+			*TargetActor->GetActorRotation().ToCompactString());
+	}
+}
 
 const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 
@@ -535,12 +588,53 @@ if (bAppliedCorrectionSuppression)
 {
 OwnerReactionCorrectionSuppressionCount = FMath::Max(0, OwnerReactionCorrectionSuppressionCount - 1);
 
-if (OwnerReactionCorrectionSuppressionCount == 0 && MovementComponent)
+if (OwnerReactionCorrectionSuppressionCount == 0)
 {
 ApplyOwnerPendingFinalReactionCorrection(Context, TargetActor, ReactionTag, TEXT("OwnerPlayFailed"));
 
-PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, false, Context, TargetActor, ReactionTag,
-TEXT("OwnerPlayFailed"));
+if (SyncMovementComponent && bAppliedAbilityRootMotionSuppression)
+{
+	SyncMovementComponent->SetAbilityRootMotionSuppressed(bSavedAbilityRootMotionSuppressed);
+
+	if (PP_ShouldLogReactionDebug())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_ABILITY_RM_SUPPRESS_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreSuppressed=%d Loc=%s Rot=%s"),
+			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+			Context.PredictionId,
+			*GetNameSafe(TargetActor),
+			*ReactionTag.ToString(),
+			TEXT("OwnerPlayFailed"),
+			bSavedAbilityRootMotionSuppressed ? 1 : 0,
+			*PP_VecCompact(TargetActor->GetActorLocation()),
+			*TargetActor->GetActorRotation().ToCompactString());
+	}
+}
+
+if (OwnerAnimInstance && bAppliedVisualOnlyRootMotion)
+{
+	OwnerAnimInstance->SetRootMotionMode(SavedOwnerRootMotionMode);
+
+	if (PP_ShouldLogReactionDebug())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_VISUAL_ONLY_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreRootMotionMode=%d Loc=%s Rot=%s"),
+			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+			Context.PredictionId,
+			*GetNameSafe(TargetActor),
+			*ReactionTag.ToString(),
+			TEXT("OwnerPlayFailed"),
+			static_cast<int32>(SavedOwnerRootMotionMode),
+			*PP_VecCompact(TargetActor->GetActorLocation()),
+			*TargetActor->GetActorRotation().ToCompactString());
+	}
+}
+
+if (MovementComponent)
+{
+	PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, false, Context, TargetActor, ReactionTag,
+	TEXT("OwnerPlayFailed"));
+}
 }
 }
 
@@ -555,20 +649,30 @@ const float RemainingDuration = FMath::Max(0.05f, (MontageLength - StartPosition
 
 TWeakObjectPtr<UPP_PredictionComponent> WeakThis(this);
 TWeakObjectPtr<UCharacterMovementComponent> WeakMovementComponent(MovementComponent);
+TWeakObjectPtr<USyncAbilityMotionCharacterMovementComponent> WeakSyncMovementComponent(SyncMovementComponent);
+TWeakObjectPtr<UAnimInstance> WeakOwnerAnimInstance(OwnerAnimInstance);
 TWeakObjectPtr<AActor> WeakTarget(TargetActor);
 const FGameplayTag CapturedReactionTag = ReactionTag;
 const FPP_ReactionPredictionContext CapturedContext = Context;
 const bool bCapturedAppliedCorrectionSuppression = bAppliedCorrectionSuppression;
+const bool bCapturedAppliedVisualOnlyRootMotion = bAppliedVisualOnlyRootMotion;
+const bool bCapturedAppliedAbilityRootMotionSuppression = bAppliedAbilityRootMotionSuppression;
+const bool bCapturedSavedAbilityRootMotionSuppressed = bSavedAbilityRootMotionSuppressed;
+const ERootMotionMode::Type CapturedSavedOwnerRootMotionMode = SavedOwnerRootMotionMode;
 
 FTimerHandle TimerHandle;
 World->GetTimerManager().SetTimer(
 TimerHandle,
-[WeakThis, WeakMovementComponent, WeakTarget, CapturedReactionTag, CapturedContext,
-bCapturedAppliedCorrectionSuppression]()
+[WeakThis, WeakMovementComponent, WeakSyncMovementComponent, WeakOwnerAnimInstance, WeakTarget,
+CapturedReactionTag, CapturedContext, bCapturedAppliedCorrectionSuppression,
+bCapturedAppliedVisualOnlyRootMotion, bCapturedAppliedAbilityRootMotionSuppression,
+bCapturedSavedAbilityRootMotionSuppressed, CapturedSavedOwnerRootMotionMode]()
 {
 UPP_PredictionComponent* StrongThis = WeakThis.Get();
 AActor* StrongTargetActor = WeakTarget.Get();
 UCharacterMovementComponent* StrongMovementComponent = WeakMovementComponent.Get();
+USyncAbilityMotionCharacterMovementComponent* StrongSyncMovementComponent = WeakSyncMovementComponent.Get();
+UAnimInstance* StrongOwnerAnimInstance = WeakOwnerAnimInstance.Get();
 
 if (!StrongThis) return;
 
@@ -598,6 +702,44 @@ if (StrongTargetActor)
 {
 StrongThis->ApplyOwnerPendingFinalReactionCorrection(CapturedContext, StrongTargetActor,
 CapturedReactionTag, TEXT("OwnerReactionEnd"));
+}
+
+if (StrongSyncMovementComponent && bCapturedAppliedAbilityRootMotionSuppression)
+{
+	StrongSyncMovementComponent->SetAbilityRootMotionSuppressed(bCapturedSavedAbilityRootMotionSuppressed);
+
+	if (PP_ShouldLogReactionDebug())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_ABILITY_RM_SUPPRESS_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreSuppressed=%d Loc=%s Rot=%s"),
+			StrongTargetActor && StrongTargetActor->GetWorld() ? StrongTargetActor->GetWorld()->GetTimeSeconds() : -1.f,
+			CapturedContext.PredictionId,
+			*GetNameSafe(StrongTargetActor),
+			*CapturedReactionTag.ToString(),
+			TEXT("OwnerReactionEnd"),
+			bCapturedSavedAbilityRootMotionSuppressed ? 1 : 0,
+			*PP_VecCompact(StrongTargetActor ? StrongTargetActor->GetActorLocation() : FVector::ZeroVector),
+			StrongTargetActor ? *StrongTargetActor->GetActorRotation().ToCompactString() : TEXT("None"));
+	}
+}
+
+if (StrongOwnerAnimInstance && bCapturedAppliedVisualOnlyRootMotion)
+{
+	StrongOwnerAnimInstance->SetRootMotionMode(CapturedSavedOwnerRootMotionMode);
+
+	if (PP_ShouldLogReactionDebug())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_VISUAL_ONLY_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreRootMotionMode=%d Loc=%s Rot=%s"),
+			StrongTargetActor && StrongTargetActor->GetWorld() ? StrongTargetActor->GetWorld()->GetTimeSeconds() : -1.f,
+			CapturedContext.PredictionId,
+			*GetNameSafe(StrongTargetActor),
+			*CapturedReactionTag.ToString(),
+			TEXT("OwnerReactionEnd"),
+			static_cast<int32>(CapturedSavedOwnerRootMotionMode),
+			*PP_VecCompact(StrongTargetActor ? StrongTargetActor->GetActorLocation() : FVector::ZeroVector),
+			StrongTargetActor ? *StrongTargetActor->GetActorRotation().ToCompactString() : TEXT("None"));
+	}
 }
 
 if (StrongMovementComponent && bCapturedAppliedCorrectionSuppression)
@@ -632,6 +774,44 @@ OwnerReactionCorrectionSuppressionCount = FMath::Max(0, OwnerReactionCorrectionS
 if (OwnerReactionCorrectionSuppressionCount == 0)
 {
 ApplyOwnerPendingFinalReactionCorrection(Context, TargetActor, ReactionTag, TEXT("NoWorld"));
+
+if (SyncMovementComponent && bAppliedAbilityRootMotionSuppression)
+{
+	SyncMovementComponent->SetAbilityRootMotionSuppressed(bSavedAbilityRootMotionSuppressed);
+
+	if (PP_ShouldLogReactionDebug())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_ABILITY_RM_SUPPRESS_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreSuppressed=%d Loc=%s Rot=%s"),
+			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+			Context.PredictionId,
+			*GetNameSafe(TargetActor),
+			*ReactionTag.ToString(),
+			TEXT("NoWorld"),
+			bSavedAbilityRootMotionSuppressed ? 1 : 0,
+			*PP_VecCompact(TargetActor->GetActorLocation()),
+			*TargetActor->GetActorRotation().ToCompactString());
+	}
+}
+
+if (OwnerAnimInstance && bAppliedVisualOnlyRootMotion)
+{
+	OwnerAnimInstance->SetRootMotionMode(SavedOwnerRootMotionMode);
+
+	if (PP_ShouldLogReactionDebug())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_VISUAL_ONLY_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RestoreRootMotionMode=%d Loc=%s Rot=%s"),
+			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+			Context.PredictionId,
+			*GetNameSafe(TargetActor),
+			*ReactionTag.ToString(),
+			TEXT("NoWorld"),
+			static_cast<int32>(SavedOwnerRootMotionMode),
+			*PP_VecCompact(TargetActor->GetActorLocation()),
+			*TargetActor->GetActorRotation().ToCompactString());
+	}
+}
 
 if (MovementComponent)
 {
