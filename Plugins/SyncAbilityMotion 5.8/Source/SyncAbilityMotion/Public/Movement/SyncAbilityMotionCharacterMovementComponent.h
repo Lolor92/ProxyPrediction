@@ -23,6 +23,8 @@ public:
 		return bIgnoreServerRootMotionMontageTrackCorrection;
 	}
 
+	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType,
+		FActorComponentTickFunction* ThisTickFunction) override;
 	virtual void UpdateFromCompressedFlags(uint8 Flags) override;
 	virtual FVector ScaleInputAcceleration(const FVector& InputAcceleration) const override;
 	virtual class FNetworkPredictionData_Client* GetPredictionData_Client() const override;
@@ -53,4 +55,10 @@ private:
 
 	UPROPERTY(Transient)
 	bool bIgnoreServerRootMotionMontageTrackCorrection = false;
+
+	UPROPERTY(Transient)
+	bool bHasOwnerReactionTraceLocation = false;
+
+	UPROPERTY(Transient)
+	FVector LastOwnerReactionTraceLocation = FVector::ZeroVector;
 };
