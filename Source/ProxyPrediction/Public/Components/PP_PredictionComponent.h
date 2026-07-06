@@ -101,7 +101,8 @@ public:
 	
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastPlayConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
-		FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings);
+		FGameplayTag ReactionTag, FVector ServerStartLocation, FRotator ServerStartRotation,
+		FPP_ReactionTransformSettings TransformSettings);
 
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastFinishConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,

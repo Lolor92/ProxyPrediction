@@ -139,6 +139,13 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 	
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
+	if (const APawn* OwnerPawn = Cast<APawn>(GetOwner()))
+	{
+		TransformSettings.RotationSettings.bUseReferenceFacingOverride = true;
+		TransformSettings.RotationSettings.ReferenceFacingOverride =
+			FRotator(0.f, OwnerPawn->GetControlRotation().Yaw, 0.f);
+	}
+
 	ApplyLatestOlderProxyPendingFinalReactionCorrection(Context, TargetActor, TEXT("PredictedPreflight"));
 
 	ApplyReactionTransform(GetOwner(), TargetActor, TransformSettings);
@@ -282,11 +289,13 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 			*ReactionTag.ToString());
 	}
 	
-	MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag, TransformSettings);
+	MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag,
+		ServerStartLocation, ServerStartRotation, TransformSettings);
 }
 
 void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation(FPP_ReactionPredictionContext Context,
-AActor* TargetActor, FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings)
+AActor* TargetActor, FGameplayTag ReactionTag, FVector ServerStartLocation, FRotator ServerStartRotation,
+FPP_ReactionTransformSettings TransformSettings)
 {
 AActor* OwnerActor = GetOwner();
 
@@ -351,7 +360,8 @@ const float StartPosition = GetReactionStartPosition(Reaction);
 
 ApplyLatestOlderProxyPendingFinalReactionCorrection(Context, TargetActor, TEXT("ConfirmedPreflight"));
 
-ApplyReactionTransform(OwnerActor, TargetActor, TransformSettings);
+TargetActor->SetActorLocationAndRotation(ServerStartLocation, ServerStartRotation,
+	false, nullptr, ETeleportType::TeleportPhysics);
 
 const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 
@@ -2098,8 +2108,18 @@ void UPP_PredictionComponent::ApplyReactionRotation(AActor* RecipientActor, AAct
 
 	case EPP_ReactionRotationDirection::FaceOppositeReferenceForward:
 		{
-			FVector OppositeDirection = -ReferenceActor->GetActorForwardVector();
-			OppositeDirection.Z = 0.f;
+			FVector ReferenceForward = RotationSettings.bUseReferenceFacingOverride
+				? RotationSettings.ReferenceFacingOverride.Vector()
+				: ReferenceActor->GetActorForwardVector();
+
+			ReferenceForward.Z = 0.f;
+			ReferenceForward = ReferenceForward.GetSafeNormal();
+			if (ReferenceForward.IsNearlyZero())
+			{
+				break;
+			}
+
+			const FVector OppositeDirection = -ReferenceForward;
 			if (const FVector FacingDirection = OppositeDirection.GetSafeNormal(); !FacingDirection.IsNearlyZero())
 			{
 				DesiredRotation = FacingDirection.Rotation();

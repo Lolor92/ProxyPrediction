@@ -115,6 +115,12 @@ struct FPP_ReactionRotationSettings
 		meta=(EditCondition="RotationDirection == EPP_ReactionRotationDirection::FaceDirection", EditConditionHides))
 	FRotator DirectionToFace = FRotator::ZeroRotator;
 
+	UPROPERTY()
+	bool bUseReferenceFacingOverride = false;
+
+	UPROPERTY()
+	FRotator ReferenceFacingOverride = FRotator::ZeroRotator;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Rotation",
 		meta=(EditCondition="RotationDirection != EPP_ReactionRotationDirection::None", EditConditionHides))
 	EPP_ReactionTeleportType TeleportType = EPP_ReactionTeleportType::ResetPhysics;
@@ -131,13 +137,13 @@ struct FPP_ReactionTransformSettings
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Rotation", meta=(ShowOnlyInnerProperties))
 	FPP_ReactionRotationSettings RotationSettings;
 
-	UPROPERTY(Transient)
+	UPROPERTY()
 	bool bUseServerStartTransform = false;
 
-	UPROPERTY(Transient)
+	UPROPERTY()
 	FVector ServerStartLocation = FVector::ZeroVector;
 
-	UPROPERTY(Transient)
+	UPROPERTY()
 	FRotator ServerStartRotation = FRotator::ZeroRotator;
 };
 
