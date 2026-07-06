@@ -289,7 +289,7 @@ TEXT("SAM_IMPACT Owner=%s Local=%d Auth=%d HitActor=%s HitComp=%s Blocking=%d St
 CharacterOwner ? CharacterOwner->IsLocallyControlled() : false,
 CharacterOwner ? CharacterOwner->HasAuthority() : false,
 *GetNameSafe(Hit.GetActor()),
-*GetNameSafe(Hit.GetComponent().Get()),
+*GetNameSafe(Hit.GetComponent()),
 Hit.bBlockingHit,
 Hit.bStartPenetrating,
 Hit.PenetrationDepth,
