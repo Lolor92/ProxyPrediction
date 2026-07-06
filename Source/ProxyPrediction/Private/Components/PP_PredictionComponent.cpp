@@ -189,6 +189,12 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 
 	ApplyReactionTransform(OwnerActor, TargetActor, TransformSettings);
 
+	const FVector ServerStartLocation = TargetActor->GetActorLocation();
+	const FRotator ServerStartRotation = TargetActor->GetActorRotation();
+	TransformSettings.bUseServerStartTransform = true;
+	TransformSettings.ServerStartLocation = ServerStartLocation;
+	TransformSettings.ServerStartRotation = ServerStartRotation;
+
 	if (PP_ShouldLogReactionDebug())
 	{
 		UE_LOG(LogTemp, Warning,
@@ -263,7 +269,7 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation(FPP_
 			*GetNameSafe(TargetActor->GetOwner()));
 
 		TargetPredictionComponent->ClientPlayOwnerConfirmedReaction(Context, TargetActor, OwnerActor, ReactionTag,
-			TransformSettings);
+			ServerStartLocation, ServerStartRotation, TransformSettings);
 	}
 	else
 	{
@@ -387,8 +393,8 @@ bool UPP_PredictionComponent::ConsumePendingPredictedReaction(const FPP_Reaction
 }
 
 void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation(FPP_ReactionPredictionContext Context,
-AActor* TargetActor, AActor* InstigatorActor, FGameplayTag ReactionTag,
-FPP_ReactionTransformSettings TransformSettings)
+	AActor* TargetActor, AActor* InstigatorActor, FGameplayTag ReactionTag,
+	FVector ServerStartLocation, FRotator ServerStartRotation, FPP_ReactionTransformSettings TransformSettings)
 {
 AActor* OwnerActor = GetOwner();
 
@@ -506,8 +512,16 @@ InstigatorActor ? *InstigatorActor->GetActorRotation().ToCompactString() : TEXT(
 StartPosition,
 OwnerReactionCorrectionSuppressionCount);
 }
-
-ApplyReactionTransform(InstigatorActor, TargetActor, TransformSettings);
+	if (TransformSettings.bUseServerStartTransform)
+	{
+		TargetActor->SetActorLocationAndRotation(TransformSettings.ServerStartLocation,
+			TransformSettings.ServerStartRotation, false, nullptr, ETeleportType::TeleportPhysics);
+	}
+	else
+	{
+		TargetActor->SetActorLocationAndRotation(ServerStartLocation, ServerStartRotation,
+			false, nullptr, ETeleportType::TeleportPhysics);
+	}
 
 if (PP_ShouldLogReactionDebug())
 {
