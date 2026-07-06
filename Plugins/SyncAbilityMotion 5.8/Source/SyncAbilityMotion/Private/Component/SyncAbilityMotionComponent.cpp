@@ -191,6 +191,16 @@ void USyncAbilityMotionComponent::ApplyServerMovementCorrectionIgnoreForAbility(
 		return;
 	}
 
+	UE_LOG(LogTemp, Warning,
+		TEXT("SAM_SERVER_CORRECTION_IGNORE Owner=%s Auth=%d Local=%d Enabled=%d CurrentIgnoreErrorChecks=%d Loc=%s Vel=%s"),
+		*GetNameSafe(Character),
+		Character ? Character->HasAuthority() : false,
+		Character ? Character->IsLocallyControlled() : false,
+		bEnabled,
+		MoveComp->bIgnoreClientMovementErrorChecksAndCorrection,
+		Character ? *Character->GetActorLocation().ToCompactString() : TEXT("None"),
+		*MoveComp->Velocity.ToCompactString());
+
 	if (bEnabled)
 	{
 		if (!bHasSavedServerMovementCorrectionIgnore)
@@ -201,6 +211,12 @@ void USyncAbilityMotionComponent::ApplyServerMovementCorrectionIgnoreForAbility(
 					}
 
 		MoveComp->bIgnoreClientMovementErrorChecksAndCorrection = true;
+
+		UE_LOG(LogTemp, Warning,
+			TEXT("SAM_SERVER_CORRECTION_IGNORE_APPLIED Owner=%s Enabled=1 NewIgnoreErrorChecks=%d"),
+			*GetNameSafe(Character),
+			MoveComp->bIgnoreClientMovementErrorChecksAndCorrection);
+
 		return;
 	}
 
@@ -210,6 +226,11 @@ void USyncAbilityMotionComponent::ApplyServerMovementCorrectionIgnoreForAbility(
 	}
 
 	MoveComp->bIgnoreClientMovementErrorChecksAndCorrection = bSavedServerIgnoreClientMovementErrorChecksAndCorrection;
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("SAM_SERVER_CORRECTION_IGNORE_RESTORED Owner=%s Enabled=0 RestoredIgnoreErrorChecks=%d"),
+		*GetNameSafe(Character),
+		MoveComp->bIgnoreClientMovementErrorChecksAndCorrection);
 
 	
 	bHasSavedServerMovementCorrectionIgnore = false;
@@ -499,6 +520,20 @@ void USyncAbilityMotionComponent::ApplyAbilityMotionState(const FSyncAbilityMoti
 		Cast<USyncAbilityMotionCharacterMovementComponent>(Character->GetCharacterMovement());
 	const bool bUseMovementComponent =
 		MoveComp && (Character->IsLocallyControlled() || (Character->HasAuthority() && !Character->IsPlayerControlled()));
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("SAM_APPLY_STATE Owner=%s Local=%d Auth=%d PlayerControlled=%d UseMoveComp=%d RootMotionEnabled=%d MoveInputSuppressed=%d CanBlend=%d LowerBody=%d Loc=%s Vel=%s"),
+		*GetNameSafe(Character),
+		Character->IsLocallyControlled(),
+		Character->HasAuthority(),
+		Character->IsPlayerControlled(),
+		bUseMovementComponent,
+		NewState.bRootMotionEnabled,
+		NewState.bMovementInputSuppressed,
+		NewState.bCanBlendMontage,
+		NewState.bShouldBlendLowerBody,
+		*Character->GetActorLocation().ToCompactString(),
+		MoveComp ? *MoveComp->Velocity.ToCompactString() : TEXT("NoMoveComp"));
 
 	if (bUseMovementComponent)
 	{

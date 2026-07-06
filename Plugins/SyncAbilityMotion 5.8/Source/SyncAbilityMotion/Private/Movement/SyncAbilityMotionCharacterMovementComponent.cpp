@@ -13,31 +13,31 @@ namespace SyncAbilityMotionFlags
 
 namespace
 {
-class FScopedIgnoreMontageTrackCorrection
-{
-public:
-	FScopedIgnoreMontageTrackCorrection(ACharacter* Character, bool bEnabled)
+	class FScopedIgnoreMontageTrackCorrection
 	{
-		if (!bEnabled || !Character) return;
-
-		MontageInstance = Character->GetRootMotionAnimMontageInstance();
-		if (MontageInstance)
+	public:
+		FScopedIgnoreMontageTrackCorrection(ACharacter* Character, bool bEnabled)
 		{
-			MontageInstance->PushDisableRootMotion();
-		}
-	}
+			if (!bEnabled || !Character) return;
 
-	~FScopedIgnoreMontageTrackCorrection()
-	{
-		if (MontageInstance)
+			MontageInstance = Character->GetRootMotionAnimMontageInstance();
+			if (MontageInstance)
+			{
+				MontageInstance->PushDisableRootMotion();
+			}
+		}
+
+		~FScopedIgnoreMontageTrackCorrection()
 		{
-			MontageInstance->PopDisableRootMotion();
+			if (MontageInstance)
+			{
+				MontageInstance->PopDisableRootMotion();
+			}
 		}
-	}
 
-private:
-	FAnimMontageInstance* MontageInstance = nullptr;
-};
+	private:
+		FAnimMontageInstance* MontageInstance = nullptr;
+	};
 }
 
 class FSavedMove_SyncAbilityMotion final : public FSavedMove_Character
@@ -89,7 +89,7 @@ public:
 	}
 
 	virtual void SetMoveFor(ACharacter* Character, float InDeltaTime, FVector const& NewAccel,
-		FNetworkPredictionData_Client_Character& ClientData) override
+	                        FNetworkPredictionData_Client_Character& ClientData) override
 	{
 		Super::SetMoveFor(Character, InDeltaTime, NewAccel, ClientData);
 
@@ -124,6 +124,16 @@ void USyncAbilityMotionCharacterMovementComponent::SetAbilityRootMotionSuppresse
 {
 	if (bAbilityRootMotionSuppressed == bInSuppressed) return;
 
+	UE_LOG(LogTemp, Warning,
+	       TEXT("SAM_RM_SUPPRESS Owner=%s Local=%d Auth=%d Old=%d New=%d Loc=%s Vel=%s"),
+	       *GetNameSafe(CharacterOwner),
+	       CharacterOwner ? CharacterOwner->IsLocallyControlled() : false,
+	       CharacterOwner ? CharacterOwner->HasAuthority() : false,
+	       bAbilityRootMotionSuppressed,
+	       bInSuppressed,
+	       CharacterOwner ? *CharacterOwner->GetActorLocation().ToCompactString() : TEXT("None"),
+	       *Velocity.ToCompactString());
+
 	bAbilityRootMotionSuppressed = bInSuppressed;
 	RefreshAbilityRootMotionMode();
 }
@@ -143,8 +153,21 @@ void USyncAbilityMotionCharacterMovementComponent::RefreshAbilityRootMotionMode(
 	const bool bRootMotionEnabled = bLocalOwnerReaction || !bAbilityRootMotionSuppressed;
 	AnimInstance->bRootMotionEnabled = bRootMotionEnabled;
 	AnimInstance->SetRootMotionMode(bRootMotionEnabled
-		? ERootMotionMode::RootMotionFromMontagesOnly
-		: ERootMotionMode::IgnoreRootMotion);
+		                                ? ERootMotionMode::RootMotionFromMontagesOnly
+		                                : ERootMotionMode::IgnoreRootMotion);
+
+	UE_LOG(LogTemp, Warning,
+	       TEXT("SAM_RM_MODE Owner=%s Local=%d Auth=%d Suppressed=%d IgnoreTrackCorrection=%d LocalOwnerReaction=%d RootMotionEnabled=%d AnimRootMotionMode=%d Loc=%s Vel=%s"),
+	       *GetNameSafe(CharacterOwner),
+	       CharacterOwner->IsLocallyControlled(),
+	       CharacterOwner->HasAuthority(),
+	       bAbilityRootMotionSuppressed,
+	       bIgnoreServerRootMotionMontageTrackCorrection,
+	       bLocalOwnerReaction,
+	       bRootMotionEnabled,
+	       AnimInstance->RootMotionMode.GetValue(),
+	       *CharacterOwner->GetActorLocation().ToCompactString(),
+	       *Velocity.ToCompactString());
 }
 
 void USyncAbilityMotionCharacterMovementComponent::SetAbilityMovementInputSuppressed(bool bInSuppressed)
@@ -158,6 +181,18 @@ void USyncAbilityMotionCharacterMovementComponent::SetIgnoreServerRootMotionMont
 	{
 		return;
 	}
+
+	UE_LOG(LogTemp, Warning,
+	       TEXT("SAM_IGNORE_RM_TRACK_CORRECTION Owner=%s Local=%d Auth=%d Old=%d New=%d ClientIgnoreCorrections=%d IgnoreErrorChecks=%d Loc=%s Vel=%s"),
+	       *GetNameSafe(CharacterOwner),
+	       CharacterOwner ? CharacterOwner->IsLocallyControlled() : false,
+	       CharacterOwner ? CharacterOwner->HasAuthority() : false,
+	       bIgnoreServerRootMotionMontageTrackCorrection,
+	       bInIgnore,
+	       bClientIgnoreMovementCorrections,
+	       bIgnoreClientMovementErrorChecksAndCorrection,
+	       CharacterOwner ? *CharacterOwner->GetActorLocation().ToCompactString() : TEXT("None"),
+	       *Velocity.ToCompactString());
 
 	const bool bLocalOwnerReaction = CharacterOwner && CharacterOwner->IsLocallyControlled();
 
@@ -236,8 +271,8 @@ void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionPositio
 {
 	FMovementBaseInterfaceData ServerMovementBaseInterfaceData(ServerBase);
 	ClientAdjustRootMotionPosition_Implementation(TimeStamp, ServerMontageTrackPosition, ServerLoc, ServerRotation,
-		ServerVelZ, &ServerMovementBaseInterfaceData, ServerBoneName, bHasBase, bBaseRelativePosition,
-		ServerMovementMode);
+	                                              ServerVelZ, &ServerMovementBaseInterfaceData, ServerBoneName, bHasBase, bBaseRelativePosition,
+	                                              ServerMovementMode);
 }
 
 void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionPosition_Implementation(
@@ -252,14 +287,42 @@ void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionPositio
 	bool bBaseRelativePosition,
 	uint8 ServerMovementMode)
 {
+	UE_LOG(LogTemp, Warning,
+	       TEXT("SAM_ROOTMOTION_CORRECTION Owner=%s Local=%d Auth=%d Ignore=%d TimeStamp=%.3f Track=%.3f ServerLoc=%s ClientLocBefore=%s Dist2D=%.2f ServerVelZ=%.2f MoveMode=%d Vel=%s"),
+	       *GetNameSafe(CharacterOwner),
+	       CharacterOwner ? CharacterOwner->IsLocallyControlled() : false,
+	       CharacterOwner ? CharacterOwner->HasAuthority() : false,
+	       bIgnoreServerRootMotionMontageTrackCorrection,
+	       TimeStamp,
+	       ServerMontageTrackPosition,
+	       *ServerLoc.ToCompactString(),
+	       CharacterOwner ? *CharacterOwner->GetActorLocation().ToCompactString() : TEXT("None"),
+	       CharacterOwner ? FVector::Dist2D(ServerLoc, CharacterOwner->GetActorLocation()) : -1.f,
+	       ServerVelZ,
+	       ServerMovementMode,
+	       *Velocity.ToCompactString());
+
 	if (bIgnoreServerRootMotionMontageTrackCorrection)
 	{
+		UE_LOG(LogTemp, Warning,
+		       TEXT("SAM_ROOTMOTION_CORRECTION_SKIPPED Owner=%s Reason=IgnoreTrackCorrection"),
+		       *GetNameSafe(CharacterOwner));
 		return;
 	}
 
+	const FVector ClientLocBeforeCorrection = CharacterOwner ? CharacterOwner->GetActorLocation() : FVector::ZeroVector;
+
 	Super::ClientAdjustRootMotionPosition_Implementation(TimeStamp, ServerMontageTrackPosition, ServerLoc,
-		ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData, ServerBoneName, bHasBase,
-		bBaseRelativePosition, ServerMovementMode);
+	                                                     ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData, ServerBoneName, bHasBase,
+	                                                     bBaseRelativePosition, ServerMovementMode);
+
+	UE_LOG(LogTemp, Warning,
+	       TEXT("SAM_ROOTMOTION_CORRECTION_AFTER Owner=%s LocBefore=%s LocAfter=%s AppliedDelta2D=%.2f VelAfter=%s"),
+	       *GetNameSafe(CharacterOwner),
+	       *ClientLocBeforeCorrection.ToCompactString(),
+	       CharacterOwner ? *CharacterOwner->GetActorLocation().ToCompactString() : TEXT("None"),
+	       CharacterOwner ? FVector::Dist2D(ClientLocBeforeCorrection, CharacterOwner->GetActorLocation()) : -1.f,
+	       *Velocity.ToCompactString());
 }
 
 void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implementation(
@@ -278,8 +341,8 @@ void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionSourceP
 {
 	FMovementBaseInterfaceData ServerMovementBaseInterfaceData(ServerBase);
 	ClientAdjustRootMotionSourcePosition_Implementation(TimeStamp, ServerRootMotion, bHasAnimRootMotion,
-		ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, &ServerMovementBaseInterfaceData,
-		ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);
+	                                                    ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, &ServerMovementBaseInterfaceData,
+	                                                    ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);
 }
 
 void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implementation(
@@ -296,12 +359,43 @@ void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionSourceP
 	bool bBaseRelativePosition,
 	uint8 ServerMovementMode)
 {
+	UE_LOG(LogTemp, Warning,
+	       TEXT(
+		       "SAM_ROOTMOTION_SOURCE_CORRECTION Owner=%s Local=%d Auth=%d Ignore=%d HasAnimRM=%d TimeStamp=%.3f Track=%.3f ServerLoc=%s ClientLocBefore=%s Dist2D=%.2f ServerVelZ=%.2f MoveMode=%d Vel=%s"
+	       ),
+	       *GetNameSafe(CharacterOwner),
+	       CharacterOwner ? CharacterOwner->IsLocallyControlled() : false,
+	       CharacterOwner ? CharacterOwner->HasAuthority() : false,
+	       bIgnoreServerRootMotionMontageTrackCorrection,
+	       bHasAnimRootMotion,
+	       TimeStamp,
+	       ServerMontageTrackPosition,
+	       *ServerLoc.ToCompactString(),
+	       CharacterOwner ? *CharacterOwner->GetActorLocation().ToCompactString() : TEXT("None"),
+	       CharacterOwner ? FVector::Dist2D(ServerLoc, CharacterOwner->GetActorLocation()) : -1.f,
+	       ServerVelZ,
+	       ServerMovementMode,
+	       *Velocity.ToCompactString());
+
 	if (bIgnoreServerRootMotionMontageTrackCorrection && bHasAnimRootMotion)
 	{
+		UE_LOG(LogTemp, Warning,
+		       TEXT("SAM_ROOTMOTION_SOURCE_CORRECTION_SKIPPED Owner=%s Reason=IgnoreTrackCorrectionAndHasAnimRM"),
+		       *GetNameSafe(CharacterOwner));
 		return;
 	}
 
+	const FVector ClientLocBeforeSourceCorrection = CharacterOwner ? CharacterOwner->GetActorLocation() : FVector::ZeroVector;
+
 	Super::ClientAdjustRootMotionSourcePosition_Implementation(TimeStamp, ServerRootMotion, bHasAnimRootMotion,
-		ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData,
-		ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);
+	                                                           ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData,
+	                                                           ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);
+
+	UE_LOG(LogTemp, Warning,
+	       TEXT("SAM_ROOTMOTION_SOURCE_CORRECTION_AFTER Owner=%s LocBefore=%s LocAfter=%s AppliedDelta2D=%.2f VelAfter=%s"),
+	       *GetNameSafe(CharacterOwner),
+	       *ClientLocBeforeSourceCorrection.ToCompactString(),
+	       CharacterOwner ? *CharacterOwner->GetActorLocation().ToCompactString() : TEXT("None"),
+	       CharacterOwner ? FVector::Dist2D(ClientLocBeforeSourceCorrection, CharacterOwner->GetActorLocation()) : -1.f,
+	       *Velocity.ToCompactString());
 }
