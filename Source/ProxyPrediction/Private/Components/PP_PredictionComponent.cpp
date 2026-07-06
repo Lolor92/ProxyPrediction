@@ -59,6 +59,8 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy(AActor* TargetA
 	
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
+	ApplyLatestOlderProxyPendingFinalReactionCorrection(Context, TargetActor, TEXT("PredictedPreflight"));
+
 	ApplyReactionTransform(GetOwner(), TargetActor, TransformSettings);
 	
 	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
@@ -194,6 +196,8 @@ FPP_ReactionDataEntry Reaction;
 if (!ReactionData->FindReaction(ReactionTag, Reaction)) return;
 
 const float StartPosition = GetReactionStartPosition(Reaction);
+
+ApplyLatestOlderProxyPendingFinalReactionCorrection(Context, TargetActor, TEXT("ConfirmedPreflight"));
 
 ApplyReactionTransform(OwnerActor, TargetActor, TransformSettings);
 
@@ -493,89 +497,34 @@ Context.PredictionId,
 return;
 }
 
-const FVector ClientFinalLocation = TargetActor->GetActorLocation();
-const FVector Delta = ServerFinalLocation - ClientFinalLocation;
-const float Distance = Delta.Size();
-const FRotator ClientFinalRotation = TargetActor->GetActorRotation();
-const float RotationDistance = FMath::Max3(
-FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Pitch - ClientFinalRotation.Pitch)),
-FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Yaw - ClientFinalRotation.Yaw)),
-FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Roll - ClientFinalRotation.Roll)));
+AddProxyPendingFinalReactionCorrection(Context, TargetActor, ReactionTag, ServerFinalLocation, ServerFinalRotation);
 
-if (PP_ShouldLogReactionDebug())
+UWorld* World = GetWorld();
+if (!World || ProxyFinalCorrectionDelaySeconds <= KINDA_SMALL_NUMBER)
 {
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_FINAL_DELTA Time=%.3f Ctx=%d Target=%s Tag=%s Dist=%.2f RotDist=%.2f Client=%s Server=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Distance,
-RotationDistance,
-*PP_VecCompact(ClientFinalLocation),
-*PP_VecCompact(ServerFinalLocation));
-}
-
-if (Distance <= FinalCorrectionTolerance && RotationDistance <= FinalRotationCorrectionTolerance)
-{
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_FINAL_WITHIN_TOLERANCE Time=%.3f Ctx=%d Target=%s Tag=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString());
-}
+ApplyProxyPendingFinalReactionCorrection(Context, TargetActor, ReactionTag, TEXT("ProxyFinalNoDelay"));
 return;
 }
 
-if (!bApplyInstantFinalCorrection)
-{
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_FINAL_BLOCKED_BY_SETTING Time=%.3f Ctx=%d Target=%s Tag=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString());
-}
-return;
-}
+TWeakObjectPtr<UPP_PredictionComponent> WeakThis(this);
+TWeakObjectPtr<AActor> WeakTarget(TargetActor);
+const FPP_ReactionPredictionContext CapturedContext = Context;
+const FGameplayTag CapturedReactionTag = ReactionTag;
 
-if (Distance > FinalCorrectionTolerance)
+FTimerHandle TimerHandle;
+World->GetTimerManager().SetTimer(
+TimerHandle,
+[WeakThis, WeakTarget, CapturedContext, CapturedReactionTag]()
 {
-TargetActor->SetActorLocation(ServerFinalLocation, false, nullptr, ETeleportType::TeleportPhysics);
+UPP_PredictionComponent* StrongThis = WeakThis.Get();
+AActor* StrongTarget = WeakTarget.Get();
+if (!StrongThis || !StrongTarget) return;
 
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_FINAL_APPLY_LOCATION Time=%.3f Ctx=%d Target=%s Tag=%s Dist=%.2f NewLoc=%s"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-Distance,
-*PP_VecCompact(TargetActor->GetActorLocation()));
-}
-}
-
-if (RotationDistance > FinalRotationCorrectionTolerance)
-{
-TargetActor->SetActorRotation(ServerFinalRotation, ETeleportType::TeleportPhysics);
-
-if (PP_ShouldLogReactionDebug())
-{
-UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_FINAL_APPLY_ROTATION Time=%.3f Ctx=%d Target=%s Tag=%s RotDist=%.2f"),
-GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
-Context.PredictionId,
-*GetNameSafe(TargetActor),
-*ReactionTag.ToString(),
-RotationDistance);
-}
-}
+StrongThis->ApplyProxyPendingFinalReactionCorrection(CapturedContext, StrongTarget,
+CapturedReactionTag, TEXT("ProxyFinalDelayElapsed"));
+},
+ProxyFinalCorrectionDelaySeconds,
+false);
 }
 
 
@@ -799,6 +748,340 @@ Entry.PredictionId == INDEX_NONE;
 if (bExpired || bInvalid)
 {
 OwnerPendingFinalReactionCorrections.RemoveAtSwap(Index);
+}
+}
+}
+
+
+void UPP_PredictionComponent::AddProxyPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context,
+AActor* TargetActor, FGameplayTag ReactionTag, const FVector& ServerFinalLocation,
+const FRotator& ServerFinalRotation)
+{
+if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return;
+
+UWorld* World = GetWorld();
+if (!World) return;
+
+RemoveExpiredProxyPendingFinalReactionCorrections();
+
+for (FPP_OwnerPendingFinalReactionCorrection& Entry : ProxyPendingFinalReactionCorrections)
+{
+if (Entry.TargetActor.Get() == TargetActor &&
+Entry.ReactionTag == ReactionTag &&
+Entry.PredictionId == Context.PredictionId)
+{
+Entry.ServerFinalLocation = ServerFinalLocation;
+Entry.ServerFinalRotation = ServerFinalRotation;
+Entry.TimeSeconds = World->GetTimeSeconds();
+
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_PROXY_FINAL_BUFFERED Time=%.3f Ctx=%d Target=%s Tag=%s Updated=1 Loc=%s Rot=%s"),
+World->GetTimeSeconds(),
+Context.PredictionId,
+*GetNameSafe(TargetActor),
+*ReactionTag.ToString(),
+*PP_VecCompact(ServerFinalLocation),
+*ServerFinalRotation.ToCompactString());
+}
+
+return;
+}
+}
+
+FPP_OwnerPendingFinalReactionCorrection& Entry =
+ProxyPendingFinalReactionCorrections.AddDefaulted_GetRef();
+
+Entry.TargetActor = TargetActor;
+Entry.ReactionTag = ReactionTag;
+Entry.PredictionId = Context.PredictionId;
+Entry.ServerFinalLocation = ServerFinalLocation;
+Entry.ServerFinalRotation = ServerFinalRotation;
+Entry.TimeSeconds = World->GetTimeSeconds();
+
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_PROXY_FINAL_BUFFERED Time=%.3f Ctx=%d Target=%s Tag=%s Updated=0 Loc=%s Rot=%s"),
+World->GetTimeSeconds(),
+Context.PredictionId,
+*GetNameSafe(TargetActor),
+*ReactionTag.ToString(),
+*PP_VecCompact(ServerFinalLocation),
+*ServerFinalRotation.ToCompactString());
+}
+}
+
+bool UPP_PredictionComponent::ConsumeProxyPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context,
+AActor* TargetActor, FGameplayTag ReactionTag, FVector& OutServerFinalLocation,
+FRotator& OutServerFinalRotation)
+{
+if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return false;
+
+RemoveExpiredProxyPendingFinalReactionCorrections();
+
+for (int32 Index = ProxyPendingFinalReactionCorrections.Num() - 1; Index >= 0; --Index)
+{
+const FPP_OwnerPendingFinalReactionCorrection& Entry = ProxyPendingFinalReactionCorrections[Index];
+
+if (Entry.TargetActor.Get() == TargetActor &&
+Entry.ReactionTag == ReactionTag &&
+Entry.PredictionId == Context.PredictionId)
+{
+OutServerFinalLocation = Entry.ServerFinalLocation;
+OutServerFinalRotation = Entry.ServerFinalRotation;
+ProxyPendingFinalReactionCorrections.RemoveAtSwap(Index);
+return true;
+}
+}
+
+return false;
+}
+
+bool UPP_PredictionComponent::ApplyProxyPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context,
+AActor* TargetActor, FGameplayTag ReactionTag, const TCHAR* Reason)
+{
+if (!TargetActor) return false;
+
+const bool bPreflightApply = Reason && FCString::Stristr(Reason, TEXT("Preflight")) != nullptr;
+if (!bPreflightApply && HasNewerReactionMarkerForTarget(Context, TargetActor))
+{
+FVector DroppedServerFinalLocation = FVector::ZeroVector;
+FRotator DroppedServerFinalRotation = FRotator::ZeroRotator;
+ConsumeProxyPendingFinalReactionCorrection(Context, TargetActor, ReactionTag,
+DroppedServerFinalLocation, DroppedServerFinalRotation);
+
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_PROXY_FINAL_DROP_NEWER_ACTIVE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s"),
+GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+Context.PredictionId,
+*GetNameSafe(TargetActor),
+*ReactionTag.ToString(),
+Reason ? Reason : TEXT("None"));
+}
+
+return false;
+}
+
+FVector ServerFinalLocation = FVector::ZeroVector;
+FRotator ServerFinalRotation = FRotator::ZeroRotator;
+
+if (!ConsumeProxyPendingFinalReactionCorrection(Context, TargetActor, ReactionTag,
+ServerFinalLocation, ServerFinalRotation))
+{
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_PROXY_FINAL_NO_STORED Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s"),
+GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+Context.PredictionId,
+*GetNameSafe(TargetActor),
+*ReactionTag.ToString(),
+Reason ? Reason : TEXT("None"));
+}
+
+return false;
+}
+
+const FVector ClientFinalLocation = TargetActor->GetActorLocation();
+const FRotator ClientFinalRotation = TargetActor->GetActorRotation();
+const float Distance = FVector::Dist(ClientFinalLocation, ServerFinalLocation);
+const float RotationDistance = FMath::Max3(
+FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Pitch - ClientFinalRotation.Pitch)),
+FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Yaw - ClientFinalRotation.Yaw)),
+FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Roll - ClientFinalRotation.Roll)));
+
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_PROXY_FINAL_APPLY_CHECK Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s Dist=%.2f RotDist=%.2f Client=%s Server=%s"),
+GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+Context.PredictionId,
+*GetNameSafe(TargetActor),
+*ReactionTag.ToString(),
+Reason ? Reason : TEXT("None"),
+Distance,
+RotationDistance,
+*PP_VecCompact(ClientFinalLocation),
+*PP_VecCompact(ServerFinalLocation));
+}
+
+if (Distance <= FinalCorrectionTolerance && RotationDistance <= FinalRotationCorrectionTolerance)
+{
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_PROXY_FINAL_WITHIN_TOLERANCE Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s"),
+GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+Context.PredictionId,
+*GetNameSafe(TargetActor),
+*ReactionTag.ToString(),
+Reason ? Reason : TEXT("None"));
+}
+
+return true;
+}
+
+if (!bApplyInstantFinalCorrection)
+{
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_PROXY_FINAL_BLOCKED_BY_SETTING Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s"),
+GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+Context.PredictionId,
+*GetNameSafe(TargetActor),
+*ReactionTag.ToString(),
+Reason ? Reason : TEXT("None"));
+}
+
+return false;
+}
+
+if (Distance > FinalCorrectionTolerance)
+{
+TargetActor->SetActorLocation(ServerFinalLocation, false, nullptr, ETeleportType::TeleportPhysics);
+
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_PROXY_FINAL_APPLY_LOCATION Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s Dist=%.2f NewLoc=%s"),
+GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+Context.PredictionId,
+*GetNameSafe(TargetActor),
+*ReactionTag.ToString(),
+Reason ? Reason : TEXT("None"),
+Distance,
+*PP_VecCompact(TargetActor->GetActorLocation()));
+}
+}
+
+if (RotationDistance > FinalRotationCorrectionTolerance)
+{
+TargetActor->SetActorRotation(ServerFinalRotation, ETeleportType::TeleportPhysics);
+
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_PROXY_FINAL_APPLY_ROTATION Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s RotDist=%.2f"),
+GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+Context.PredictionId,
+*GetNameSafe(TargetActor),
+*ReactionTag.ToString(),
+Reason ? Reason : TEXT("None"),
+RotationDistance);
+}
+}
+
+return true;
+}
+
+bool UPP_PredictionComponent::ApplyLatestOlderProxyPendingFinalReactionCorrection(
+const FPP_ReactionPredictionContext& Context, AActor* TargetActor, const TCHAR* Reason)
+{
+if (!Context.IsValid() || !TargetActor) return false;
+
+RemoveExpiredProxyPendingFinalReactionCorrections();
+
+int32 BestIndex = INDEX_NONE;
+int32 BestPredictionId = INDEX_NONE;
+
+for (int32 Index = 0; Index < ProxyPendingFinalReactionCorrections.Num(); ++Index)
+{
+const FPP_OwnerPendingFinalReactionCorrection& Entry = ProxyPendingFinalReactionCorrections[Index];
+
+if (Entry.TargetActor.Get() != TargetActor) continue;
+if (!Entry.ReactionTag.IsValid()) continue;
+if (Entry.PredictionId == INDEX_NONE) continue;
+if (Entry.PredictionId >= Context.PredictionId) continue;
+
+if (BestIndex == INDEX_NONE || Entry.PredictionId > BestPredictionId)
+{
+BestIndex = Index;
+BestPredictionId = Entry.PredictionId;
+}
+}
+
+if (BestIndex == INDEX_NONE) return false;
+
+const FPP_OwnerPendingFinalReactionCorrection Entry = ProxyPendingFinalReactionCorrections[BestIndex];
+
+if (PP_ShouldLogReactionDebug())
+{
+UE_LOG(LogTemp, Warning,
+TEXT("PP_REACTION_PROXY_PREFLIGHT_APPLY_OLDER_FINAL Time=%.3f NewCtx=%d OldCtx=%d Target=%s OldTag=%s Reason=%s"),
+GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+Context.PredictionId,
+Entry.PredictionId,
+*GetNameSafe(TargetActor),
+*Entry.ReactionTag.ToString(),
+Reason ? Reason : TEXT("None"));
+}
+
+FPP_ReactionPredictionContext OlderContext;
+OlderContext.PredictionId = Entry.PredictionId;
+
+return ApplyProxyPendingFinalReactionCorrection(OlderContext, TargetActor, Entry.ReactionTag, Reason);
+}
+
+bool UPP_PredictionComponent::HasNewerReactionMarkerForTarget(
+const FPP_ReactionPredictionContext& Context, AActor* TargetActor)
+{
+if (!Context.IsValid() || !TargetActor) return false;
+
+RemoveExpiredPendingPredictedReactions();
+RemoveExpiredDeferredPredictedReactionCorrections();
+
+for (const FPP_PendingPredictedReaction& Entry : PendingPredictedReactions)
+{
+if (Entry.TargetActor.Get() == TargetActor &&
+Entry.PredictionId != INDEX_NONE &&
+Entry.PredictionId > Context.PredictionId)
+{
+return true;
+}
+}
+
+for (const FPP_DeferredPredictedReactionCorrection& Entry : DeferredPredictedReactionCorrections)
+{
+if (Entry.TargetActor.Get() == TargetActor &&
+Entry.PredictionId != INDEX_NONE &&
+Entry.PredictionId > Context.PredictionId)
+{
+return true;
+}
+}
+
+return false;
+}
+
+void UPP_PredictionComponent::RemoveExpiredProxyPendingFinalReactionCorrections()
+{
+const UWorld* World = GetWorld();
+if (!World)
+{
+ProxyPendingFinalReactionCorrections.Reset();
+return;
+}
+
+const double Now = World->GetTimeSeconds();
+
+for (int32 Index = ProxyPendingFinalReactionCorrections.Num() - 1; Index >= 0; --Index)
+{
+const FPP_OwnerPendingFinalReactionCorrection& Entry = ProxyPendingFinalReactionCorrections[Index];
+
+const bool bExpired = Now - Entry.TimeSeconds > DeferredPredictedCorrectionTimeout;
+const bool bInvalid =
+!Entry.TargetActor.IsValid() ||
+!Entry.ReactionTag.IsValid() ||
+Entry.PredictionId == INDEX_NONE;
+
+if (bExpired || bInvalid)
+{
+ProxyPendingFinalReactionCorrections.RemoveAtSwap(Index);
 }
 }
 }

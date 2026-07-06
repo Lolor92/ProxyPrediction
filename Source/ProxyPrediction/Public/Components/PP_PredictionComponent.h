@@ -151,6 +151,17 @@ bool ApplyOwnerPendingFinalReactionCorrection(const FPP_ReactionPredictionContex
 FGameplayTag ReactionTag, const TCHAR* Reason);
 void RemoveExpiredOwnerPendingFinalReactionCorrections();
 
+void AddProxyPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+FGameplayTag ReactionTag, const FVector& ServerFinalLocation, const FRotator& ServerFinalRotation);
+bool ConsumeProxyPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+FGameplayTag ReactionTag, FVector& OutServerFinalLocation, FRotator& OutServerFinalRotation);
+bool ApplyProxyPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+FGameplayTag ReactionTag, const TCHAR* Reason);
+bool ApplyLatestOlderProxyPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context,
+AActor* TargetActor, const TCHAR* Reason);
+bool HasNewerReactionMarkerForTarget(const FPP_ReactionPredictionContext& Context, AActor* TargetActor);
+void RemoveExpiredProxyPendingFinalReactionCorrections();
+
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context,AActor* TargetActor,
 		AActor* InstigatorActor, FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings);
@@ -175,6 +186,9 @@ void RemoveExpiredOwnerPendingFinalReactionCorrections();
 
 UPROPERTY(Transient)
 TArray<FPP_OwnerPendingFinalReactionCorrection> OwnerPendingFinalReactionCorrections;
+
+UPROPERTY(Transient)
+TArray<FPP_OwnerPendingFinalReactionCorrection> ProxyPendingFinalReactionCorrections;
 
 UPROPERTY(Transient)
 int32 OwnerReactionCorrectionSuppressionCount = 0;
