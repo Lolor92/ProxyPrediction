@@ -194,6 +194,9 @@ UPROPERTY(Transient)
 int32 OwnerReactionCorrectionSuppressionCount = 0;
 
 UPROPERTY(Transient)
+ENetworkSmoothingMode SavedOwnerNetworkSmoothingMode = ENetworkSmoothingMode::Exponential;
+
+UPROPERTY(Transient)
 bool bSavedOwnerIgnoreClientMovementErrorChecksAndCorrection = false;
 
 UPROPERTY(Transient)
