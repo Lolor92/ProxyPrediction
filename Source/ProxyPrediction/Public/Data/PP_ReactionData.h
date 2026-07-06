@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
@@ -130,6 +130,15 @@ struct FPP_ReactionTransformSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Rotation", meta=(ShowOnlyInnerProperties))
 	FPP_ReactionRotationSettings RotationSettings;
+
+	UPROPERTY(Transient)
+	bool bUseServerStartTransform = false;
+
+	UPROPERTY(Transient)
+	FVector ServerStartLocation = FVector::ZeroVector;
+
+	UPROPERTY(Transient)
+	FRotator ServerStartRotation = FRotator::ZeroRotator;
 };
 
 USTRUCT(BlueprintType, meta=(DisplayName="Predicted Reaction"))

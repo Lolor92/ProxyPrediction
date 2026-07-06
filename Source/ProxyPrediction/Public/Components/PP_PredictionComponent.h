@@ -166,7 +166,8 @@ void RemoveExpiredProxyPendingFinalReactionCorrections();
 
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context,AActor* TargetActor,
-		AActor* InstigatorActor, FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings);
+		AActor* InstigatorActor, FGameplayTag ReactionTag, FVector ServerStartLocation,
+		FRotator ServerStartRotation, FPP_ReactionTransformSettings TransformSettings);
 	
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "SyncPrediction|Reaction", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UPP_ReactionData> ReactionData = nullptr;
