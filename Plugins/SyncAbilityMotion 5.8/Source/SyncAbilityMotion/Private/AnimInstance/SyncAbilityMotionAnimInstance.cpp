@@ -105,6 +105,13 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 	if (!bHasAbilityContext || !Ability)
 	{
 		SyncMotion->SetServerMovementCorrectionIgnoreForAbility(false);
+
+		if (USyncAbilityMotionCharacterMovementComponent* MoveComp =
+			Cast<USyncAbilityMotionCharacterMovementComponent>(CharacterMovementComponent))
+		{
+			MoveComp->SetIgnoreServerRootMotionMontageTrackCorrection(false);
+		}
+
 		RestoreAbilityMovementCorrectionOverride();
 		LastTrackedAbility = nullptr;
 		LastTrackedAbilityActivationSequenceId = 0;
@@ -124,6 +131,13 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 		|| CurrentMontage != LastTrackedMontage)
 	{
 		SyncMotion->SetServerMovementCorrectionIgnoreForAbility(false);
+
+		if (USyncAbilityMotionCharacterMovementComponent* MoveComp =
+			Cast<USyncAbilityMotionCharacterMovementComponent>(CharacterMovementComponent))
+		{
+			MoveComp->SetIgnoreServerRootMotionMontageTrackCorrection(false);
+		}
+
 		RestoreAbilityMovementCorrectionOverride();
 
 		
@@ -137,7 +151,11 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 	}
 
 	ApplyAbilityMovementCorrectionOverride(Ability);
-	SyncMotion->SetServerMovementCorrectionIgnoreForAbility(Ability->ShouldIgnoreMovementCorrectionsDuringAbility());
+
+	const bool bIgnoreMovementCorrectionsDuringAbility =
+		Ability->ShouldIgnoreMovementCorrectionsDuringAbility();
+
+	SyncMotion->SetServerMovementCorrectionIgnoreForAbility(bIgnoreMovementCorrectionsDuringAbility);
 
 	const bool bReachedReleasePoint =
 		!Ability->MontageLockout.bUseMontageProgressLockout ||
@@ -202,6 +220,7 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 	if (USyncAbilityMotionCharacterMovementComponent* MoveComp =
 		Cast<USyncAbilityMotionCharacterMovementComponent>(CharacterMovementComponent))
 	{
+		MoveComp->SetIgnoreServerRootMotionMontageTrackCorrection(bIgnoreMovementCorrectionsDuringAbility);
 		MoveComp->SetAbilityRootMotionSuppressed(!DesiredState.bRootMotionEnabled);
 		MoveComp->SetAbilityMovementInputSuppressed(DesiredState.bMovementInputSuppressed);
 	}
