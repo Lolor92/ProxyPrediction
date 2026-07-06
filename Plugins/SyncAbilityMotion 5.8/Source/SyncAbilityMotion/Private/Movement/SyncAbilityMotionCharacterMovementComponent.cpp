@@ -154,6 +154,32 @@ void USyncAbilityMotionCharacterMovementComponent::SetAbilityMovementInputSuppre
 
 void USyncAbilityMotionCharacterMovementComponent::SetIgnoreServerRootMotionMontageTrackCorrection(bool bInIgnore)
 {
+	if (bIgnoreServerRootMotionMontageTrackCorrection == bInIgnore)
+	{
+		return;
+	}
+
+	const bool bLocalOwnerReaction = CharacterOwner && CharacterOwner->IsLocallyControlled();
+
+	if (bInIgnore && bLocalOwnerReaction)
+	{
+		if (!bHasSavedOwnerReactionCorrectionFlags)
+		{
+			bSavedOwnerReactionClientIgnoreMovementCorrections = bClientIgnoreMovementCorrections;
+			bSavedOwnerReactionIgnoreErrorChecksAndCorrection = bIgnoreClientMovementErrorChecksAndCorrection;
+			bHasSavedOwnerReactionCorrectionFlags = true;
+		}
+
+		bClientIgnoreMovementCorrections = true;
+		bIgnoreClientMovementErrorChecksAndCorrection = true;
+	}
+	else if (!bInIgnore && bHasSavedOwnerReactionCorrectionFlags)
+	{
+		bClientIgnoreMovementCorrections = bSavedOwnerReactionClientIgnoreMovementCorrections;
+		bIgnoreClientMovementErrorChecksAndCorrection = bSavedOwnerReactionIgnoreErrorChecksAndCorrection;
+		bHasSavedOwnerReactionCorrectionFlags = false;
+	}
+
 	bIgnoreServerRootMotionMontageTrackCorrection = bInIgnore;
 	bHasOwnerReactionTraceLocation = false;
 	LastOwnerReactionTraceLocation = CharacterOwner ? CharacterOwner->GetActorLocation() : FVector::ZeroVector;
