@@ -384,17 +384,46 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 			ContactAngle,
 			ContactDot);
 
-		if (bStrictAngleBlock || bAngleGraceBlock || bContactBlock)
+		// Side-graze diagnostic:
+		// Do not pause root motion for contact-only capsule rubs.
+		// Only pause when the target center is inside the forward blocking cone.
+		if (bContactBlock && !bStrictAngleBlock && !bAngleGraceBlock)
 		{
-			if (bContactBlock && !bStrictAngleBlock && !bAngleGraceBlock)
+			UE_LOG(LogTemp, Warning,
+				TEXT("SAM_COLLISION_CONTACT_ONLY_IGNORED Owner=%s Other=%s Dot=%.3f Angle=%.2f ContactDot=%.3f ContactAngle=%.2f ProbeDistance=%.2f"),
+				*GetNameSafe(Character),
+				*GetNameSafe(OtherCharacter),
+				Dot,
+				Angle,
+				ContactDot,
+				ContactAngle,
+				RootMotionCollisionProbeDistance);
+
+			continue;
+		}
+
+		if (bStrictAngleBlock || bAngleGraceBlock)
+		{
+			if (!bLastLoggedRootMotionCollisionBlocked)
 			{
-							}
-			else if (!bLastLoggedRootMotionCollisionBlocked)
-			{
-							}
+				UE_LOG(LogTemp, Warning,
+					TEXT("SAM_COLLISION_FRONT_BLOCK Owner=%s Other=%s Dot=%.3f Angle=%.2f ProbeDistance=%.2f"),
+					*GetNameSafe(Character),
+					*GetNameSafe(OtherCharacter),
+					Dot,
+					Angle,
+					RootMotionCollisionProbeDistance);
+			}
 			else if (bAngleGraceBlock)
 			{
-							}
+				UE_LOG(LogTemp, Warning,
+					TEXT("SAM_COLLISION_FRONT_GRACE_BLOCK Owner=%s Other=%s Dot=%.3f Angle=%.2f ProbeDistance=%.2f"),
+					*GetNameSafe(Character),
+					*GetNameSafe(OtherCharacter),
+					Dot,
+					Angle,
+					RootMotionCollisionProbeDistance);
+			}
 
 			bLastLoggedRootMotionCollisionBlocked = true;
 			LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
@@ -417,7 +446,12 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 
 	if (bLostOverlapGraceBlock)
 	{
-				return true;
+		UE_LOG(LogTemp, Warning,
+			TEXT("SAM_COLLISION_LOST_OVERLAP_GRACE_IGNORED_FOR_GRAZE_TEST SecondsSinceBlock=%.3f"),
+			SecondsSinceBlock);
+
+		// Diagnostic test: do not extend root-motion pause after a side-graze block.
+		// If this removes the lag, we can replace it with stricter front-cone-only grace.
 	}
 
 	float FallbackAngle = 0.f;
@@ -426,9 +460,14 @@ bool USyncAbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 	if (bLastLoggedRootMotionCollisionBlocked &&
 		HasFallbackRootMotionBlockingCharacterCollision(RequiredDot, GraceRequiredDot, FallbackAngle, FallbackDot, FallbackCharacter))
 	{
-				bLastLoggedRootMotionCollisionBlocked = true;
-		LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
-		return true;
+		UE_LOG(LogTemp, Warning,
+			TEXT("SAM_COLLISION_FALLBACK_IGNORED_FOR_GRAZE_TEST Owner=%s Other=%s Dot=%.3f Angle=%.2f"),
+			*GetNameSafe(GetOwnerCharacter()),
+			*GetNameSafe(FallbackCharacter),
+			FallbackDot,
+			FallbackAngle);
+
+		// Diagnostic test: do not extend root-motion pause from fallback contact-only detection.
 	}
 
 	if (bLastLoggedRootMotionCollisionBlocked || BestRejectedCharacter)
