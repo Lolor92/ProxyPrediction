@@ -17,9 +17,32 @@ public:
 	void SetAbilityMovementInputSuppressed(bool bInSuppressed);
 	bool IsAbilityMovementInputSuppressed() const { return bAbilityMovementInputSuppressed; }
 
+	void SetIgnoreServerRootMotionMontageTrackCorrection(bool bInIgnore);
+	bool ShouldIgnoreServerRootMotionMontageTrackCorrection() const
+	{
+		return bIgnoreServerRootMotionMontageTrackCorrection;
+	}
+
 	virtual void UpdateFromCompressedFlags(uint8 Flags) override;
 	virtual FVector ScaleInputAcceleration(const FVector& InputAcceleration) const override;
 	virtual class FNetworkPredictionData_Client* GetPredictionData_Client() const override;
+
+	virtual void ClientAdjustRootMotionPosition_Implementation(float TimeStamp, float ServerMontageTrackPosition,
+		FVector ServerLoc, FVector_NetQuantizeNormal ServerRotation, float ServerVelZ, UPrimitiveComponent* ServerBase,
+		FName ServerBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode) override;
+	virtual void ClientAdjustRootMotionPosition_Implementation(float TimeStamp, float ServerMontageTrackPosition,
+		FVector ServerLoc, FVector_NetQuantizeNormal ServerRotation, float ServerVelZ,
+		FMovementBaseInterfaceData* ServerMovementBaseInterfaceData, FName ServerBoneName, bool bHasBase,
+		bool bBaseRelativePosition, uint8 ServerMovementMode) override;
+	virtual void ClientAdjustRootMotionSourcePosition_Implementation(float TimeStamp, FRootMotionSourceGroup ServerRootMotion,
+		bool bHasAnimRootMotion, float ServerMontageTrackPosition, FVector ServerLoc,
+		FVector_NetQuantizeNormal ServerRotation, float ServerVelZ, UPrimitiveComponent* ServerBase,
+		FName ServerBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode) override;
+	virtual void ClientAdjustRootMotionSourcePosition_Implementation(float TimeStamp, FRootMotionSourceGroup ServerRootMotion,
+		bool bHasAnimRootMotion, float ServerMontageTrackPosition, FVector ServerLoc,
+		FVector_NetQuantizeNormal ServerRotation, float ServerVelZ,
+		FMovementBaseInterfaceData* ServerMovementBaseInterfaceData, FName ServerBoneName, bool bHasBase,
+		bool bBaseRelativePosition, uint8 ServerMovementMode) override;
 
 private:
 	UPROPERTY(Transient)
@@ -27,4 +50,7 @@ private:
 
 	UPROPERTY(Transient)
 	bool bAbilityMovementInputSuppressed = false;
+
+	UPROPERTY(Transient)
+	bool bIgnoreServerRootMotionMontageTrackCorrection = false;
 };

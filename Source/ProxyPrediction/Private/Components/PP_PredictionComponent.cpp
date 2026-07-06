@@ -15,6 +15,8 @@
 #include "GameFramework/PlayerState.h"
 #include "HAL/IConsoleManager.h"
 #include "GameplayEffect.h"
+#include "Component/SyncAbilityMotionComponent.h"
+#include "Movement/SyncAbilityMotionCharacterMovementComponent.h"
 
 
 
@@ -88,6 +90,29 @@ bHadAnimRootMotion ? 1 : 0,
 bHadRootMotionSources ? 1 : 0,
 *PP_VecCompact(MovementComponent->Velocity));
 }
+}
+
+static void PP_SetOwnerMontageTrackCorrectionSuppressed(UCharacterMovementComponent* MovementComponent,
+	bool bSuppressed, const FPP_ReactionPredictionContext& Context, AActor* TargetActor, FGameplayTag ReactionTag,
+	const TCHAR* Reason)
+{
+	USyncAbilityMotionCharacterMovementComponent* SyncMoveComponent =
+		Cast<USyncAbilityMotionCharacterMovementComponent>(MovementComponent);
+	if (!SyncMoveComponent) return;
+
+	SyncMoveComponent->SetIgnoreServerRootMotionMontageTrackCorrection(bSuppressed);
+
+	if (PP_ShouldLogReactionDebug())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_TRACK_CORRECTION_%s Time=%.3f Ctx=%d Target=%s Tag=%s Reason=%s"),
+			bSuppressed ? TEXT("SUPPRESS_BEGIN") : TEXT("SUPPRESS_END"),
+			TargetActor && TargetActor->GetWorld() ? TargetActor->GetWorld()->GetTimeSeconds() : -1.f,
+			Context.PredictionId,
+			*GetNameSafe(TargetActor),
+			*ReactionTag.ToString(),
+			Reason ? Reason : TEXT("None"));
+	}
 }
 }
 
@@ -426,28 +451,24 @@ bool bAppliedCorrectionSuppression = false;
 
 if (MovementComponent)
 {
-if (OwnerReactionCorrectionSuppressionCount == 0)
-{
-SavedOwnerNetworkSmoothingMode = MovementComponent->NetworkSmoothingMode;
-}
-
 OwnerReactionCorrectionSuppressionCount++;
 bAppliedCorrectionSuppression = true;
 
-// Keep normal capsule/server correction alive.
-// Only disable visual network smoothing during the reaction, so corrections do not drag/skip the mesh.
-MovementComponent->NetworkSmoothingMode = ENetworkSmoothingMode::Disabled;
+// Keep normal capsule/server correction and smoothing alive. Only prevent root-motion
+// correction RPCs from fast-forwarding the locally replayed montage track.
+PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, true, Context, TargetActor, ReactionTag,
+	TEXT("OwnerReactionStart"));
 
 if (PP_ShouldLogReactionDebug())
 {
 UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_SMOOTHING_SUPPRESS_BEGIN Time=%.3f Ctx=%d Target=%s Tag=%s Count=%d SavedSmoothing=%d ErrChecks=%d ClientCorr=%d"),
+TEXT("PP_REACTION_OWNER_TRACK_SUPPRESS_BEGIN Time=%.3f Ctx=%d Target=%s Tag=%s Count=%d Smoothing=%d ErrChecks=%d ClientCorr=%d"),
 GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
 Context.PredictionId,
 *GetNameSafe(TargetActor),
 *ReactionTag.ToString(),
 OwnerReactionCorrectionSuppressionCount,
-static_cast<int32>(SavedOwnerNetworkSmoothingMode),
+static_cast<int32>(MovementComponent->NetworkSmoothingMode),
 MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0,
 MovementComponent->bClientIgnoreMovementCorrections ? 1 : 0);
 }
@@ -490,6 +511,8 @@ InstigatorActor ? *InstigatorActor->GetActorRotation().ToCompactString() : TEXT(
 StartPosition);
 }
 
+PrepareOwnerReactionRootMotionState(TargetCharacter, Context, ReactionTag);
+
 const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
 
 if (PP_ShouldLogReactionDebug())
@@ -516,10 +539,8 @@ if (OwnerReactionCorrectionSuppressionCount == 0 && MovementComponent)
 {
 ApplyOwnerPendingFinalReactionCorrection(Context, TargetActor, ReactionTag, TEXT("OwnerPlayFailed"));
 
-MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection =
-bSavedOwnerIgnoreClientMovementErrorChecksAndCorrection;
-MovementComponent->bClientIgnoreMovementCorrections =
-bSavedOwnerClientIgnoreMovementCorrections;
+PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, false, Context, TargetActor, ReactionTag,
+TEXT("OwnerPlayFailed"));
 }
 }
 
@@ -581,17 +602,18 @@ CapturedReactionTag, TEXT("OwnerReactionEnd"));
 
 if (StrongMovementComponent && bCapturedAppliedCorrectionSuppression)
 {
-StrongMovementComponent->NetworkSmoothingMode = StrongThis->SavedOwnerNetworkSmoothingMode;
+PP_SetOwnerMontageTrackCorrectionSuppressed(StrongMovementComponent, false, CapturedContext, StrongTargetActor,
+CapturedReactionTag, TEXT("OwnerReactionEnd"));
 
 if (PP_ShouldLogReactionDebug())
 {
 UE_LOG(LogTemp, Warning,
-TEXT("PP_REACTION_OWNER_SMOOTHING_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s RestoreSmoothing=%d Loc=%s Rot=%s"),
+TEXT("PP_REACTION_OWNER_TRACK_SUPPRESS_RESTORE Time=%.3f Ctx=%d Target=%s Tag=%s Smoothing=%d Loc=%s Rot=%s"),
 StrongTargetActor && StrongTargetActor->GetWorld() ? StrongTargetActor->GetWorld()->GetTimeSeconds() : -1.f,
 CapturedContext.PredictionId,
 *GetNameSafe(StrongTargetActor),
 *CapturedReactionTag.ToString(),
-static_cast<int32>(StrongThis->SavedOwnerNetworkSmoothingMode),
+static_cast<int32>(StrongMovementComponent->NetworkSmoothingMode),
 *PP_VecCompact(StrongTargetActor ? StrongTargetActor->GetActorLocation() : FVector::ZeroVector),
 StrongTargetActor ? *StrongTargetActor->GetActorRotation().ToCompactString() : TEXT("None"));
 }
@@ -600,7 +622,7 @@ StrongTargetActor ? *StrongTargetActor->GetActorRotation().ToCompactString() : T
 RemainingDuration,
 false);
 }
-else if (MovementComponent)
+else
 {
 if (bAppliedCorrectionSuppression)
 {
@@ -611,10 +633,11 @@ if (OwnerReactionCorrectionSuppressionCount == 0)
 {
 ApplyOwnerPendingFinalReactionCorrection(Context, TargetActor, ReactionTag, TEXT("NoWorld"));
 
-MovementComponent->bIgnoreClientMovementErrorChecksAndCorrection =
-bSavedOwnerIgnoreClientMovementErrorChecksAndCorrection;
-MovementComponent->bClientIgnoreMovementCorrections =
-bSavedOwnerClientIgnoreMovementCorrections;
+if (MovementComponent)
+{
+PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, false, Context, TargetActor, ReactionTag,
+TEXT("NoWorld"));
+}
 }
 }
 }
@@ -1427,6 +1450,64 @@ float UPP_PredictionComponent::GetReactionStartPosition(const FPP_ReactionDataEn
 	Reaction.Montage->GetSectionStartAndEndTime(SectionIndex, SectionStartTime, SectionEndTime);
 
 	return SectionStartTime;
+}
+
+void UPP_PredictionComponent::PrepareOwnerReactionRootMotionState(ACharacter* TargetCharacter,
+	const FPP_ReactionPredictionContext& Context, FGameplayTag ReactionTag) const
+{
+	if (!TargetCharacter) return;
+
+	UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement();
+	USyncAbilityMotionCharacterMovementComponent* SyncMoveComponent =
+		Cast<USyncAbilityMotionCharacterMovementComponent>(MovementComponent);
+	USyncAbilityMotionComponent* SyncMotionComponent =
+		TargetCharacter->FindComponentByClass<USyncAbilityMotionComponent>();
+	USkeletalMeshComponent* Mesh = TargetCharacter->GetMesh();
+	UAnimInstance* AnimInstance = Mesh ? Mesh->GetAnimInstance() : nullptr;
+
+	const bool bWasAbilityRootMotionSuppressed =
+		SyncMoveComponent && SyncMoveComponent->IsAbilityRootMotionSuppressed();
+	const bool bWasAbilityMovementInputSuppressed =
+		SyncMoveComponent && SyncMoveComponent->IsAbilityMovementInputSuppressed();
+	const float SavedRootMotionScale = TargetCharacter->GetAnimRootMotionTranslationScale();
+
+	if (SyncMotionComponent)
+	{
+		SyncMotionComponent->ResetAbilityMotionState();
+	}
+
+	if (SyncMoveComponent)
+	{
+		SyncMoveComponent->SetAbilityRootMotionSuppressed(false);
+		SyncMoveComponent->SetAbilityMovementInputSuppressed(false);
+	}
+
+	TargetCharacter->SetAnimRootMotionTranslationScale(1.0f);
+	if (AnimInstance)
+	{
+		AnimInstance->SetRootMotionMode(ERootMotionMode::RootMotionFromMontagesOnly);
+	}
+
+	if (PP_ShouldLogReactionDebug())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_ROOT_MOTION_READY Time=%.3f Ctx=%d Target=%s Tag=%s HadSyncMotion=%d HadSyncMove=%d WasRMSuppressed=%d WasInputSuppressed=%d PrevScale=%.3f NewScale=%.3f HasAnim=%d Vel=%s Accel=%s HasAnimRM=%d HasRMSources=%d"),
+			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+			Context.PredictionId,
+			*GetNameSafe(TargetCharacter),
+			*ReactionTag.ToString(),
+			SyncMotionComponent ? 1 : 0,
+			SyncMoveComponent ? 1 : 0,
+			bWasAbilityRootMotionSuppressed ? 1 : 0,
+			bWasAbilityMovementInputSuppressed ? 1 : 0,
+			SavedRootMotionScale,
+			TargetCharacter->GetAnimRootMotionTranslationScale(),
+			AnimInstance ? 1 : 0,
+			MovementComponent ? *PP_VecCompact(MovementComponent->Velocity) : TEXT("(None)"),
+			MovementComponent ? *PP_VecCompact(MovementComponent->GetCurrentAcceleration()) : TEXT("(None)"),
+			MovementComponent && MovementComponent->HasAnimRootMotion() ? 1 : 0,
+			MovementComponent && MovementComponent->CurrentRootMotion.HasActiveRootMotionSources() ? 1 : 0);
+	}
 }
 
 bool UPP_PredictionComponent::PlayReactionMontageOnActor(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction,

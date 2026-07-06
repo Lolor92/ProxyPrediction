@@ -115,6 +115,8 @@ private:
 	void RemoveExpiredPendingPredictedReactions();
 	
 	float GetReactionStartPosition(const FPP_ReactionDataEntry& Reaction) const;
+	void PrepareOwnerReactionRootMotionState(ACharacter* TargetCharacter, const FPP_ReactionPredictionContext& Context,
+		FGameplayTag ReactionTag) const;
 	
 	bool PlayReactionMontageOnActor(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction, float StartPosition,
 		bool bForceRestart) const;
@@ -192,15 +194,6 @@ TArray<FPP_OwnerPendingFinalReactionCorrection> ProxyPendingFinalReactionCorrect
 
 UPROPERTY(Transient)
 int32 OwnerReactionCorrectionSuppressionCount = 0;
-
-UPROPERTY(Transient)
-ENetworkSmoothingMode SavedOwnerNetworkSmoothingMode = ENetworkSmoothingMode::Exponential;
-
-UPROPERTY(Transient)
-bool bSavedOwnerIgnoreClientMovementErrorChecksAndCorrection = false;
-
-UPROPERTY(Transient)
-bool bSavedOwnerClientIgnoreMovementCorrections = false;
 
 	UPROPERTY(Transient)
 	TMap<TWeakObjectPtr<AActor>, int32> PredictedReactionCollisionIgnoreCounts;

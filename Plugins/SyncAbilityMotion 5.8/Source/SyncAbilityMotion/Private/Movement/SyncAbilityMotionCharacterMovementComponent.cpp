@@ -1,6 +1,7 @@
 #include "Movement/SyncAbilityMotionCharacterMovementComponent.h"
 
 #include "AnimInstance/SyncAbilityMotionAnimInstance.h"
+#include "Animation/AnimMontage.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Character.h"
 
@@ -8,6 +9,35 @@ namespace SyncAbilityMotionFlags
 {
 	constexpr uint8 SuppressAbilityRootMotion = FSavedMove_Character::FLAG_Custom_0;
 	constexpr uint8 SuppressAbilityMovementInput = FSavedMove_Character::FLAG_Custom_1;
+}
+
+namespace
+{
+class FScopedIgnoreMontageTrackCorrection
+{
+public:
+	FScopedIgnoreMontageTrackCorrection(ACharacter* Character, bool bEnabled)
+	{
+		if (!bEnabled || !Character) return;
+
+		MontageInstance = Character->GetRootMotionAnimMontageInstance();
+		if (MontageInstance)
+		{
+			MontageInstance->PushDisableRootMotion();
+		}
+	}
+
+	~FScopedIgnoreMontageTrackCorrection()
+	{
+		if (MontageInstance)
+		{
+			MontageInstance->PopDisableRootMotion();
+		}
+	}
+
+private:
+	FAnimMontageInstance* MontageInstance = nullptr;
+};
 }
 
 class FSavedMove_SyncAbilityMotion final : public FSavedMove_Character
@@ -121,6 +151,11 @@ void USyncAbilityMotionCharacterMovementComponent::SetAbilityMovementInputSuppre
 	bAbilityMovementInputSuppressed = bInSuppressed;
 }
 
+void USyncAbilityMotionCharacterMovementComponent::SetIgnoreServerRootMotionMontageTrackCorrection(bool bInIgnore)
+{
+	bIgnoreServerRootMotionMontageTrackCorrection = bInIgnore;
+}
+
 void USyncAbilityMotionCharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
 {
 	Super::UpdateFromCompressedFlags(Flags);
@@ -155,4 +190,110 @@ FVector USyncAbilityMotionCharacterMovementComponent::ScaleInputAcceleration(con
 	}
 
 	return Super::ScaleInputAcceleration(InputAcceleration);
+}
+
+void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionPosition_Implementation(
+	float TimeStamp,
+	float ServerMontageTrackPosition,
+	FVector ServerLoc,
+	FVector_NetQuantizeNormal ServerRotation,
+	float ServerVelZ,
+	UPrimitiveComponent* ServerBase,
+	FName ServerBoneName,
+	bool bHasBase,
+	bool bBaseRelativePosition,
+	uint8 ServerMovementMode)
+{
+	FMovementBaseInterfaceData ServerMovementBaseInterfaceData(ServerBase);
+	ClientAdjustRootMotionPosition_Implementation(TimeStamp, ServerMontageTrackPosition, ServerLoc, ServerRotation,
+		ServerVelZ, &ServerMovementBaseInterfaceData, ServerBoneName, bHasBase, bBaseRelativePosition,
+		ServerMovementMode);
+}
+
+void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionPosition_Implementation(
+	float TimeStamp,
+	float ServerMontageTrackPosition,
+	FVector ServerLoc,
+	FVector_NetQuantizeNormal ServerRotation,
+	float ServerVelZ,
+	FMovementBaseInterfaceData* ServerMovementBaseInterfaceData,
+	FName ServerBoneName,
+	bool bHasBase,
+	bool bBaseRelativePosition,
+	uint8 ServerMovementMode)
+{
+	if (bIgnoreServerRootMotionMontageTrackCorrection)
+	{
+		const FAnimMontageInstance* MontageInstance =
+			CharacterOwner ? CharacterOwner->GetRootMotionAnimMontageInstance() : nullptr;
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_TRACK_CORRECTION_IGNORE_RPC Time=%.3f Character=%s Source=AnimRootMotion TimeStamp=%.3f ServerTrack=%.3f LocalTrack=%.3f Montage=%s"),
+			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+			*GetNameSafe(CharacterOwner),
+			TimeStamp,
+			ServerMontageTrackPosition,
+			MontageInstance ? MontageInstance->GetPosition() : -1.f,
+			MontageInstance ? *GetNameSafe(MontageInstance->Montage) : TEXT("None"));
+	}
+
+	const FScopedIgnoreMontageTrackCorrection ScopedIgnore(CharacterOwner,
+		bIgnoreServerRootMotionMontageTrackCorrection);
+	Super::ClientAdjustRootMotionPosition_Implementation(TimeStamp, ServerMontageTrackPosition, ServerLoc,
+		ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData, ServerBoneName, bHasBase,
+		bBaseRelativePosition, ServerMovementMode);
+}
+
+void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implementation(
+	float TimeStamp,
+	FRootMotionSourceGroup ServerRootMotion,
+	bool bHasAnimRootMotion,
+	float ServerMontageTrackPosition,
+	FVector ServerLoc,
+	FVector_NetQuantizeNormal ServerRotation,
+	float ServerVelZ,
+	UPrimitiveComponent* ServerBase,
+	FName ServerBoneName,
+	bool bHasBase,
+	bool bBaseRelativePosition,
+	uint8 ServerMovementMode)
+{
+	FMovementBaseInterfaceData ServerMovementBaseInterfaceData(ServerBase);
+	ClientAdjustRootMotionSourcePosition_Implementation(TimeStamp, ServerRootMotion, bHasAnimRootMotion,
+		ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, &ServerMovementBaseInterfaceData,
+		ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);
+}
+
+void USyncAbilityMotionCharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implementation(
+	float TimeStamp,
+	FRootMotionSourceGroup ServerRootMotion,
+	bool bHasAnimRootMotion,
+	float ServerMontageTrackPosition,
+	FVector ServerLoc,
+	FVector_NetQuantizeNormal ServerRotation,
+	float ServerVelZ,
+	FMovementBaseInterfaceData* ServerMovementBaseInterfaceData,
+	FName ServerBoneName,
+	bool bHasBase,
+	bool bBaseRelativePosition,
+	uint8 ServerMovementMode)
+{
+	if (bIgnoreServerRootMotionMontageTrackCorrection && bHasAnimRootMotion)
+	{
+		const FAnimMontageInstance* MontageInstance =
+			CharacterOwner ? CharacterOwner->GetRootMotionAnimMontageInstance() : nullptr;
+		UE_LOG(LogTemp, Warning,
+			TEXT("PP_REACTION_OWNER_TRACK_CORRECTION_IGNORE_RPC Time=%.3f Character=%s Source=RootMotionSource TimeStamp=%.3f ServerTrack=%.3f LocalTrack=%.3f Montage=%s"),
+			GetWorld() ? GetWorld()->GetTimeSeconds() : -1.f,
+			*GetNameSafe(CharacterOwner),
+			TimeStamp,
+			ServerMontageTrackPosition,
+			MontageInstance ? MontageInstance->GetPosition() : -1.f,
+			MontageInstance ? *GetNameSafe(MontageInstance->Montage) : TEXT("None"));
+	}
+
+	const FScopedIgnoreMontageTrackCorrection ScopedIgnore(CharacterOwner,
+		bIgnoreServerRootMotionMontageTrackCorrection && bHasAnimRootMotion);
+	Super::ClientAdjustRootMotionSourcePosition_Implementation(TimeStamp, ServerRootMotion, bHasAnimRootMotion,
+		ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData,
+		ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);
 }
