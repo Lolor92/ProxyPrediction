@@ -125,7 +125,6 @@ void USyncAbilityMotionAnimInstance::UpdateAbilityMotionReplication()
 	{
 		SyncMotion->SetServerMovementCorrectionIgnoreForAbility(false);
 		RestoreAbilityMovementCorrectionOverride();
-
 		
 		SyncMotion->ClearRootMotionCollisionProbe();
 

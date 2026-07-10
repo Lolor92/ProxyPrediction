@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerState.h"
@@ -27,3 +27,4 @@ protected:
 	UPROPERTY(Transient, VisibleAnywhere, BlueprintReadWrite, Category="Ability")
 	TObjectPtr<UAttributeSet> AttributeSet;
 };
+

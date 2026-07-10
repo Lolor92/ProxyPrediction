@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
@@ -46,3 +46,4 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Sync Prediction|Abilities", meta=(TitleProperty="Ability"))
 	TArray<FPP_AbilitySet_GameplayAbility> GrantedGameplayAbilities;
 };
+

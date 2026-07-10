@@ -1,4 +1,4 @@
-﻿#include "ProxyPrediction/Public/Character/PP_BaseCharacter.h"
+#include "ProxyPrediction/Public/Character/PP_BaseCharacter.h"
 #include "AbilitySystemComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"

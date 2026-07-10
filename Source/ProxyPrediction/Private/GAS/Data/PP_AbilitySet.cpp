@@ -1,4 +1,4 @@
-﻿#include "Data/PP_AbilitySet.h"
+#include "GAS/Data/PP_AbilitySet.h"
 #include "AbilitySystemComponent.h"
 #include "GameplayAbilitySpec.h"
 
@@ -44,3 +44,4 @@ void UPP_AbilitySet::GiveToAbilitySystem(UAbilitySystemComponent* ASC, FPP_Abili
 		}
 	}
 }
+

@@ -87,3 +87,4 @@ UE_DEFINE_GAMEPLAY_TAG(TAG_GameplayCue_Hit_VFX_Melee, "GameplayCue.Hit.VFX.Melee
 
 // Hit metadata.
 UE_DEFINE_GAMEPLAY_TAG(TAG_Hit_Critical, "Hit.Critical");
+

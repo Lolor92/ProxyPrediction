@@ -1,4 +1,4 @@
-﻿#include "ProxyPrediction/Public/Character/PP_PlayerCharacter.h"
+#include "ProxyPrediction/Public/Character/PP_PlayerCharacter.h"
 #include "AbilitySystemComponent.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -47,3 +47,4 @@ void APP_PlayerCharacter::InitializeAbilitySystem()
 
 	AbilitySystemComponent->InitAbilityActorInfo(PP_PlayerState, this);
 }
+
