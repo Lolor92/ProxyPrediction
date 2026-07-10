@@ -212,10 +212,26 @@ void UPP_CollisionNotifyState::TryPlayPredictedReaction(AActor* AttackerActor, A
 	if (!PredictedReactionTag.IsValid()) return;
 
 	FPP_ReactionTransformSettings TransformSettings;
-	TransformSettings.MovementSettings = MovementSettings;
-	TransformSettings.RotationSettings = RotationSettings;
 
-	PredictionComponent->PlayPredictedReactionOnTargetProxy(
+TransformSettings.MovementSettings.MoveDirection = MoveDirection;
+TransformSettings.MovementSettings.Recipient = MovementRecipient;
+TransformSettings.MovementSettings.ReferenceActorSource = MovementReferenceActorSource;
+TransformSettings.MovementSettings.MoveDistance = MoveDistance;
+TransformSettings.MovementSettings.LateralOffsetMode = LateralOffsetMode;
+TransformSettings.MovementSettings.LateralOffset = LateralOffset;
+TransformSettings.MovementSettings.bSweep = bSweepMovement;
+TransformSettings.MovementSettings.TeleportType = MovementTeleportType;
+TransformSettings.MovementSettings.ClientInterpolationSpeed =
+ClientInterpolationSpeed;
+
+TransformSettings.RotationSettings.RotationDirection = RotationDirection;
+TransformSettings.RotationSettings.Recipient = RotationRecipient;
+TransformSettings.RotationSettings.ReferenceActorSource =
+RotationReferenceActorSource;
+TransformSettings.RotationSettings.DirectionToFace = DirectionToFace;
+TransformSettings.RotationSettings.TeleportType = RotationTeleportType;
+
+PredictionComponent->PlayPredictedReactionOnTargetProxy(
 		HitActor,
 		PredictedReactionTag,
 		TransformSettings);
