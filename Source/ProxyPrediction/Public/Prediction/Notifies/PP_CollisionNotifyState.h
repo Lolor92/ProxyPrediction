@@ -140,7 +140,7 @@ UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings",
 meta=(EditCondition="RotationDirection != EPP_ReactionRotationDirection::None",
 EditConditionHides))
 EPP_ReactionTeleportType RotationTeleportType =
-EPP_ReactionTeleportType::ResetPhysics;
+EPP_ReactionTeleportType::None;
 
 	/** Mesh socket that anchors the collision shape. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Socket")
