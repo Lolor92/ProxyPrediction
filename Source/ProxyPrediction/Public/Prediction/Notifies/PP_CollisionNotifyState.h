@@ -102,7 +102,7 @@ bool bSweepMovement = true;
 UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
 meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
 EPP_ReactionTeleportType MovementTeleportType =
-EPP_ReactionTeleportType::ResetPhysics;
+EPP_ReactionTeleportType::None;
 
 /** Client-only interpolation speed in cm/s. */
 UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
