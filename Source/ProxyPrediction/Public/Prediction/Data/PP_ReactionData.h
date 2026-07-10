@@ -71,46 +71,46 @@ struct FPP_ReactionMovementSettings
 	GENERATED_BODY()
 
 	/** How forward distance changes relative to the reference actor. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Movement")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings")
 	EPP_ReactionMoveDirection MoveDirection = EPP_ReactionMoveDirection::None;
 
 	/** Actor or actors whose location is changed. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Movement",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
 		meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
 	EPP_ReactionTransformRecipient Recipient = EPP_ReactionTransformRecipient::Target;
 
 	/** Actor that supplies the origin and forward/right axes. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Movement",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
 		meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
 	EPP_ReactionReferenceActorSource ReferenceActorSource = EPP_ReactionReferenceActorSource::Instigator;
 
 	/** Distance added, removed, or used as the exact snap distance. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Movement",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
 		meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None && MoveDirection != EPP_ReactionMoveDirection::KeepCurrentDistance", EditConditionHides, ClampMin="0.0"))
 	float MoveDistance = 25.f;
 
 	/** How sideways offset changes relative to the reference actor. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Movement",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
 		meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
 	EPP_ReactionLateralOffsetMode LateralOffsetMode = EPP_ReactionLateralOffsetMode::KeepCurrent;
 
 	/** Sideways distance along the reference actor's right direction. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Movement",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
 		meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None && LateralOffsetMode != EPP_ReactionLateralOffsetMode::KeepCurrent", EditConditionHides))
 	float LateralOffset = 0.f;
 
 	/** Sweeps for blocking collision while moving the recipient. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Movement",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
 		meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
 	bool bSweep = true;
 
 	/** Physics handling used when location is applied. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Movement",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
 		meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
 	EPP_ReactionTeleportType TeleportType = EPP_ReactionTeleportType::ResetPhysics;
 
 	/** Client-only movement speed in cm/s. Zero applies the location instantly. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Movement",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
 		meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides, ClampMin="0.0"))
 	float ClientInterpolationSpeed = 0.0f;
 };
@@ -122,21 +122,21 @@ struct FPP_ReactionRotationSettings
 	GENERATED_BODY()
 
 	/** Direction the recipient should face. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Rotation")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings")
 	EPP_ReactionRotationDirection RotationDirection = EPP_ReactionRotationDirection::None;
 
 	/** Actor or actors whose rotation is changed. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Rotation",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings",
 		meta=(EditCondition="RotationDirection != EPP_ReactionRotationDirection::None", EditConditionHides))
 	EPP_ReactionTransformRecipient Recipient = EPP_ReactionTransformRecipient::Target;
 
 	/** Actor that supplies reference position and facing. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Rotation",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings",
 		meta=(EditCondition="RotationDirection != EPP_ReactionRotationDirection::None", EditConditionHides))
 	EPP_ReactionReferenceActorSource ReferenceActorSource = EPP_ReactionReferenceActorSource::Instigator;
 
 	/** World rotation used when Rotation Direction is Face Direction. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Rotation",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings",
 		meta=(EditCondition="RotationDirection == EPP_ReactionRotationDirection::FaceDirection", EditConditionHides))
 	FRotator DirectionToFace = FRotator::ZeroRotator;
 
@@ -149,7 +149,7 @@ struct FPP_ReactionRotationSettings
 	FRotator ReferenceFacingOverride = FRotator::ZeroRotator;
 
 	/** Physics handling used when rotation is applied. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Rotation",
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings",
 		meta=(EditCondition="RotationDirection != EPP_ReactionRotationDirection::None", EditConditionHides))
 	EPP_ReactionTeleportType TeleportType = EPP_ReactionTeleportType::ResetPhysics;
 };
