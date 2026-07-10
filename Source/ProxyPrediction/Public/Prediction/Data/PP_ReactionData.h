@@ -108,6 +108,11 @@ struct FPP_ReactionMovementSettings
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Movement",
 		meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
 	EPP_ReactionTeleportType TeleportType = EPP_ReactionTeleportType::ResetPhysics;
+
+	/** Client-only movement speed in cm/s. Zero applies the location instantly. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Movement",
+		meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides, ClampMin="0.0"))
+	float ClientInterpolationSpeed = 0.0f;
 };
 
 /** Rotation adjustment applied when a reaction begins. */
