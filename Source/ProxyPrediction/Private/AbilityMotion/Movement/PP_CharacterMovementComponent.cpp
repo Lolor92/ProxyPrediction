@@ -8,6 +8,7 @@
 
 namespace PPAbilityMotionFlags
 {
+	// Custom saved-move bits reproduce ability locks during server resimulation.
 	constexpr uint8 SuppressAbilityRootMotion = FSavedMove_Character::FLAG_Custom_0;
 	constexpr uint8 SuppressAbilityMovementInput = FSavedMove_Character::FLAG_Custom_1;
 }
@@ -56,6 +57,7 @@ public:
 
 	virtual uint8 GetCompressedFlags() const override
 	{
+		// Send the two ability locks with the normal Character Movement move.
 		uint8 Result = Super::GetCompressedFlags();
 
 		if (bSavedAbilityRootMotionSuppressed)
@@ -223,6 +225,7 @@ void UPP_CharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
 {
 	Super::UpdateFromCompressedFlags(Flags);
 
+	// Remote/server simulation restores the exact locks saved by the owning client.
 	const bool bIsLocallyControlled = CharacterOwner && CharacterOwner->IsLocallyControlled();
 	if (!bIsLocallyControlled)
 	{
@@ -247,6 +250,7 @@ FNetworkPredictionData_Client* UPP_CharacterMovementComponent::GetPredictionData
 
 FVector UPP_CharacterMovementComponent::ScaleInputAcceleration(const FVector& InputAcceleration) const
 {
+	// Zero acceleration instead of blocking input events so ability release still works.
 	if (bAbilityMovementInputSuppressed)
 	{
 		return FVector::ZeroVector;

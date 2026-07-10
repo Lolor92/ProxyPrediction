@@ -12,6 +12,10 @@ class UCharacterMovementComponent;
 class UPP_AbilityMotionComponent;
 class UPP_GameplayAbility;
 
+/**
+ * Builds locomotion values and translates active ability settings into movement state.
+ * The local owner publishes that state so the server and proxies animate consistently.
+ */
 UCLASS()
 class PROXYPREDICTION_API UPP_AnimInstance : public UAnimInstance
 {
@@ -22,30 +26,35 @@ public:
 	virtual void NativeInitializeAnimation() override;
 	virtual void NativeUpdateAnimation(float DeltaSeconds) override;
 
+	/** True after the active montage reaches its configured blend-unlock point. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement")
 	bool bCanBlendMontage = false;
 
+	/** True when locomotion should drive the lower body under the montage. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement")
 	bool bShouldBlendLowerBody = false;
 
+	/** True when the active montage may move the character with root motion. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement")
 	bool bRootMotionEnabled = true;
 
+	/** Lets ability state decide when controller yaw may rotate the character. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement")
 	bool bDriveControllerYawFromAbilityState = false;
 
+	/** Current controller-yaw state exposed to the Animation Blueprint. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement")
 	bool bUseControllerRotationYaw = true;
 
-	/** When true, movement smoothly turns the character toward camera/controller yaw instead of snapping via bUseControllerRotationYaw. */
+	/** Smoothly turns a moving character toward the controller's yaw. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement|Rotation")
 	bool bSmoothFaceCameraYawWhenMoving = true;
 
-	/** Degrees per second. Higher is snappier but still avoids a hard teleport-snap. Try 720-1440. */
+	/** Maximum camera-facing turn speed in degrees per second. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement|Rotation", meta=(ClampMin="0.0"))
 	float CameraFacingYawRotationSpeed = 1080.f;
 
-	/** If yaw error is tiny, snap the final bit to prevent micro-jitter. */
+	/** Yaw error small enough to finish the turn without micro-jitter. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement|Rotation", meta=(ClampMin="0.0"))
 	float CameraFacingYawSnapTolerance = 1.0f;
 	
@@ -71,15 +80,19 @@ protected:
 	/** Restores local movement correction flags after the ability ends or changes. */
 	void RestoreAbilityMovementCorrectionOverride();
 
+	/** Character currently using this Animation Instance. */
 	UPROPERTY()
 	TObjectPtr<ACharacter> Character = nullptr;
 
+	/** Cached movement component used to build locomotion values. */
 	UPROPERTY()
 	TObjectPtr<UCharacterMovementComponent> CharacterMovementComponent = nullptr;
 
+	/** Cached GAS component used to find the active project ability. */
 	UPROPERTY()
 	TObjectPtr<UAbilitySystemComponent> AbilitySystemComponent = nullptr;
 
+	/** Cached component that replicates the resolved ability movement state. */
 	UPROPERTY()
 	TObjectPtr<UPP_AbilityMotionComponent> MotionComponent = nullptr;
 
@@ -105,36 +118,47 @@ protected:
 	bool bHasSavedMovementCorrectionFlags = false;
 	bool bSavedIgnoreClientMovementErrorChecksAndCorrection = false;
 	
+	/** Horizontal character speed used by locomotion blends. */
 	UPROPERTY(BlueprintReadOnly, Category="Anim|Movement", meta=(AllowPrivateAccess="true"))
 	float GroundSpeed = 0.f;
 
+	/** True while Character Movement has non-zero acceleration. */
 	UPROPERTY(BlueprintReadOnly, Category="Anim|Movement", meta=(AllowPrivateAccess="true"))
 	bool bIsAccelerating = false;
 
+	/** True while the character is falling or otherwise airborne. */
 	UPROPERTY(BlueprintReadOnly, Category="Anim|Movement", meta=(AllowPrivateAccess="true"))
 	bool IsAirBorne = false;
 
+	/** Character aim relative to its current actor rotation. */
 	UPROPERTY(BlueprintReadOnly, Category="Anim|Movement", meta=(AllowPrivateAccess="true"))
 	FRotator AimRotation;
 
+	/** Rotation of the current horizontal movement direction. */
 	UPROPERTY(BlueprintReadOnly, Category="Anim|Movement", meta=(AllowPrivateAccess="true"))
 	FRotator MovementRotation;
 
+	/** Signed yaw difference between movement direction and aim direction. */
 	UPROPERTY(BlueprintReadOnly, Category="Anim|Movement", meta=(AllowPrivateAccess="true"))
 	float MovementOffsetYaw = 0.f;
 
+	/** True while the character is in a blocking state. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State")
 	bool bIsBlocking = false;
 
+	/** True while the character is knocked down. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State")
 	bool bIsKnockdown = false;
 
+	/** True while the character is playing a flinch response. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State")
 	bool bIsFlinching = false;
 
+	/** True while the character is frozen. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State")
 	bool bIsFrozen = false;
 
+	/** True while the character is stunned. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State")
 	bool bIsStunned = false;
 };

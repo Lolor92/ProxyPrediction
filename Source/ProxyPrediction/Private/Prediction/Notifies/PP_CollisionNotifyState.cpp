@@ -13,6 +13,7 @@ void UPP_CollisionNotifyState::NotifyBegin(USkeletalMeshComponent* MeshComp, UAn
 	if (!MeshComp) return;
 	
 	FPP_NotifyRuntimeWindow& Window = ActiveWindowsByMesh.FindOrAdd(MeshComp);
+	// Each notify window may predict a reaction on each target only once.
 	Window.WindowId = FGuid::NewGuid();
 	Window.ProcessedTargets.Reset();
 	
@@ -96,6 +97,7 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 	const int32 NumSteps = FMath::Max(1, FMath::CeilToInt(SweepDistance / SafeStepDistance));
 	const FCollisionShape Shape = MakeCollisionShape();
 
+	// Sub-sweeps cover fast socket movement between animation updates.
 	for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
 	{
 		const float StartAlpha = static_cast<float>(StepIndex) / static_cast<float>(NumSteps);
@@ -138,9 +140,8 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 			if (!HitActor || HitActor == OwnerActor) continue;
 			if (HasAlreadyProcessedTarget(MeshComp, HitActor)) continue;
 
+			// Mark before prediction so overlapping sub-sweeps cannot replay the hit.
 			MarkTargetProcessed(MeshComp, HitActor);
-
-
 			TryPlayPredictedReaction(OwnerActor, HitActor);
 		}
 	}
