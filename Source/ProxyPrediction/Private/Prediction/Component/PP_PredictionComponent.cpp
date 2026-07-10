@@ -1681,7 +1681,7 @@ void UPP_PredictionComponent::SetReactionActorLocation(
 		return;
 	}
 
-	constexpr float InterpolationInterval = 1.0f / 30.0f;
+	constexpr float InterpolationInterval = 1.0f / 60.0f;
 	const float InterpolationSpeed = MovementSettings.ClientInterpolationSpeed;
 	const TWeakObjectPtr<AActor> WeakRecipient(RecipientActor);
 	double LastUpdateTime = World->GetTimeSeconds();
