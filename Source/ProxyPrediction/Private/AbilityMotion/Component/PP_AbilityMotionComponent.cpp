@@ -127,6 +127,7 @@ void UPP_AbilityMotionComponent::SetAbilityMotionState(const FPP_AbilityMotionSt
 	ACharacter* Character = GetOwnerCharacter();
 	if (Character && !Character->HasAuthority())
 	{
+		// The owner predicts immediately; the server replicates the state to proxies.
 		ServerSetAbilityMotionState(NewState);
 	}
 }
@@ -227,6 +228,7 @@ void UPP_AbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 		return;
 	}
 
+	// Reuse one attached capsule and update it only when probe settings change.
 	EnsureRootMotionCollisionProbe();
 	if (!RootMotionCollisionProbeComponent) return;
 
@@ -306,6 +308,7 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		180.f);
 	const float GraceRequiredDot = FMath::Cos(FMath::DegreesToRadians(GraceAngleDegrees));
 
+	// Prefer current probe overlaps and remove stale entries as they are checked.
 	for (int32 Index = RootMotionCollisionCharacters.Num() - 1; Index >= 0; --Index)
 	{
 		ACharacter* OtherCharacter = RootMotionCollisionCharacters[Index].Get();
@@ -379,6 +382,7 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 
 	if (bLostOverlapGraceBlock)
 	{
+		// Brief grace prevents a one-frame overlap loss from restarting root motion.
 		return true;
 	}
 
@@ -388,6 +392,7 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 	if (bLastLoggedRootMotionCollisionBlocked &&
 		HasFallbackRootMotionBlockingCharacterCollision(RequiredDot, GraceRequiredDot, FallbackAngle, FallbackDot, FallbackCharacter))
 	{
+		// Manual overlap is a backup when component overlap events arrive late.
 		bLastLoggedRootMotionCollisionBlocked = true;
 		LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
 		return true;

@@ -2,6 +2,7 @@
 
 #include "NativeGameplayTags.h"
 
+// Native input tags used by input configs and GAS ability specs.
 PROXYPREDICTION_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_SyncInput_Root);
 
 PROXYPREDICTION_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_SyncInput_0);
@@ -119,5 +120,6 @@ PROXYPREDICTION_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_SyncInput_Move);
 PROXYPREDICTION_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_SyncInput_Look);
 PROXYPREDICTION_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_SyncInput_Zoom);
 
+/** Returns SyncInput.1, SyncInput.2, and so on for positive indices. */
 PROXYPREDICTION_API FGameplayTag GetSyncInputNumberedTag(int32 Index);
 

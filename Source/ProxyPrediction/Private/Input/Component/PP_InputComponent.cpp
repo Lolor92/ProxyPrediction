@@ -59,6 +59,7 @@ void UPP_InputComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void UPP_InputComponent::HandleNewPawn(APawn* NewPawn)
 {
+	// Controller possession changes replace the complete local input installation.
 	UninstallFromPawn();
 	if (!NewPawn || !IsLocallyControlledOwner()) return;
 
@@ -159,7 +160,7 @@ void UPP_InputComponent::BindActionsFromConfig()
 	{
 		if (!Row.InputAction || !Row.InputTag.IsValid()) continue;
 
-		// Special-case Move/Look: bind to axis handlers
+		// Move and Look feed the pawn directly; all other tags route through GAS.
 		if (Row.InputTag.MatchesTagExact(SyncInputTags::Move()))
 		{
 			InjectedEnhancedInputComponent->BindAction(
@@ -173,7 +174,6 @@ void UPP_InputComponent::BindActionsFromConfig()
 			continue;
 		}
 
-		// Everything else forwards to GAS via the tag
 		InjectedEnhancedInputComponent->BindAction(
 			Row.InputAction, ETriggerEvent::Started,
 			this, &UPP_InputComponent::HandleActionPressed, Row.InputTag);
@@ -244,6 +244,7 @@ void UPP_InputComponent::HandleActionPressed(FGameplayTag InputTag)
 	}
 	if (!AbilitySystemComponent) return;
 
+	// One press first advances an open combo, otherwise it activates the tagged spec.
 	TryHandleAbilityPressed(InputTag, true);
 
 	if (ShouldRetryHeldActivationForInputTag(InputTag) && HasAbilityForInputTag(InputTag))
@@ -260,6 +261,7 @@ bool UPP_InputComponent::TryHandleAbilityPressed(FGameplayTag InputTag, bool bSe
 	{
 		if (!DoesSpecMatchInputTag(Spec, InputTag)) continue;
 
+		// An active chain owns this press even when its next ability cannot activate yet.
 		bool bComboHandled = false;
 		if (TryActivateComboAbility(Spec, bComboHandled))
 		{
@@ -387,6 +389,7 @@ void UPP_InputComponent::UpdateComboChain(
 		return;
 	}
 
+	// Keep the starter key so every later press advances the same chain.
 	FPP_InputActiveComboChain& ComboChain = ActiveComboChains.FindOrAdd(StarterHandle);
 	ComboChain.CurrentAbilityHandle = CurrentAbilitySpec.Handle;
 	ComboChain.NextAbilityClass = CurrentAbility->GetComboAbilityClass();
@@ -510,6 +513,7 @@ void UPP_InputComponent::RetryHeldActivation(FGameplayTag InputTag)
 		return;
 	}
 
+	// Retries activation without repeating the GAS InputPressed event every interval.
 	TryHandleAbilityPressed(InputTag, false);
 }
 

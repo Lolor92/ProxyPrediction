@@ -31,6 +31,7 @@ void UPP_AnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 
 	if (!Character || !CharacterMovementComponent) return;
 
+	// Build the locomotion values consumed by the Animation Blueprint.
 	bIsAccelerating = CharacterMovementComponent->GetCurrentAcceleration().Size() > 0.f;
 	GroundSpeed = UKismetMathLibrary::VSizeXY(CharacterMovementComponent->Velocity);
 	IsAirBorne = CharacterMovementComponent->IsFalling();
@@ -48,6 +49,7 @@ void UPP_AnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 		MovementOffsetYaw = 0.f;
 	}
 
+	// Publish local ability state first, then consume the state for this anim graph.
 	UpdateAbilityMotionReplication();
 
 	if (UPP_AbilityMotionComponent* Motion = GetMotionComponentSafe())
@@ -110,6 +112,7 @@ void UPP_AnimInstance::UpdateAbilityMotionReplication()
 	UPP_GameplayAbility* Ability = nullptr;
 	const bool bHasAbilityContext = GetAbilityPercentMontagePlayed(Percent, Ability);
 
+	// No active project ability: clear every movement lock and temporary override.
 	if (!bHasAbilityContext || !Ability)
 	{
 		Motion->SetServerMovementCorrectionIgnoreForAbility(false);
@@ -127,6 +130,7 @@ void UPP_AnimInstance::UpdateAbilityMotionReplication()
 	const UAnimMontage* CurrentMontage = Ability->GetCurrentMontage();
 	const uint32 CurrentActivationSequenceId = Ability->GetActivationSequenceId();
 
+	// A new activation or montage starts with fresh release and collision latches.
 	if (Ability != LastTrackedAbility
 		|| CurrentActivationSequenceId != LastTrackedAbilityActivationSequenceId
 		|| CurrentMontage != LastTrackedMontage)
@@ -155,6 +159,7 @@ void UPP_AnimInstance::UpdateAbilityMotionReplication()
 
 	if (bReachedReleasePoint && bHasMovementInput)
 	{
+		// Movement input releases root motion for the rest of this montage.
 		bReleasedRootMotionThisMontage = true;
 	}
 
@@ -208,12 +213,14 @@ void UPP_AnimInstance::UpdateAbilityMotionReplication()
 	if (UPP_CharacterMovementComponent* MoveComp =
 		Cast<UPP_CharacterMovementComponent>(CharacterMovementComponent))
 	{
+		// Saved-move flags carry both locks through Character Movement prediction.
 		MoveComp->SetAbilityRootMotionSuppressed(!DesiredState.bRootMotionEnabled);
 		MoveComp->SetAbilityMovementInputSuppressed(DesiredState.bMovementInputSuppressed);
 	}
 
 	if (Motion->GetAbilityMotionState() == DesiredState) return;
 
+	// The motion component forwards changed state to the server and simulated proxies.
 	Motion->SetAbilityMotionState(DesiredState);
 }
 

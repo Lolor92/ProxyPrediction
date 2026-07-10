@@ -62,6 +62,7 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy
 (AActor* TargetActor, FGameplayTag ReactionTag,
  FPP_ReactionTransformSettings TransformSettings)
 {
+	// Local prediction: validate -> mark -> transform -> montage -> server RPC.
 	if (!ReactionData || !ReactionTag.IsValid()) return false;
 
 	FPP_ReactionDataEntry Reaction;
@@ -106,6 +107,7 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation
  FPP_ReactionTransformSettings
  TransformSettings)
 {
+	// Authority repeats the transform, applies effects, then publishes start and finish.
 	AActor* OwnerActor = GetOwner();
 
 
@@ -185,6 +187,7 @@ void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation
  FPP_ReactionTransformSettings
  TransformSettings)
 {
+	// The predicting client consumes its marker; other proxies start from server state.
 	AActor* OwnerActor = GetOwner();
 
 	if (!OwnerActor || OwnerActor->HasAuthority()) return;
@@ -256,6 +259,7 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation
  FPP_ReactionTransformSettings
  TransformSettings)
 {
+	// Owner confirmation replays visuals without letting montage root motion move the capsule.
 	AActor* OwnerActor = GetOwner();
 
 
@@ -487,6 +491,7 @@ void UPP_PredictionComponent::MulticastFinishConfirmedReaction_Implementation
  FVector ServerFinalLocation,
  FRotator ServerFinalRotation)
 {
+	// Final state is smoothed on the owner or matched to the predicting proxy marker.
 	AActor* OwnerActor = GetOwner();
 
 	if (!OwnerActor || OwnerActor->HasAuthority()) return;
@@ -1072,8 +1077,7 @@ bool UPP_PredictionComponent::CanPlayPredictedReactionOnTargetProxy
 	const AActor* OwnerActor = GetOwner();
 	if (!OwnerActor) return false;
 
-	// This component is on the attacker.
-	// Only the attacking client should predict target proxy reaction.
+	// Only the attacking client predicts a reaction on its remote target proxy.
 	if (OwnerActor->HasAuthority()) return false;
 
 	const APawn* OwnerPawn = Cast<APawn>(OwnerActor);
@@ -1330,6 +1334,7 @@ void UPP_PredictionComponent::ApplyReactionTransform
 {
 	if (!InstigatorActor || !TargetActor) return;
 
+	// Rotate first so movement can use the intended facing and reference axes.
 	const FPP_ReactionRotationSettings& RotationSettings = TransformSettings.RotationSettings;
 	if (RotationSettings.RotationDirection != EPP_ReactionRotationDirection::None)
 	{
