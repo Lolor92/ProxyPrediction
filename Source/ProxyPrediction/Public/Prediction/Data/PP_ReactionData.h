@@ -192,3 +192,4 @@ public:
 
 	const FPP_ReactionDataEntry* FindReactionPtr(FGameplayTag ReactionTag) const;
 };
+

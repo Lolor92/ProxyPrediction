@@ -1,8 +1,8 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "AbilitySystemComponent.h"
-#include "Data/PP_AbilitySet.h"
+#include "GAS/Data/PP_AbilitySet.h"
 #include "PP_AbilitySystemComponent.generated.h"
 
 
@@ -33,3 +33,4 @@ private:
 
 	bool bAbilitySetsGranted = false;
 };
+

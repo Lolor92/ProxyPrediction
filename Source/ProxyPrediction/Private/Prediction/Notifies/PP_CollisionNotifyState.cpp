@@ -1,6 +1,6 @@
-﻿#include "Notifies/PP_CollisionNotifyState.h"
+#include "Prediction/Notifies/PP_CollisionNotifyState.h"
 #include "DrawDebugHelpers.h"
-#include "Components/PP_PredictionComponent.h"
+#include "Prediction/Component/PP_PredictionComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
@@ -213,3 +213,4 @@ void UPP_CollisionNotifyState::TryPlayPredictedReaction(AActor* AttackerActor, A
 	PredictionComponent->PlayPredictedReactionOnTargetProxy(HitActor, PredictedReactionTag,
 		ReactionTransformSettings);
 }
+

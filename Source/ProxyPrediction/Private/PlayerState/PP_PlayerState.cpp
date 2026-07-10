@@ -1,4 +1,4 @@
-﻿#include "ProxyPrediction/Public/PlayerState/PP_PlayerState.h"
+#include "ProxyPrediction/Public/PlayerState/PP_PlayerState.h"
 #include "GAS/Attribute/PP_AttributeSet.h"
 #include "GAS/Component/PP_AbilitySystemComponent.h"
 
@@ -12,3 +12,4 @@ APP_PlayerState::APP_PlayerState()
 
 	AttributeSet = CreateDefaultSubobject<UPP_AttributeSet>("AttributeSet");
 }
+

@@ -18,6 +18,7 @@ public class ProxyPrediction : ModuleRules
 			"GameplayTasks",
 		});
 		
-		PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore", "SyncAbilityMotion" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
 	}
 }
+

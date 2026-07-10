@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
 #include "Components/ActorComponent.h"
-#include "Data/PP_ReactionData.h"
+#include "Prediction/Data/PP_ReactionData.h"
 #include "PP_PredictionComponent.generated.h"
 
 class AActor;
@@ -224,3 +224,4 @@ float ProxyFinalCorrectionDelaySeconds = 0.05f;
 UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", ClampMax="0.5", Units="Seconds"))
 float OwnerFinalCorrectionSmoothSeconds = 0.15f;
 };
+

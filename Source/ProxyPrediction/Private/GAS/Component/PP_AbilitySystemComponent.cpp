@@ -1,4 +1,4 @@
-﻿#include "ProxyPrediction/Public/GAS/Component/PP_AbilitySystemComponent.h"
+#include "ProxyPrediction/Public/GAS/Component/PP_AbilitySystemComponent.h"
 
 UPP_AbilitySystemComponent::UPP_AbilitySystemComponent()
 {
@@ -39,3 +39,4 @@ void UPP_AbilitySystemComponent::RemoveGrantedAbilitySets()
 	
 	GrantedHandles.ClearAbilities(this);
 }
+

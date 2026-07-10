@@ -1,8 +1,8 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "CollisionShape.h"
-#include "Data/PP_ReactionData.h"
+#include "Prediction/Data/PP_ReactionData.h"
 #include "Engine/EngineTypes.h"
 #include "GameplayTagContainer.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
@@ -101,3 +101,4 @@ private:
 	
 	TMap<TWeakObjectPtr<USkeletalMeshComponent>, FPP_NotifyRuntimeWindow> ActiveWindowsByMesh;
 };
+

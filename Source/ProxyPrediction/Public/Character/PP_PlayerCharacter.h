@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "PP_BaseCharacter.h"
@@ -32,3 +32,4 @@ private:
 	UPROPERTY(VisibleAnywhere, Category="Camera")
 	TObjectPtr<UCameraComponent> Camera = nullptr;
 };
+

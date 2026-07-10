@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "AttributeSet.h"
@@ -10,3 +10,4 @@ class PROXYPREDICTION_API UPP_AttributeSet : public UAttributeSet
 {
 	GENERATED_BODY()
 };
+

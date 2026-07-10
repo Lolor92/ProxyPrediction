@@ -1,4 +1,4 @@
-#include "Components/PP_PredictionComponent.h"
+#include "Prediction/Component/PP_PredictionComponent.h"
 #include "TimerManager.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
@@ -14,8 +14,8 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
 #include "GameplayEffect.h"
-#include "Component/SyncAbilityMotionComponent.h"
-#include "Movement/SyncAbilityMotionCharacterMovementComponent.h"
+#include "AbilityMotion/Component/PP_AbilityMotionComponent.h"
+#include "AbilityMotion/Movement/PP_CharacterMovementComponent.h"
 
 
 namespace
@@ -44,8 +44,8 @@ namespace
 	 AActor* TargetActor, FGameplayTag ReactionTag,
 	 const TCHAR* Reason)
 	{
-		USyncAbilityMotionCharacterMovementComponent* SyncMoveComponent =
-			Cast<USyncAbilityMotionCharacterMovementComponent>(MovementComponent);
+		UPP_CharacterMovementComponent* SyncMoveComponent =
+			Cast<UPP_CharacterMovementComponent>(MovementComponent);
 		if (!SyncMoveComponent) return;
 
 		SyncMoveComponent->SetIgnoreServerRootMotionMontageTrackCorrection(bSuppressed);
@@ -282,8 +282,8 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation
 	if (!TargetCharacter) return;
 
 	UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement();
-	USyncAbilityMotionCharacterMovementComponent* SyncMovementComponent =
-		Cast<USyncAbilityMotionCharacterMovementComponent>(MovementComponent);
+	UPP_CharacterMovementComponent* SyncMovementComponent =
+		Cast<UPP_CharacterMovementComponent>(MovementComponent);
 	USkeletalMeshComponent* TargetMesh = TargetCharacter->GetMesh();
 	UAnimInstance* OwnerAnimInstance = TargetMesh ? TargetMesh->GetAnimInstance() : nullptr;
 
@@ -382,7 +382,7 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation
 
 		TWeakObjectPtr<UPP_PredictionComponent> WeakThis(this);
 		TWeakObjectPtr<UCharacterMovementComponent> WeakMovementComponent(MovementComponent);
-		TWeakObjectPtr<USyncAbilityMotionCharacterMovementComponent> WeakSyncMovementComponent(SyncMovementComponent);
+		TWeakObjectPtr<UPP_CharacterMovementComponent> WeakSyncMovementComponent(SyncMovementComponent);
 		TWeakObjectPtr<UAnimInstance> WeakOwnerAnimInstance(OwnerAnimInstance);
 		TWeakObjectPtr<AActor> WeakTarget(TargetActor);
 		const FGameplayTag CapturedReactionTag = ReactionTag;
@@ -404,7 +404,7 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation
 				UPP_PredictionComponent* StrongThis = WeakThis.Get();
 				AActor* StrongTargetActor = WeakTarget.Get();
 				UCharacterMovementComponent* StrongMovementComponent = WeakMovementComponent.Get();
-				USyncAbilityMotionCharacterMovementComponent* StrongSyncMovementComponent = WeakSyncMovementComponent.
+				UPP_CharacterMovementComponent* StrongSyncMovementComponent = WeakSyncMovementComponent.
 					Get();
 				UAnimInstance* StrongOwnerAnimInstance = WeakOwnerAnimInstance.Get();
 
@@ -1195,10 +1195,10 @@ void UPP_PredictionComponent::PrepareOwnerReactionRootMotionState
 	if (!TargetCharacter) return;
 
 	UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement();
-	USyncAbilityMotionCharacterMovementComponent* SyncMoveComponent =
-		Cast<USyncAbilityMotionCharacterMovementComponent>(MovementComponent);
-	USyncAbilityMotionComponent* SyncMotionComponent =
-		TargetCharacter->FindComponentByClass<USyncAbilityMotionComponent>();
+	UPP_CharacterMovementComponent* SyncMoveComponent =
+		Cast<UPP_CharacterMovementComponent>(MovementComponent);
+	UPP_AbilityMotionComponent* MotionComponent =
+		TargetCharacter->FindComponentByClass<UPP_AbilityMotionComponent>();
 	USkeletalMeshComponent* Mesh = TargetCharacter->GetMesh();
 	UAnimInstance* AnimInstance = Mesh ? Mesh->GetAnimInstance() : nullptr;
 
@@ -1208,9 +1208,9 @@ void UPP_PredictionComponent::PrepareOwnerReactionRootMotionState
 		SyncMoveComponent && SyncMoveComponent->IsAbilityMovementInputSuppressed();
 	const float SavedRootMotionScale = TargetCharacter->GetAnimRootMotionTranslationScale();
 
-	if (SyncMotionComponent)
+	if (MotionComponent)
 	{
-		SyncMotionComponent->ResetAbilityMotionState();
+		MotionComponent->ResetAbilityMotionState();
 	}
 
 	if (SyncMoveComponent)
@@ -1580,3 +1580,5 @@ ETeleportType UPP_PredictionComponent::ToTeleportType(EPP_ReactionTeleportType T
 		       ? ETeleportType::ResetPhysics
 		       : ETeleportType::None;
 }
+
+
