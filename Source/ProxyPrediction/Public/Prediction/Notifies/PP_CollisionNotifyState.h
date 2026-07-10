@@ -59,10 +59,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Predicted Reaction")
 	FGameplayTag PredictedReactionTag;
 
-	/** Per-ability movement and rotation requested when this notify hits a target. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Predicted Reaction|Transform",
-		meta=(DisplayName="Transform Settings", ShowOnlyInnerProperties))
-	FPP_ReactionTransformSettings ReactionTransformSettings;
+	/** Predicted movement applied with the reaction. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
+		meta=(ShowOnlyInnerProperties))
+	FPP_ReactionMovementSettings MovementSettings;
+
+	/** Predicted rotation applied with the reaction. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings",
+		meta=(ShowOnlyInnerProperties))
+	FPP_ReactionRotationSettings RotationSettings;
 
 	/** Mesh socket that anchors the collision shape. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Socket")

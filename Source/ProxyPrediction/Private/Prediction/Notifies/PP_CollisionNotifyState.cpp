@@ -211,7 +211,13 @@ void UPP_CollisionNotifyState::TryPlayPredictedReaction(AActor* AttackerActor, A
 
 	if (!PredictedReactionTag.IsValid()) return;
 
+	FPP_ReactionTransformSettings TransformSettings;
+	TransformSettings.MovementSettings = MovementSettings;
+	TransformSettings.RotationSettings = RotationSettings;
+
 	PredictionComponent->PlayPredictedReactionOnTargetProxy(
-		HitActor, PredictedReactionTag, ReactionTransformSettings);
+		HitActor,
+		PredictedReactionTag,
+		TransformSettings);
 }
 
