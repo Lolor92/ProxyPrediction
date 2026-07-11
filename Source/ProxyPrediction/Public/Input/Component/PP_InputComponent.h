@@ -60,10 +60,10 @@ public:
 		meta=(EditCondition="bRetryHeldAbilityActivation", ClampMin="0.02", UIMin="0.02", Units="Seconds"))
 	float HeldActivationRetryInterval = 0.1f;
 
-	/** Input tags that should activate only on the initial press. */
+	/** Only these input tags retry while held. An empty container disables held retries for every input. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="PPInput|Held Activation",
 		meta=(EditCondition="bRetryHeldAbilityActivation"))
-	FGameplayTagContainer HeldActivationRetryExcludedInputTags;
+	FGameplayTagContainer HeldActivationRetryIncludedInputTags;
 
 protected:
 	virtual void BeginPlay() override;

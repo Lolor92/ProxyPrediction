@@ -1,4 +1,6 @@
 #include "Prediction/Component/PP_PredictionComponent.h"
+
+#include "Combat/Component/PP_CombatComponent.h"
 #include "TimerManager.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
@@ -173,11 +175,135 @@ bool UPP_PredictionComponent::CanServerAcceptPredictedReaction_Implementation(
 	return TargetActor != nullptr && ReactionTag.IsValid();
 }
 
+EPP_ReactionDefenseOutcome UPP_PredictionComponent::ResolveDefenseOutcome(
+	AActor* TargetActor,
+	const FPP_ReactionDefenseSettings& DefenseSettings) const
+{
+	const UPP_CombatComponent* TargetCombat =
+		TargetActor ? TargetActor->FindComponentByClass<UPP_CombatComponent>() : nullptr;
+	if (!TargetCombat) return EPP_ReactionDefenseOutcome::None;
+
+	const bool bBlocked = DefenseSettings.Block.bBlockable &&
+		TargetCombat->CanBlockAttackFrom(GetOwner(), DefenseSettings.Block.BlockAngleDegrees);
+	if (bBlocked && TargetCombat->IsParryingActive()) return EPP_ReactionDefenseOutcome::Parried;
+	if (DefenseSettings.Dodge.bDodgeable && TargetCombat->IsDodgingActive()) return EPP_ReactionDefenseOutcome::Dodged;
+	if (bBlocked) return EPP_ReactionDefenseOutcome::Blocked;
+	if (DefenseSettings.SuperArmor.RequiredSuperArmor != EPP_SuperArmorLevel::None &&
+		TargetCombat->GetSuperArmorLevel() >= DefenseSettings.SuperArmor.RequiredSuperArmor)
+	{
+		return EPP_ReactionDefenseOutcome::SuperArmored;
+	}
+
+	return EPP_ReactionDefenseOutcome::None;
+}
+
+bool UPP_PredictionComponent::ShouldApplyReactionTransform(
+	const EPP_ReactionDefenseOutcome Outcome,
+	const FPP_ReactionDefenseSettings& DefenseSettings)
+{
+	if (Outcome == EPP_ReactionDefenseOutcome::None) return true;
+	if (Outcome == EPP_ReactionDefenseOutcome::Blocked || Outcome == EPP_ReactionDefenseOutcome::Parried)
+	{
+		return DefenseSettings.Block.bAllowMovementWhenBlocked ||
+			DefenseSettings.Block.bAllowRotationWhenBlocked;
+	}
+	return false;
+}
+
+void UPP_PredictionComponent::ApplyDefenseOutcomeEffects(
+	AActor* TargetActor,
+	const EPP_ReactionDefenseOutcome Outcome) const
+{
+	UPP_CombatComponent* TargetCombat =
+		TargetActor ? TargetActor->FindComponentByClass<UPP_CombatComponent>() : nullptr;
+	if (!TargetCombat) return;
+
+	switch (Outcome)
+	{
+	case EPP_ReactionDefenseOutcome::Parried:
+		// Parry is a specialized successful block, so both configured responses fire.
+		TargetCombat->ApplySuccessfulBlockEffects(GetOwner());
+		TargetCombat->ApplySuccessfulParryEffects(GetOwner());
+		break;
+	case EPP_ReactionDefenseOutcome::Blocked:
+		TargetCombat->ApplySuccessfulBlockEffects(GetOwner());
+		break;
+	case EPP_ReactionDefenseOutcome::Dodged:
+		TargetCombat->ApplySuccessfulDodgeEffects(GetOwner());
+		break;
+	case EPP_ReactionDefenseOutcome::SuperArmored:
+		TargetCombat->ApplySuccessfulSuperArmorEffects(GetOwner());
+		break;
+	default:
+		break;
+	}
+}
+
+bool UPP_PredictionComponent::ShouldApplyDamage(
+	AActor* TargetActor,
+	const EPP_ReactionDefenseOutcome Outcome,
+	const FPP_ReactionDamageSettings& DamageSettings) const
+{
+	if (DamageSettings.DamageEffects.IsEmpty()) return false;
+	if (Outcome == EPP_ReactionDefenseOutcome::Parried &&
+		(!DamageSettings.bApplyDamageWhenParried || !DamageSettings.bApplyDamageWhenBlocked)) return false;
+	if (Outcome == EPP_ReactionDefenseOutcome::Blocked && !DamageSettings.bApplyDamageWhenBlocked) return false;
+	if (Outcome == EPP_ReactionDefenseOutcome::Dodged && !DamageSettings.bApplyDamageWhenDodged) return false;
+
+	const UPP_CombatComponent* TargetCombat =
+		TargetActor ? TargetActor->FindComponentByClass<UPP_CombatComponent>() : nullptr;
+	return !TargetCombat || !TargetCombat->DoesCurrentSuperArmorIgnoreDamage();
+}
+
+void UPP_PredictionComponent::ApplyDamageEffects(
+	AActor* TargetActor,
+	const FPP_ReactionDamageSettings& DamageSettings) const
+{
+	AActor* InstigatorActor = GetOwner();
+	UAbilitySystemComponent* SourceASC = GetAbilitySystemComponentFromActor(InstigatorActor);
+	UAbilitySystemComponent* TargetASC = GetAbilitySystemComponentFromActor(TargetActor);
+	if (!InstigatorActor || !InstigatorActor->HasAuthority() || !SourceASC || !TargetASC) return;
+
+	for (const FPP_ReactionDamageEffect& DamageEffect : DamageSettings.DamageEffects)
+	{
+		if (!DamageEffect.GameplayEffectClass) continue;
+
+		FGameplayEffectContextHandle Context = SourceASC->MakeEffectContext();
+		Context.AddInstigator(InstigatorActor, InstigatorActor);
+		Context.AddSourceObject(this);
+
+		const FGameplayEffectSpecHandle Spec = SourceASC->MakeOutgoingSpec(
+			DamageEffect.GameplayEffectClass, DamageEffect.EffectLevel, Context);
+		if (Spec.IsValid())
+		{
+			SourceASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
+		}
+	}
+}
+
 bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy
-(AActor* TargetActor, FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings)
+(AActor* TargetActor, FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings,
+ FPP_ReactionDefenseSettings DefenseSettings, FPP_ReactionDamageSettings DamageSettings)
 {
 	// Local prediction: validate -> mark -> transform -> montage -> server RPC.
 	if (!ReactionData || !ReactionTag.IsValid()) return false;
+
+	const FPP_ReactionTransformSettings RequestedTransformSettings = TransformSettings;
+	const EPP_ReactionDefenseOutcome PredictedDefenseOutcome =
+		ResolveDefenseOutcome(TargetActor, DefenseSettings);
+	if (PredictedDefenseOutcome == EPP_ReactionDefenseOutcome::Blocked ||
+		PredictedDefenseOutcome == EPP_ReactionDefenseOutcome::Parried)
+	{
+		// A successful guard normally keeps both characters in place unless this attack opts in.
+		if (!DefenseSettings.Block.bAllowMovementWhenBlocked)
+		{
+			TransformSettings.MovementSettings.MoveDirection = EPP_ReactionMoveDirection::None;
+		}
+		if (!DefenseSettings.Block.bAllowRotationWhenBlocked)
+		{
+			TransformSettings.RotationSettings.RotationDirection = EPP_ReactionRotationDirection::None;
+		}
+	}
 
 	FPP_ReactionDataEntry Reaction;
 	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return false;
@@ -185,8 +311,9 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy
 	if (!CanPlayPredictedReactionOnTargetProxy(TargetActor, Reaction)) return false;
 
 	const FPP_ReactionPredictionContext Context = MakeReactionPredictionContext();
+	const bool bPredictCleanReaction = PredictedDefenseOutcome == EPP_ReactionDefenseOutcome::None;
 
-	AddPendingPredictedReaction(Context, TargetActor, ReactionTag);
+	AddPendingPredictedReaction(Context, TargetActor, ReactionTag, bPredictCleanReaction);
 
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
@@ -197,16 +324,16 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy
 			FRotator(0.f, OwnerPawn->GetControlRotation().Yaw, 0.f);
 	}
 
-	ApplyLatestOlderProxyPendingFinalReactionCorrection(Context, TargetActor, TEXT("PredictedPreflight"));
-
-	ApplyReactionTransform(GetOwner(), TargetActor, TransformSettings);
-
-	const bool bPlayed = PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
-
-	if (!bPlayed)
+	if (bPredictCleanReaction)
 	{
-		ConsumePendingPredictedReaction(Context, TargetActor, ReactionTag);
-		return false;
+		ApplyLatestOlderProxyPendingFinalReactionCorrection(Context, TargetActor, TEXT("PredictedPreflight"));
+		ApplyReactionTransform(GetOwner(), TargetActor, TransformSettings);
+
+		if (!PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true))
+		{
+			ConsumePendingPredictedReaction(Context, TargetActor);
+			return false;
+		}
 	}
 
 	if (const UWorld* World = GetWorld())
@@ -214,7 +341,9 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy
 		LastReactionTimeByTarget.Add(TargetActor, World->GetTimeSeconds());
 	}
 
-	ServerConfirmPredictedReaction(Context, TargetActor, ReactionTag, TransformSettings);
+	// Send the clean-hit request; the server independently selects the defensive outcome.
+	ServerConfirmPredictedReaction(Context, TargetActor, ReactionTag, RequestedTransformSettings,
+		DefenseSettings, DamageSettings);
 
 	return true;
 }
@@ -223,16 +352,21 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation
 (FPP_ReactionPredictionContext Context,
  AActor* TargetActor,
  FGameplayTag ReactionTag,
- FPP_ReactionTransformSettings TransformSettings)
+ FPP_ReactionTransformSettings TransformSettings,
+ FPP_ReactionDefenseSettings DefenseSettings,
+ FPP_ReactionDamageSettings DamageSettings)
 {
-	ProcessServerConfirmedReaction(Context, TargetActor, ReactionTag, TransformSettings);
+	ProcessServerConfirmedReaction(Context, TargetActor, ReactionTag, TransformSettings,
+		DefenseSettings, DamageSettings);
 }
 
 void UPP_PredictionComponent::ProcessServerConfirmedReaction(
 	const FPP_ReactionPredictionContext& Context,
 	AActor* TargetActor,
 	FGameplayTag ReactionTag,
-	const FPP_ReactionTransformSettings& TransformSettings)
+	const FPP_ReactionTransformSettings& TransformSettings,
+	const FPP_ReactionDefenseSettings& DefenseSettings,
+	const FPP_ReactionDamageSettings& DamageSettings)
 {
 	// Authority repeats the transform, applies effects, then publishes start and finish.
 	AActor* OwnerActor = GetOwner();
@@ -242,12 +376,38 @@ void UPP_PredictionComponent::ProcessServerConfirmedReaction(
 
 	if (!Context.IsValid() || !TargetActor || !ReactionData || !ReactionTag.IsValid()) return;
 	if (!ConsumeServerReactionRequestBudget()) return;
+	if (!PP_IsValidReactionEnumValue(DefenseSettings.SuperArmor.RequiredSuperArmor) ||
+		!FMath::IsFinite(DefenseSettings.Block.BlockAngleDegrees) ||
+		DefenseSettings.Block.BlockAngleDegrees < 0.0f || DefenseSettings.Block.BlockAngleDegrees > 180.0f ||
+		DamageSettings.DamageEffects.Num() > 16)
+	{
+		return;
+	}
+	for (const FPP_ReactionDamageEffect& DamageEffect : DamageSettings.DamageEffects)
+	{
+		if (!FMath::IsFinite(DamageEffect.EffectLevel) || DamageEffect.EffectLevel < 0.0f) return;
+	}
+
+	// Resolve defense from authoritative target tags and transforms.
+	const EPP_ReactionDefenseOutcome DefenseOutcome = ResolveDefenseOutcome(TargetActor, DefenseSettings);
 
 	FPP_ReactionDataEntry Reaction;
 	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return;
 	if (!CanServerAcceptPredictedReaction(TargetActor, ReactionTag, TransformSettings)) return;
 
 	FPP_ReactionTransformSettings ResolvedTransformSettings = TransformSettings;
+	if (DefenseOutcome == EPP_ReactionDefenseOutcome::Blocked ||
+		DefenseOutcome == EPP_ReactionDefenseOutcome::Parried)
+	{
+		if (!DefenseSettings.Block.bAllowMovementWhenBlocked)
+		{
+			ResolvedTransformSettings.MovementSettings.MoveDirection = EPP_ReactionMoveDirection::None;
+		}
+		if (!DefenseSettings.Block.bAllowRotationWhenBlocked)
+		{
+			ResolvedTransformSettings.RotationSettings.RotationDirection = EPP_ReactionRotationDirection::None;
+		}
+	}
 
 	// Rebuild facing from the server controller to match the local prediction rule.
 	if (const APawn* OwnerPawn = Cast<APawn>(OwnerActor))
@@ -262,15 +422,33 @@ void UPP_PredictionComponent::ProcessServerConfirmedReaction(
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
 
-	ApplyReactionTransform(OwnerActor, TargetActor, ResolvedTransformSettings);
+	const bool bCleanHit = DefenseOutcome == EPP_ReactionDefenseOutcome::None;
+	if (bCleanHit || ShouldApplyReactionTransform(DefenseOutcome, DefenseSettings))
+	{
+		ApplyReactionTransform(OwnerActor, TargetActor, ResolvedTransformSettings);
+	}
 
 	const FVector ServerStartLocation = TargetActor->GetActorLocation();
 	const FRotator ServerStartRotation = TargetActor->GetActorRotation();
 
+	if (ShouldApplyDamage(TargetActor, DefenseOutcome, DamageSettings))
+	{
+		ApplyDamageEffects(TargetActor, DamageSettings);
+	}
 
-	ApplyTargetEffects(OwnerActor, TargetActor, Reaction);
 
-	PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+	if (bCleanHit)
+	{
+		ApplyTargetEffects(OwnerActor, TargetActor, Reaction);
+		PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+	}
+	else
+	{
+		ApplyDefenseOutcomeEffects(TargetActor, DefenseOutcome);
+		MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag,
+			ServerStartLocation, ServerStartRotation, 0.0f, false);
+		return;
+	}
 
 
 	if (UWorld* World = GetWorld())
@@ -319,7 +497,7 @@ void UPP_PredictionComponent::ProcessServerConfirmedReaction(
 
 	MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag,
 	                               ServerStartLocation, ServerStartRotation,
-	                               ResolvedTransformSettings.MovementSettings.ClientInterpolationSpeed);
+	                               ResolvedTransformSettings.MovementSettings.ClientInterpolationSpeed, true);
 }
 
 void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation
@@ -328,7 +506,8 @@ void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation
  FGameplayTag ReactionTag,
  FVector ServerStartLocation,
  FRotator ServerStartRotation,
- float ClientInterpolationSpeed)
+ float ClientInterpolationSpeed,
+ bool bPlayReaction)
 {
 	// The predicting client consumes its marker; other proxies start from server state.
 	AActor* OwnerActor = GetOwner();
@@ -340,13 +519,41 @@ void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation
 	const APawn* TargetPawn = Cast<APawn>(TargetActor);
 	const bool bTargetLocallyControlled = TargetPawn && TargetPawn->IsLocallyControlled();
 
-	const bool bConsumedPendingPrediction = ConsumePendingPredictedReaction(Context, TargetActor, ReactionTag);
+	FGameplayTag PredictedReactionTag;
+	bool bPlayedLocally = false;
+	const bool bConsumedPendingPrediction =
+		ConsumePendingPredictedReaction(Context, TargetActor, &PredictedReactionTag, &bPlayedLocally);
+	if (!bPlayReaction)
+	{
+		if (bConsumedPendingPrediction && bPlayedLocally)
+		{
+			// Local proxy state was stale: cancel the clean montage and restore server state.
+			FPP_ReactionDataEntry PredictedReaction;
+			if (ReactionData->FindReaction(PredictedReactionTag, PredictedReaction) && PredictedReaction.Montage)
+			{
+				if (const ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor))
+				{
+					if (UAnimInstance* AnimInstance = TargetCharacter->GetMesh()->GetAnimInstance())
+					{
+						AnimInstance->Montage_Stop(0.1f, PredictedReaction.Montage);
+					}
+				}
+			}
+			TargetActor->SetActorRotation(ServerStartRotation, ETeleportType::TeleportPhysics);
+			FPP_ReactionMovementSettings CorrectionSettings;
+			SetReactionActorLocation(TargetActor, ServerStartLocation, CorrectionSettings, true);
+		}
+		return;
+	}
 	if (bConsumedPendingPrediction)
 	{
 		AddDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag);
 
-
-		return;
+		// Matching outcomes already played locally. A mismatch must replace the predicted montage.
+		if (bPlayedLocally && PredictedReactionTag == ReactionTag)
+		{
+			return;
+		}
 	}
 
 
@@ -373,9 +580,9 @@ void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation
 
 bool UPP_PredictionComponent::ConsumePendingPredictedReaction
 (const FPP_ReactionPredictionContext& Context,
- AActor* TargetActor, FGameplayTag ReactionTag)
+ AActor* TargetActor, FGameplayTag* OutPredictedReactionTag, bool* bOutPlayedLocally)
 {
-	if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return false;
+	if (!Context.IsValid() || !TargetActor) return false;
 
 	RemoveExpiredPendingPredictedReactions();
 
@@ -383,9 +590,10 @@ bool UPP_PredictionComponent::ConsumePendingPredictedReaction
 	{
 		const FPP_PendingPredictedReaction& Entry = PendingPredictedReactions[Index];
 
-		if (Entry.TargetActor.Get() == TargetActor && Entry.ReactionTag == ReactionTag && Entry.PredictionId == Context.
-			PredictionId)
+		if (Entry.TargetActor.Get() == TargetActor && Entry.PredictionId == Context.PredictionId)
 		{
+			if (OutPredictedReactionTag) *OutPredictedReactionTag = Entry.ReactionTag;
+			if (bOutPlayedLocally) *bOutPlayedLocally = Entry.bPlayedLocally;
 			PendingPredictedReactions.RemoveAtSwap(Index);
 			return true;
 		}
@@ -666,7 +874,7 @@ void UPP_PredictionComponent::ClientFinishPredictedProxyReaction_Implementation
 	const bool bHadDeferredCorrection =
 		ConsumeDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag);
 	const bool bHadPendingPrediction =
-		ConsumePendingPredictedReaction(Context, TargetActor, ReactionTag);
+		ConsumePendingPredictedReaction(Context, TargetActor);
 
 
 	if (!bHadDeferredCorrection && !bHadPendingPrediction)
@@ -1272,7 +1480,7 @@ FPP_ReactionPredictionContext UPP_PredictionComponent::MakeReactionPredictionCon
 
 void UPP_PredictionComponent::AddPendingPredictedReaction
 (const FPP_ReactionPredictionContext& Context,
- AActor* TargetActor, FGameplayTag ReactionTag)
+ AActor* TargetActor, FGameplayTag ReactionTag, const bool bPlayedLocally)
 {
 	if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return;
 
@@ -1287,6 +1495,7 @@ void UPP_PredictionComponent::AddPendingPredictedReaction
 	Entry.ReactionTag = ReactionTag;
 	Entry.PredictionId = Context.PredictionId;
 	Entry.TimeSeconds = World->GetTimeSeconds();
+	Entry.bPlayedLocally = bPlayedLocally;
 
 
 	if (PendingPredictedReactions.Num() > MaxPendingPredictedReactions)

@@ -154,6 +154,11 @@ void UPP_CharacterMovementComponent::SetAbilityMovementInputSuppressed(bool bInS
 	bAbilityMovementInputSuppressed = bInSuppressed;
 }
 
+void UPP_CharacterMovementComponent::SetCrowdControlMovementInputSuppressed(const bool bInSuppressed)
+{
+	bCrowdControlMovementInputSuppressed = bInSuppressed;
+}
+
 void UPP_CharacterMovementComponent::SetIgnoreServerRootMotionMontageTrackCorrection(bool bInIgnore)
 {
 	if (bIgnoreServerRootMotionMontageTrackCorrection == bInIgnore)
@@ -251,7 +256,7 @@ FNetworkPredictionData_Client* UPP_CharacterMovementComponent::GetPredictionData
 FVector UPP_CharacterMovementComponent::ScaleInputAcceleration(const FVector& InputAcceleration) const
 {
 	// Zero acceleration instead of blocking input events so ability release still works.
-	if (bAbilityMovementInputSuppressed)
+	if (bAbilityMovementInputSuppressed || bCrowdControlMovementInputSuppressed)
 	{
 		return FVector::ZeroVector;
 	}

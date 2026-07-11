@@ -50,6 +50,10 @@ struct FPP_PendingPredictedReaction
 	/** Local creation time used to expire stale predictions. */
 	UPROPERTY()
 	double TimeSeconds = 0.0;
+
+	/** Whether this client actually played the clean reaction montage. */
+	UPROPERTY()
+	bool bPlayedLocally = false;
 };
 
 /** Confirmed prediction waiting for its authoritative final transform. */
@@ -130,12 +134,14 @@ public:
 	/** Predicts the target transform and montage, then asks the server to confirm them. */
 	UFUNCTION(BlueprintCallable, Category="SyncPrediction|Reaction")
 	bool PlayPredictedReactionOnTargetProxy(AActor* TargetActor, FGameplayTag ReactionTag,
-		FPP_ReactionTransformSettings TransformSettings);
+		FPP_ReactionTransformSettings TransformSettings, FPP_ReactionDefenseSettings DefenseSettings,
+		FPP_ReactionDamageSettings DamageSettings);
 
 	/** Confirms a reaction using transform settings stored in server Reaction Data. */
 	UFUNCTION(Server, Reliable)
 	void ServerConfirmPredictedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
-		FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings);
+		FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings,
+		FPP_ReactionDefenseSettings DefenseSettings, FPP_ReactionDamageSettings DamageSettings);
 
 	/** Override for server-only ability, team, line-of-sight, or combat-rule validation. */
 	UFUNCTION(BlueprintNativeEvent, Category="SyncPrediction|Server Validation")
@@ -146,7 +152,7 @@ public:
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, FVector ServerStartLocation, FRotator ServerStartRotation,
-		float ClientInterpolationSpeed);
+		float ClientInterpolationSpeed, bool bPlayReaction);
 
 protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -157,13 +163,23 @@ private:
 	bool ValidateServerReactionRequest(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction,
 		const FPP_ReactionTransformSettings& TransformSettings);
 	void ProcessServerConfirmedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
-		FGameplayTag ReactionTag, const FPP_ReactionTransformSettings& TransformSettings);
+		FGameplayTag ReactionTag, const FPP_ReactionTransformSettings& TransformSettings,
+		const FPP_ReactionDefenseSettings& DefenseSettings,
+		const FPP_ReactionDamageSettings& DamageSettings);
+	EPP_ReactionDefenseOutcome ResolveDefenseOutcome(AActor* TargetActor,
+		const FPP_ReactionDefenseSettings& DefenseSettings) const;
+	static bool ShouldApplyReactionTransform(EPP_ReactionDefenseOutcome Outcome,
+		const FPP_ReactionDefenseSettings& DefenseSettings);
+	void ApplyDefenseOutcomeEffects(AActor* TargetActor, EPP_ReactionDefenseOutcome Outcome) const;
+	bool ShouldApplyDamage(AActor* TargetActor, EPP_ReactionDefenseOutcome Outcome,
+		const FPP_ReactionDamageSettings& DamageSettings) const;
+	void ApplyDamageEffects(AActor* TargetActor, const FPP_ReactionDamageSettings& DamageSettings) const;
 
 	// Prediction start: validate -> create marker -> transform -> montage -> server RPC.
 	bool CanPlayPredictedReactionOnTargetProxy(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction) const;
 	FPP_ReactionPredictionContext MakeReactionPredictionContext();
 	void AddPendingPredictedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
-		FGameplayTag ReactionTag);
+		FGameplayTag ReactionTag, bool bPlayedLocally);
 	void RemoveExpiredPendingPredictedReactions();
 
 	float GetReactionStartPosition(const FPP_ReactionDataEntry& Reaction) const;
@@ -196,7 +212,7 @@ private:
 
 	// Start-confirmation markers suppress duplicate montage playback.
 	bool ConsumePendingPredictedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
-		FGameplayTag ReactionTag);
+		FGameplayTag* OutPredictedReactionTag = nullptr, bool* bOutPlayedLocally = nullptr);
 	void AddDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag);
 	bool ConsumeDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,

@@ -231,9 +231,25 @@ RotationReferenceActorSource;
 TransformSettings.RotationSettings.DirectionToFace = DirectionToFace;
 TransformSettings.RotationSettings.TeleportType = RotationTeleportType;
 
+	FPP_ReactionDefenseSettings DefenseSettings;
+	DefenseSettings.Block.bBlockable = bBlockable;
+	DefenseSettings.Block.BlockAngleDegrees = BlockAngleDegrees;
+	DefenseSettings.Block.bAllowMovementWhenBlocked = bAllowMovementWhenBlocked;
+	DefenseSettings.Block.bAllowRotationWhenBlocked = bAllowRotationWhenBlocked;
+	DefenseSettings.Dodge.bDodgeable = bDodgeable;
+	DefenseSettings.SuperArmor.RequiredSuperArmor = RequiredSuperArmor;
+
+	FPP_ReactionDamageSettings DamageSettings;
+	DamageSettings.DamageEffects = DamageEffects;
+	DamageSettings.bApplyDamageWhenBlocked = bApplyDamageWhenBlocked;
+	DamageSettings.bApplyDamageWhenParried = bApplyDamageWhenParried;
+	DamageSettings.bApplyDamageWhenDodged = bApplyDamageWhenDodged;
+
 PredictionComponent->PlayPredictedReactionOnTargetProxy(
 		HitActor,
 		PredictedReactionTag,
-		TransformSettings);
+		TransformSettings,
+		DefenseSettings,
+		DamageSettings);
 }
 

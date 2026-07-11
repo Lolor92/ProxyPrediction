@@ -181,6 +181,122 @@ struct FPP_ReactionTransformSettings
 	FRotator ServerStartRotation = FRotator::ZeroRotator;
 };
 
+/** Strength of super armor required to resist an attack. */
+UENUM(BlueprintType)
+enum class EPP_SuperArmorLevel : uint8
+{
+	None,
+	SuperArmor1,
+	SuperArmor2,
+	SuperArmor3
+};
+
+/** Result selected from the defender's authoritative combat state. */
+UENUM()
+enum class EPP_ReactionDefenseOutcome : uint8
+{
+	None,
+	Blocked,
+	Parried,
+	Dodged,
+	SuperArmored
+};
+
+/** Attack-specific blocking rules. */
+USTRUCT(BlueprintType)
+struct FPP_ReactionBlockSettings
+{
+	GENERATED_BODY()
+
+	/** Whether a defender is allowed to block this attack. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Defense|Block")
+	bool bBlockable = false;
+
+	/** Maximum angle from the defender's forward direction to the attacker. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Defense|Block",
+		meta=(EditCondition="bBlockable", EditConditionHides, ClampMin="0.0", ClampMax="180.0", Units="Degrees"))
+	float BlockAngleDegrees = 70.0f;
+
+	/** Keeps the notify's reaction movement when the attack is blocked. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Defense|Block",
+		meta=(EditCondition="bBlockable", EditConditionHides))
+	bool bAllowMovementWhenBlocked = false;
+
+	/** Keeps the notify's reaction rotation when the attack is blocked. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Defense|Block",
+		meta=(EditCondition="bBlockable", EditConditionHides))
+	bool bAllowRotationWhenBlocked = false;
+
+};
+
+/** Attack-specific dodge rules. */
+USTRUCT(BlueprintType)
+struct FPP_ReactionDodgeSettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Defense|Dodge")
+	bool bDodgeable = false;
+};
+
+/** Attack-specific super-armor rules. */
+USTRUCT(BlueprintType)
+struct FPP_ReactionSuperArmorSettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Defense|Super Armor")
+	EPP_SuperArmorLevel RequiredSuperArmor = EPP_SuperArmorLevel::None;
+};
+
+/** Compact payload shared by local prediction and server confirmation. */
+USTRUCT(BlueprintType)
+struct FPP_ReactionDefenseSettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FPP_ReactionBlockSettings Block;
+
+	UPROPERTY()
+	FPP_ReactionDodgeSettings Dodge;
+
+	UPROPERTY()
+	FPP_ReactionSuperArmorSettings SuperArmor;
+};
+
+/** One damage Gameplay Effect and the level used to create its spec. */
+USTRUCT(BlueprintType)
+struct FPP_ReactionDamageEffect
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Damage")
+	TSubclassOf<UGameplayEffect> GameplayEffectClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Damage", meta=(ClampMin="0.0"))
+	float EffectLevel = 1.0f;
+};
+
+/** Damage effects and per-attack defensive exceptions. */
+USTRUCT(BlueprintType)
+struct FPP_ReactionDamageSettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Damage", meta=(TitleProperty="GameplayEffectClass"))
+	TArray<FPP_ReactionDamageEffect> DamageEffects;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Damage")
+	bool bApplyDamageWhenBlocked = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Damage")
+	bool bApplyDamageWhenParried = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Damage")
+	bool bApplyDamageWhenDodged = false;
+};
+
 /** Montage, effects, and timing for one tagged predicted reaction. */
 USTRUCT(BlueprintType, meta=(DisplayName="Predicted Reaction"))
 struct FPP_ReactionDataEntry

@@ -59,6 +59,39 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Predicted Reaction")
 	FGameplayTag PredictedReactionTag;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Block Settings")
+	bool bBlockable = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Block Settings",
+		meta=(EditCondition="bBlockable", EditConditionHides, ClampMin="0.0", ClampMax="180.0", Units="Degrees"))
+	float BlockAngleDegrees = 70.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Block Settings",
+		meta=(EditCondition="bBlockable", EditConditionHides))
+	bool bAllowMovementWhenBlocked = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Block Settings",
+		meta=(EditCondition="bBlockable", EditConditionHides))
+	bool bAllowRotationWhenBlocked = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Dodge Settings")
+	bool bDodgeable = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Super Armor Settings")
+	EPP_SuperArmorLevel RequiredSuperArmor = EPP_SuperArmorLevel::None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Damage Settings", meta=(TitleProperty="GameplayEffectClass"))
+	TArray<FPP_ReactionDamageEffect> DamageEffects;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Damage Settings")
+	bool bApplyDamageWhenBlocked = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Damage Settings")
+	bool bApplyDamageWhenParried = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Damage Settings")
+	bool bApplyDamageWhenDodged = false;
+
 	/** How forward distance changes relative to the reference actor. */
 UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings")
 EPP_ReactionMoveDirection MoveDirection = EPP_ReactionMoveDirection::None;

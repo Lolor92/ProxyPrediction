@@ -11,6 +11,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "GameplayEffect.h"
 
 namespace
 {
@@ -78,6 +79,8 @@ void UPP_GameplayAbility::ActivateAbility(const FGameplayAbilitySpecHandle Handl
 	const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo,
 	const FGameplayEventData* TriggerEventData)
 {
+	// Retriggered instanced abilities must not leave handles or timers from the previous run.
+	CleanupOwnedEffects();
 	ActivationSequenceId = (ActivationSequenceId == MAX_uint32) ? 1u : (ActivationSequenceId + 1u);
 	ResetComboWindow();
 
@@ -86,6 +89,15 @@ void UPP_GameplayAbility::ActivateAbility(const FGameplayAbilitySpecHandle Handl
 	Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
 
 	InterruptOtherActiveAbilities();
+	RemoveConfiguredGameplayEffectsOnActivate();
+	ApplyAbilityLifetimeEffects();
+
+	// Blueprint montage tasks start after this native activation returns; schedule once for next tick.
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimerForNextTick(
+			FTimerDelegate::CreateUObject(this, &ThisClass::ScheduleMontageEffectWindows, ActivationSequenceId));
+	}
 	OpenComboWindow();
 }
 
@@ -93,6 +105,8 @@ void UPP_GameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle,
 	const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo,
 	bool bReplicateEndAbility, bool bWasCancelled)
 {
+	CleanupOwnedEffects();
+
 	if (ACharacter* Character = Cast<ACharacter>(GetAvatarActorFromActorInfo()))
 	{
 		if (!Character->IsLocallyControlled())
@@ -108,6 +122,161 @@ void UPP_GameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle,
 	ResetComboWindow();
 
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
+}
+
+FActiveGameplayEffectHandle UPP_GameplayAbility::ApplyOwnedEffect(
+	const TSubclassOf<UGameplayEffect> EffectClass,
+	const float EffectLevel) const
+{
+	const FGameplayAbilityActorInfo* ActorInfo = GetCurrentActorInfo();
+	if (!EffectClass || !ActorInfo || !ActorInfo->AbilitySystemComponent.IsValid())
+	{
+		return FActiveGameplayEffectHandle();
+	}
+
+	const UGameplayEffect* EffectCDO = EffectClass->GetDefaultObject<UGameplayEffect>();
+	return ApplyGameplayEffectToOwner(
+		GetCurrentAbilitySpecHandle(), ActorInfo, GetCurrentActivationInfo(), EffectCDO,
+		FMath::Max(0.0f, EffectLevel));
+}
+
+void UPP_GameplayAbility::ApplyAbilityLifetimeEffects()
+{
+	AbilityLifetimeEffectHandles.Reset();
+	AbilityLifetimeEffectHandles.Reserve(AbilityLifetimeEffects.Num());
+
+	for (const FPP_AbilityOwnedEffect& Effect : AbilityLifetimeEffects)
+	{
+		const FActiveGameplayEffectHandle Handle = ApplyOwnedEffect(Effect.GameplayEffectClass, Effect.EffectLevel);
+		if (Handle.IsValid()) AbilityLifetimeEffectHandles.Add(Handle);
+	}
+}
+
+void UPP_GameplayAbility::RemoveConfiguredGameplayEffectsOnActivate() const
+{
+	if (RemoveGameplayEffectsWithTagsOnActivate.IsEmpty()) return;
+
+	if (UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo())
+	{
+		// Local-predicted abilities clear responsive local state; authority confirms the same removal.
+		ASC->RemoveActiveEffectsWithGrantedTags(RemoveGameplayEffectsWithTagsOnActivate);
+	}
+}
+
+void UPP_GameplayAbility::ScheduleMontageEffectWindows(const uint32 ExpectedActivationSequenceId)
+{
+	if (ExpectedActivationSequenceId != ActivationSequenceId || !IsActive() || MontageEffectWindows.IsEmpty()) return;
+
+	ACharacter* Character = Cast<ACharacter>(GetAvatarActorFromActorInfo());
+	const UAnimMontage* Montage = GetCurrentMontage();
+	UAnimInstance* AnimInstance = Character && Character->GetMesh()
+		? Character->GetMesh()->GetAnimInstance()
+		: nullptr;
+	UWorld* World = GetWorld();
+	if (!Montage || !AnimInstance || !World) return;
+
+	const float MontageLength = Montage->GetPlayLength();
+	const float PlayRate = FMath::Abs(AnimInstance->Montage_GetPlayRate(Montage));
+	if (MontageLength <= KINDA_SMALL_NUMBER || PlayRate <= KINDA_SMALL_NUMBER) return;
+
+	const float CurrentPosition = AnimInstance->Montage_GetPosition(Montage);
+	MontageEffectWindowRuntime.SetNum(MontageEffectWindows.Num());
+
+	for (int32 Index = 0; Index < MontageEffectWindows.Num(); ++Index)
+	{
+		const FPP_AbilityMontageEffectWindow& Window = MontageEffectWindows[Index];
+		if (!Window.GameplayEffectClass) continue;
+
+		const float ApplyPercent = FMath::Clamp(Window.ApplyAtMontagePercent, 0.0f, 100.0f);
+		const float RemovePercent = FMath::Clamp(
+			FMath::Max(Window.RemoveAtMontagePercent, ApplyPercent), 0.0f, 100.0f);
+		const float ApplyPosition = MontageLength * ApplyPercent / 100.0f;
+		const float RemovePosition = MontageLength * RemovePercent / 100.0f;
+
+		// If setup occurs after the entire window, do not flash a stale effect for one frame.
+		if (CurrentPosition >= RemovePosition) continue;
+
+		FPP_AbilityMontageEffectWindowRuntime& Runtime = MontageEffectWindowRuntime[Index];
+		if (CurrentPosition >= ApplyPosition)
+		{
+			ApplyMontageEffectWindow(ExpectedActivationSequenceId, Index);
+		}
+		else
+		{
+			const float ApplyDelay = (ApplyPosition - CurrentPosition) / PlayRate;
+			World->GetTimerManager().SetTimer(
+				Runtime.ApplyTimer,
+				FTimerDelegate::CreateUObject(this, &ThisClass::ApplyMontageEffectWindow,
+					ExpectedActivationSequenceId, Index),
+				FMath::Max(ApplyDelay, KINDA_SMALL_NUMBER), false);
+		}
+
+		const float RemoveDelay = (RemovePosition - CurrentPosition) / PlayRate;
+		World->GetTimerManager().SetTimer(
+			Runtime.RemoveTimer,
+			FTimerDelegate::CreateUObject(this, &ThisClass::RemoveMontageEffectWindow,
+				ExpectedActivationSequenceId, Index),
+			FMath::Max(RemoveDelay, KINDA_SMALL_NUMBER), false);
+	}
+}
+
+void UPP_GameplayAbility::ApplyMontageEffectWindow(
+	const uint32 ExpectedActivationSequenceId,
+	const int32 WindowIndex)
+{
+	if (ExpectedActivationSequenceId != ActivationSequenceId || !IsActive() ||
+		!MontageEffectWindows.IsValidIndex(WindowIndex) || !MontageEffectWindowRuntime.IsValidIndex(WindowIndex))
+	{
+		return;
+	}
+
+	FPP_AbilityMontageEffectWindowRuntime& Runtime = MontageEffectWindowRuntime[WindowIndex];
+	if (Runtime.EffectHandle.IsValid()) return;
+
+	const FPP_AbilityMontageEffectWindow& Window = MontageEffectWindows[WindowIndex];
+	Runtime.EffectHandle = ApplyOwnedEffect(Window.GameplayEffectClass, Window.EffectLevel);
+}
+
+void UPP_GameplayAbility::RemoveMontageEffectWindow(
+	const uint32 ExpectedActivationSequenceId,
+	const int32 WindowIndex)
+{
+	if (ExpectedActivationSequenceId != ActivationSequenceId ||
+		!MontageEffectWindowRuntime.IsValidIndex(WindowIndex)) return;
+
+	FPP_AbilityMontageEffectWindowRuntime& Runtime = MontageEffectWindowRuntime[WindowIndex];
+	if (UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo())
+	{
+		if (Runtime.EffectHandle.IsValid()) ASC->RemoveActiveGameplayEffect(Runtime.EffectHandle);
+	}
+	Runtime.EffectHandle.Invalidate();
+}
+
+void UPP_GameplayAbility::CleanupOwnedEffects()
+{
+	UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo();
+	UWorld* World = GetWorld();
+
+	for (FPP_AbilityMontageEffectWindowRuntime& Runtime : MontageEffectWindowRuntime)
+	{
+		if (World)
+		{
+			World->GetTimerManager().ClearTimer(Runtime.ApplyTimer);
+			World->GetTimerManager().ClearTimer(Runtime.RemoveTimer);
+		}
+		if (ASC && Runtime.EffectHandle.IsValid()) ASC->RemoveActiveGameplayEffect(Runtime.EffectHandle);
+		Runtime.EffectHandle.Invalidate();
+	}
+	MontageEffectWindowRuntime.Reset();
+
+	if (ASC)
+	{
+		for (const FActiveGameplayEffectHandle& Handle : AbilityLifetimeEffectHandles)
+		{
+			if (Handle.IsValid()) ASC->RemoveActiveGameplayEffect(Handle);
+		}
+	}
+	AbilityLifetimeEffectHandles.Reset();
 }
 
 bool UPP_GameplayAbility::CanInterruptAnimatingAbility(const FGameplayAbilityActorInfo* ActorInfo) const
