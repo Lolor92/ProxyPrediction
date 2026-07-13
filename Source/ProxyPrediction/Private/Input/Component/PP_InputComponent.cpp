@@ -440,7 +440,7 @@ bool UPP_InputComponent::ShouldRetryHeldActivationForInputTag(FGameplayTag Input
 {
 	return bRetryHeldAbilityActivation &&
 		InputTag.IsValid() &&
-		!HeldActivationRetryExcludedInputTags.HasTag(InputTag);
+		InputTag.MatchesAny(HeldActivationRetryIncludedInputTags);
 }
 
 void UPP_InputComponent::StartHeldActivationRetry(FGameplayTag InputTag)

@@ -59,11 +59,122 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Predicted Reaction")
 	FGameplayTag PredictedReactionTag;
 
-	/** Predicted movement and rotation applied with the reaction. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Predicted Reaction|Transform",
-		meta=(ShowOnlyInnerProperties))
-	FPP_ReactionTransformSettings ReactionTransformSettings;
-	
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Block Settings")
+	bool bBlockable = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Block Settings",
+		meta=(EditCondition="bBlockable", EditConditionHides, ClampMin="0.0", ClampMax="180.0", Units="Degrees"))
+	float BlockAngleDegrees = 70.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Block Settings",
+		meta=(EditCondition="bBlockable", EditConditionHides))
+	bool bAllowMovementWhenBlocked = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Block Settings",
+		meta=(EditCondition="bBlockable", EditConditionHides))
+	bool bAllowRotationWhenBlocked = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Dodge Settings")
+	bool bDodgeable = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Super Armor Settings")
+	EPP_SuperArmorLevel RequiredSuperArmor = EPP_SuperArmorLevel::None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Damage Settings", meta=(TitleProperty="GameplayEffectClass"))
+	TArray<FPP_ReactionDamageEffect> DamageEffects;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Damage Settings")
+	bool bApplyDamageWhenBlocked = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Damage Settings")
+	bool bApplyDamageWhenParried = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Damage Settings")
+	bool bApplyDamageWhenDodged = false;
+
+	/** How forward distance changes relative to the reference actor. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings")
+EPP_ReactionMoveDirection MoveDirection = EPP_ReactionMoveDirection::None;
+
+/** Actor or actors whose location is changed. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
+meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
+EPP_ReactionTransformRecipient MovementRecipient =
+EPP_ReactionTransformRecipient::Target;
+
+/** Actor that supplies the movement origin and axes. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
+meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
+EPP_ReactionReferenceActorSource MovementReferenceActorSource =
+EPP_ReactionReferenceActorSource::Instigator;
+
+/** Distance added, removed, or used as the exact snap distance. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
+meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None && MoveDirection != EPP_ReactionMoveDirection::KeepCurrentDistance",
+EditConditionHides, ClampMin="0.0"))
+float MoveDistance = 25.0f;
+
+/** How sideways offset changes relative to the reference actor. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
+meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
+EPP_ReactionLateralOffsetMode LateralOffsetMode =
+EPP_ReactionLateralOffsetMode::KeepCurrent;
+
+/** Sideways distance along the reference actor right axis. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
+meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None && LateralOffsetMode != EPP_ReactionLateralOffsetMode::KeepCurrent",
+EditConditionHides))
+float LateralOffset = 0.0f;
+
+/** Sweeps while moving the recipient. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
+meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
+bool bSweepMovement = true;
+
+/** Physics handling used when movement is applied. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
+meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None", EditConditionHides))
+EPP_ReactionTeleportType MovementTeleportType =
+EPP_ReactionTeleportType::None;
+
+/** Client-only interpolation speed in cm/s. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings",
+meta=(EditCondition="MoveDirection != EPP_ReactionMoveDirection::None",
+EditConditionHides, ClampMin="0.0"))
+float ClientInterpolationSpeed = 0.0f;
+
+/** Direction the recipient should face. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings")
+EPP_ReactionRotationDirection RotationDirection =
+EPP_ReactionRotationDirection::None;
+
+/** Actor or actors whose rotation is changed. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings",
+meta=(EditCondition="RotationDirection != EPP_ReactionRotationDirection::None",
+EditConditionHides))
+EPP_ReactionTransformRecipient RotationRecipient =
+EPP_ReactionTransformRecipient::Target;
+
+/** Actor that supplies the rotation reference. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings",
+meta=(EditCondition="RotationDirection != EPP_ReactionRotationDirection::None",
+EditConditionHides))
+EPP_ReactionReferenceActorSource RotationReferenceActorSource =
+EPP_ReactionReferenceActorSource::Instigator;
+
+/** World rotation used by Face Direction. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings",
+meta=(EditCondition="RotationDirection == EPP_ReactionRotationDirection::FaceDirection",
+EditConditionHides))
+FRotator DirectionToFace = FRotator::ZeroRotator;
+
+/** Physics handling used when rotation is applied. */
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rotation Settings",
+meta=(EditCondition="RotationDirection != EPP_ReactionRotationDirection::None",
+EditConditionHides))
+EPP_ReactionTeleportType RotationTeleportType =
+EPP_ReactionTeleportType::None;
+
 	/** Mesh socket that anchors the collision shape. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Socket")
 	FName SourceSocketName = TEXT("MainHandWeaponSocket");

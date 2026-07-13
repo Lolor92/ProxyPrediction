@@ -21,6 +21,10 @@ public:
 	void SetAbilityMovementInputSuppressed(bool bInSuppressed);
 	bool IsAbilityMovementInputSuppressed() const { return bAbilityMovementInputSuppressed; }
 
+	/** Separately suppresses voluntary movement while the character owns a CC tag. */
+	void SetCrowdControlMovementInputSuppressed(bool bInSuppressed);
+	bool IsCrowdControlMovementInputSuppressed() const { return bCrowdControlMovementInputSuppressed; }
+
 	/** Ignores montage track correction during visual-only owner reaction playback. */
 	void SetIgnoreServerRootMotionMontageTrackCorrection(bool bInIgnore);
 	bool ShouldIgnoreServerRootMotionMontageTrackCorrection() const
@@ -60,6 +64,10 @@ private:
 	/** True while ability input should produce no movement acceleration. */
 	UPROPERTY(Transient)
 	bool bAbilityMovementInputSuppressed = false;
+
+	/** True while authoritative or replicated crowd control blocks movement input. */
+	UPROPERTY(Transient)
+	bool bCrowdControlMovementInputSuppressed = false;
 
 	/** True while owner reaction playback ignores server montage position. */
 	UPROPERTY(Transient)

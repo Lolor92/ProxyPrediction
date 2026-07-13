@@ -1,12 +1,14 @@
 #include "Combat/Component/PP_CombatComponent.h"
-
 #include "AbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Combat/Data/PP_CombatAbilityData.h"
 #include "Combat/FunctionLibrary/PP_CombatFunctionLibrary.h"
+#include "AbilityMotion/Movement/PP_CharacterMovementComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/Controller.h"
 #include "GameplayEffect.h"
 #include "TimerManager.h"
 
@@ -37,10 +39,184 @@ void UPP_CombatComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		World->GetTimerManager().ClearTimer(AbilitySystemRetryTimer);
 	}
 
+	ApplyCrowdControlState(false);
+	ApplyPawnCollisionIgnoreState(false);
 	ClearTagListeners();
 	ClearReactionTimers();
 
 	Super::EndPlay(EndPlayReason);
+}
+
+bool UPP_CombatComponent::IsCrowdControlActive() const
+{
+	return AbilitySystemComponent && CrowdControlTag.IsValid() &&
+		AbilitySystemComponent->HasMatchingGameplayTag(CrowdControlTag);
+}
+
+bool UPP_CombatComponent::IsIgnoringPawnCollision() const
+{
+	return AbilitySystemComponent && IgnorePawnCollisionTag.IsValid() &&
+		AbilitySystemComponent->HasMatchingGameplayTag(IgnorePawnCollisionTag);
+}
+
+void UPP_CombatComponent::ApplyPawnCollisionIgnoreState(const bool bShouldIgnore)
+{
+	if (bPawnCollisionIgnoreEnforced == bShouldIgnore) return;
+
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	UCapsuleComponent* Capsule = Character ? Character->GetCapsuleComponent() : nullptr;
+	if (!Capsule) return;
+
+	if (bShouldIgnore)
+	{
+		// Save the character's configured response once so overlapping effects restore it correctly.
+		SavedPawnCollisionResponse = Capsule->GetCollisionResponseToChannel(ECC_Pawn);
+		Capsule->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+		bPawnCollisionIgnoreEnforced = true;
+		return;
+	}
+
+	Capsule->SetCollisionResponseToChannel(ECC_Pawn, SavedPawnCollisionResponse);
+	bPawnCollisionIgnoreEnforced = false;
+}
+
+void UPP_CombatComponent::ApplyCrowdControlState(const bool bShouldEnforce)
+{
+	if (bCrowdControlEnforced == bShouldEnforce) return;
+	bCrowdControlEnforced = bShouldEnforce;
+
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	if (!Character) return;
+
+	// Controller move-input suppression affects players and locally controlled AI, but never camera input.
+	if (AController* Controller = Character->GetController())
+	{
+		Controller->SetIgnoreMoveInput(bShouldEnforce);
+
+		// Stop current player/AI path following immediately; camera/look input remains enabled.
+		if (bShouldEnforce)
+		{
+			Controller->StopMovement();
+		}
+	}
+
+	if (UPP_CharacterMovementComponent* MoveComp =
+		Cast<UPP_CharacterMovementComponent>(Character->GetCharacterMovement()))
+	{
+		// This independent flag cannot be cleared accidentally by ability montage state restoration.
+		MoveComp->SetCrowdControlMovementInputSuppressed(bShouldEnforce);
+		if (bShouldEnforce)
+		{
+			MoveComp->StopMovementImmediately();
+		}
+	}
+}
+
+bool UPP_CombatComponent::IsBlockingActive() const
+{
+	return AbilitySystemComponent && BlockingTag.IsValid() &&
+		AbilitySystemComponent->HasMatchingGameplayTag(BlockingTag);
+}
+
+bool UPP_CombatComponent::CanBlockAttackFrom(const AActor* AttackerActor, const float BlockAngleDegrees) const
+{
+	const AActor* DefenderActor = GetOwner();
+	if (!DefenderActor || !AttackerActor || !IsBlockingActive()) return false;
+
+	// Work in the horizontal plane so height differences do not change a combat-facing check.
+	FVector ToAttacker = AttackerActor->GetActorLocation() - DefenderActor->GetActorLocation();
+	ToAttacker.Z = 0.0f;
+	if (!ToAttacker.Normalize()) return true;
+
+	FVector DefenderForward = DefenderActor->GetActorForwardVector();
+	DefenderForward.Z = 0.0f;
+	DefenderForward.Normalize();
+
+	const float MinimumDot = FMath::Cos(FMath::DegreesToRadians(FMath::Clamp(BlockAngleDegrees, 0.0f, 180.0f)));
+	return FVector::DotProduct(DefenderForward, ToAttacker) >= MinimumDot;
+}
+
+bool UPP_CombatComponent::IsParryingActive() const
+{
+	return AbilitySystemComponent && ParryingTag.IsValid() &&
+		AbilitySystemComponent->HasMatchingGameplayTag(ParryingTag);
+}
+
+bool UPP_CombatComponent::IsDodgingActive() const
+{
+	return AbilitySystemComponent && DodgingTag.IsValid() &&
+		AbilitySystemComponent->HasMatchingGameplayTag(DodgingTag);
+}
+
+EPP_SuperArmorLevel UPP_CombatComponent::GetSuperArmorLevel() const
+{
+	if (!AbilitySystemComponent) return EPP_SuperArmorLevel::None;
+	if (SuperArmorTag3.IsValid() && AbilitySystemComponent->HasMatchingGameplayTag(SuperArmorTag3))
+		return EPP_SuperArmorLevel::SuperArmor3;
+	if (SuperArmorTag2.IsValid() && AbilitySystemComponent->HasMatchingGameplayTag(SuperArmorTag2))
+		return EPP_SuperArmorLevel::SuperArmor2;
+	if (SuperArmorTag1.IsValid() && AbilitySystemComponent->HasMatchingGameplayTag(SuperArmorTag1))
+		return EPP_SuperArmorLevel::SuperArmor1;
+	return EPP_SuperArmorLevel::None;
+}
+
+bool UPP_CombatComponent::DoesCurrentSuperArmorIgnoreDamage() const
+{
+	return MinimumSuperArmorLevelToIgnoreDamage != EPP_SuperArmorLevel::None &&
+		GetSuperArmorLevel() >= MinimumSuperArmorLevelToIgnoreDamage;
+}
+
+void UPP_CombatComponent::ApplySuccessfulBlockEffects(AActor* AttackerActor) const
+{
+	AActor* DefenderActor = GetOwner();
+	if (!DefenderActor || !DefenderActor->HasAuthority()) return;
+
+	ApplyGameplayEffectToActor(AttackerActor, AttackerBlockedEffectClass, DefenderActor);
+	ApplyGameplayEffectToActor(DefenderActor, DefenderBlockSuccessEffectClass, AttackerActor);
+}
+
+void UPP_CombatComponent::ApplySuccessfulParryEffects(AActor* AttackerActor) const
+{
+	AActor* DefenderActor = GetOwner();
+	if (!DefenderActor || !DefenderActor->HasAuthority()) return;
+	ApplyGameplayEffectToActor(AttackerActor, AttackerParriedEffectClass, DefenderActor);
+	ApplyGameplayEffectToActor(DefenderActor, DefenderParrySuccessEffectClass, AttackerActor);
+}
+
+void UPP_CombatComponent::ApplySuccessfulDodgeEffects(AActor* AttackerActor) const
+{
+	AActor* DefenderActor = GetOwner();
+	if (!DefenderActor || !DefenderActor->HasAuthority()) return;
+	ApplyGameplayEffectToActor(AttackerActor, AttackerDodgedEffectClass, DefenderActor);
+	ApplyGameplayEffectToActor(DefenderActor, DefenderDodgeSuccessEffectClass, AttackerActor);
+}
+
+void UPP_CombatComponent::ApplySuccessfulSuperArmorEffects(AActor* AttackerActor) const
+{
+	AActor* DefenderActor = GetOwner();
+	if (!DefenderActor || !DefenderActor->HasAuthority()) return;
+	ApplyGameplayEffectToActor(AttackerActor, AttackerSuperArmoredEffectClass, DefenderActor);
+	ApplyGameplayEffectToActor(DefenderActor, DefenderSuperArmorSuccessEffectClass, AttackerActor);
+}
+
+void UPP_CombatComponent::ApplyGameplayEffectToActor(AActor* RecipientActor,
+	const TSubclassOf<UGameplayEffect>& EffectClass, AActor* InstigatorActor) const
+{
+	if (!RecipientActor || !EffectClass) return;
+
+	UAbilitySystemComponent* RecipientASC =
+		UPP_CombatFunctionLibrary::GetAbilitySystemComponent(RecipientActor);
+	if (!RecipientASC || !RecipientASC->IsOwnerActorAuthoritative()) return;
+
+	FGameplayEffectContextHandle Context = RecipientASC->MakeEffectContext();
+	Context.AddInstigator(InstigatorActor, InstigatorActor);
+	Context.AddSourceObject(GetOwner());
+
+	const FGameplayEffectSpecHandle Spec = RecipientASC->MakeOutgoingSpec(EffectClass, 1.0f, Context);
+	if (Spec.IsValid())
+	{
+		RecipientASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+	}
 }
 
 void UPP_CombatComponent::RefreshAnimInstance()
@@ -146,6 +322,7 @@ void UPP_CombatComponent::ClearReactionTimers()
 	AbilityTimers.Reset();
 	RemoveEffectTimers.Reset();
 	ApplyEffectTimers.Reset();
+	AppliedEffectHandles.Reset();
 }
 
 void UPP_CombatComponent::GrantAbilities()
@@ -197,7 +374,8 @@ void UPP_CombatComponent::RegisterTagListeners()
 		return;
 	}
 
-	if (!TagReactionData && AnimBoolBindings.IsEmpty()) return;
+	if (!TagReactionData && AnimBoolBindings.IsEmpty() && !CrowdControlTag.IsValid() &&
+		!IgnorePawnCollisionTag.IsValid()) return;
 
 	ClearTagListeners();
 
@@ -221,6 +399,8 @@ void UPP_CombatComponent::RegisterTagListeners()
 	}
 
 	TSet<FGameplayTag> WatchedTags;
+	if (CrowdControlTag.IsValid()) WatchedTags.Add(CrowdControlTag);
+	if (IgnorePawnCollisionTag.IsValid()) WatchedTags.Add(IgnorePawnCollisionTag);
 
 	if (TagReactionData)
 	{
@@ -259,6 +439,9 @@ void UPP_CombatComponent::RegisterTagListeners()
 	{
 		SetAnimBool(Binding, IsAnimBoolActive(Binding));
 	}
+
+	ApplyCrowdControlState(IsCrowdControlActive());
+	ApplyPawnCollisionIgnoreState(IsIgnoringPawnCollision());
 }
 
 void UPP_CombatComponent::OnTagChanged(FGameplayTag Tag, int32 NewCount)
@@ -270,6 +453,14 @@ void UPP_CombatComponent::OnTagChanged(FGameplayTag Tag, int32 NewCount)
 	}
 
 	const bool bAdded = NewCount > 0;
+	if (CrowdControlTag.IsValid() && Tag.MatchesTag(CrowdControlTag))
+	{
+		ApplyCrowdControlState(bAdded);
+	}
+	if (IgnorePawnCollisionTag.IsValid() && Tag.MatchesTag(IgnorePawnCollisionTag))
+	{
+		ApplyPawnCollisionIgnoreState(bAdded);
+	}
 
 	if (TagReactionData)
 	{
@@ -345,8 +536,22 @@ void UPP_CombatComponent::QueueEffectRemove(const FPP_CombatTagReactionBinding& 
 {
 	if (Binding.Effects.Remove.Num() <= 0 || !ASC) return;
 
-	auto Fn = [ASC, Binding]
+	const FName RemoveTimerKey = GetRemoveTimerKey(Binding, TriggeredTag);
+	auto Fn = [this, ASC, Binding, RemoveTimerKey]
 	{
+		if (TArray<FActiveGameplayEffectHandle>* Handles = AppliedEffectHandles.Find(RemoveTimerKey))
+		{
+			for (const FActiveGameplayEffectHandle& Handle : *Handles)
+			{
+				if (Handle.IsValid())
+				{
+					ASC->RemoveActiveGameplayEffect(Handle);
+				}
+			}
+
+			AppliedEffectHandles.Remove(RemoveTimerKey);
+		}
+
 		for (const TSubclassOf<UGameplayEffect>& Effect : Binding.Effects.Remove)
 		{
 			if (!Effect) continue;
@@ -357,7 +562,7 @@ void UPP_CombatComponent::QueueEffectRemove(const FPP_CombatTagReactionBinding& 
 		}
 	};
 
-	FTimerHandle& Handle = RemoveEffectTimers.FindOrAdd(GetRemoveTimerKey(Binding, TriggeredTag));
+	FTimerHandle& Handle = RemoveEffectTimers.FindOrAdd(RemoveTimerKey);
 	ExecuteDelayed(Fn, Binding.Effects.RemoveDelaySeconds, Handle);
 }
 
@@ -372,7 +577,8 @@ void UPP_CombatComponent::QueueEffectApply(const FPP_CombatTagReactionBinding& B
 {
 	if (Binding.Effects.Apply.Num() <= 0 || !ASC) return;
 
-	auto Fn = [this, ASC, Binding]
+	const FName RemoveTimerKey = GetRemoveTimerKey(Binding, TriggeredTag);
+	auto Fn = [this, ASC, Binding, RemoveTimerKey]
 	{
 		for (const TSubclassOf<UGameplayEffect>& Effect : Binding.Effects.Apply)
 		{
@@ -384,7 +590,11 @@ void UPP_CombatComponent::QueueEffectApply(const FPP_CombatTagReactionBinding& B
 			FGameplayEffectSpecHandle Spec = ASC->MakeOutgoingSpec(Effect, 1.f, Ctx);
 			if (Spec.IsValid())
 			{
-				ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+				const FActiveGameplayEffectHandle AppliedHandle = ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+				if (AppliedHandle.IsValid())
+				{
+					AppliedEffectHandles.FindOrAdd(RemoveTimerKey).Add(AppliedHandle);
+				}
 			}
 		}
 	};

@@ -2,11 +2,20 @@
 
 #include "CoreMinimal.h"
 #include "Abilities/GameplayAbility.h"
+#include "ActiveGameplayEffectHandle.h"
 #include "GAS/Ability/PP_GameplayAbilityTypes.h"
 #include "TimerManager.h"
 #include "PP_GameplayAbility.generated.h"
 
 class ACharacter;
+
+/** Runtime state for one configured montage effect window. */
+struct FPP_AbilityMontageEffectWindowRuntime
+{
+	FActiveGameplayEffectHandle EffectHandle;
+	FTimerHandle ApplyTimer;
+	FTimerHandle RemoveTimer;
+};
 
 UCLASS()
 class PROXYPREDICTION_API UPP_GameplayAbility : public UGameplayAbility
@@ -29,11 +38,38 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Montage", meta=(DisplayName="Montage Lockout"))
 	FPP_AbilityMotionMontageLockout MontageLockout;
 
+	/** Effects applied once at activation and removed on every ability end/cancel path. */
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Effects", meta=(TitleProperty="GameplayEffectClass"))
+	TArray<FPP_AbilityOwnedEffect> AbilityLifetimeEffects;
+
+	/** Effects applied and removed once at configured percentages of the active montage. */
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Effects", meta=(TitleProperty="GameplayEffectClass"))
+	TArray<FPP_AbilityMontageEffectWindow> MontageEffectWindows;
+
+	/** Active effects granting any of these tags are removed when the ability activates. */
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Effects")
+	FGameplayTagContainer RemoveGameplayEffectsWithTagsOnActivate;
+
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo")
 	TSubclassOf<UGameplayAbility> ComboAbilityClass = nullptr;
 
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo", meta=(ClampMin="0.0", Units="Seconds"))
 	float ComboWindowDuration = 2.f;
+
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo")
+	bool bUseComboMontageProgressBeforeInterrupt = false;
+
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo",
+		meta=(EditCondition="bUseComboMontageProgressBeforeInterrupt",
+			ClampMin="0.0", ClampMax="100.0", UIMin="0.0", UIMax="100.0", Units="Percent"))
+	float ComboMontageProgressBeforeInterrupt = 50.f;
+
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo")
+	bool bUseComboNextAbilityMontagePlayRate = false;
+
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo",
+		meta=(EditCondition="bUseComboNextAbilityMontagePlayRate", ClampMin="0.01", UIMin="0.01"))
+	float ComboNextAbilityMontagePlayRate = 1.f;
 
 	TSubclassOf<UGameplayAbility> GetComboAbilityClass() const { return ComboAbilityClass; }
 	float GetComboWindowDuration() const { return ComboWindowDuration; }
@@ -127,11 +163,25 @@ protected:
 private:
 	void ResetComboWindow();
 	void InterruptOtherActiveAbilities() const;
+	FActiveGameplayEffectHandle ApplyOwnedEffect(TSubclassOf<UGameplayEffect> EffectClass, float EffectLevel) const;
+	void ApplyAbilityLifetimeEffects();
+	void RemoveConfiguredGameplayEffectsOnActivate() const;
+	float ResolveActivationMontagePlayRate(const FGameplayAbilityActorInfo* ActorInfo) const;
+	void InitializeActivatedMontage(uint32 ExpectedActivationSequenceId);
+	void ApplyConfiguredMontagePlayRate(uint32 ExpectedActivationSequenceId);
+	void RestoreConfiguredMontagePlayRate();
+	void ScheduleMontageEffectWindows(uint32 ExpectedActivationSequenceId);
+	void ApplyMontageEffectWindow(uint32 ExpectedActivationSequenceId, int32 WindowIndex);
+	void RemoveMontageEffectWindow(uint32 ExpectedActivationSequenceId, int32 WindowIndex);
+	void CleanupOwnedEffects();
 
 	FTimerHandle ComboWindowTimerHandle;
 
 	bool bComboWindowOpen = false;
 
 	uint32 ActivationSequenceId = 0;
+	float ActivatedMontagePlayRate = 1.f;
+	TArray<FActiveGameplayEffectHandle> AbilityLifetimeEffectHandles;
+	TArray<FPP_AbilityMontageEffectWindowRuntime> MontageEffectWindowRuntime;
 };
 

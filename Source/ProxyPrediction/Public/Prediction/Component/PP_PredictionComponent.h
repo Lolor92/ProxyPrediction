@@ -4,11 +4,14 @@
 #include "GameplayTagContainer.h"
 #include "Components/ActorComponent.h"
 #include "Prediction/Data/PP_ReactionData.h"
+#include "TimerManager.h"
 #include "PP_PredictionComponent.generated.h"
 
 class AActor;
 class ACharacter;
 class UAbilitySystemComponent;
+class UCharacterMovementComponent;
+class USkeletalMeshComponent;
 
 /** Identifier carried through the predicted and confirmed reaction flow. */
 USTRUCT(BlueprintType)
@@ -47,6 +50,10 @@ struct FPP_PendingPredictedReaction
 	/** Local creation time used to expire stale predictions. */
 	UPROPERTY()
 	double TimeSeconds = 0.0;
+
+	/** Whether this client actually played the clean reaction montage. */
+	UPROPERTY()
+	bool bPlayedLocally = false;
 };
 
 /** Confirmed prediction waiting for its authoritative final transform. */
@@ -103,6 +110,15 @@ struct FPP_OwnerPendingFinalReactionCorrection
 	double TimeSeconds = 0.0;
 };
 
+/** Restores a simulated proxy after client-only mesh interpolation finishes. */
+struct FPP_ProxyReactionVisualInterpolation
+{
+	TWeakObjectPtr<USkeletalMeshComponent> Mesh;
+	TWeakObjectPtr<UCharacterMovementComponent> MovementComponent;
+	FVector RestingRelativeLocation = FVector::ZeroVector;
+	uint8 SavedNetworkSmoothingMode = 0;
+};
+
 /**
  * Predicts target reactions immediately, then reconciles them with the server.
  * Prediction markers prevent duplicate playback and route the final correction.
@@ -118,30 +134,52 @@ public:
 	/** Predicts the target transform and montage, then asks the server to confirm them. */
 	UFUNCTION(BlueprintCallable, Category="SyncPrediction|Reaction")
 	bool PlayPredictedReactionOnTargetProxy(AActor* TargetActor, FGameplayTag ReactionTag,
-		FPP_ReactionTransformSettings TransformSettings);
+		FPP_ReactionTransformSettings TransformSettings, FPP_ReactionDefenseSettings DefenseSettings,
+		FPP_ReactionDamageSettings DamageSettings);
 
-	/** Validates and applies the reaction on the authoritative server. */
+	/** Confirms a reaction using transform settings stored in server Reaction Data. */
 	UFUNCTION(Server, Reliable)
 	void ServerConfirmPredictedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
-		FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings);
+		FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings,
+		FPP_ReactionDefenseSettings DefenseSettings, FPP_ReactionDamageSettings DamageSettings);
 
-	/** Starts confirmed playback without replaying a matching local prediction. */
-	UFUNCTION(NetMulticast, Reliable)
+	/** Override for server-only ability, team, line-of-sight, or combat-rule validation. */
+	UFUNCTION(BlueprintNativeEvent, Category="SyncPrediction|Server Validation")
+	bool CanServerAcceptPredictedReaction(AActor* TargetActor, FGameplayTag ReactionTag,
+		const FPP_ReactionTransformSettings& TransformSettings) const;
+
+	/** Starts cosmetic proxy playback without replaying a matching local prediction. */
+	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, FVector ServerStartLocation, FRotator ServerStartRotation,
-		FPP_ReactionTransformSettings TransformSettings);
+		float ClientInterpolationSpeed, bool bPlayReaction);
 
-	/** Routes the server's final transform to the owner or predicting proxy. */
-	UFUNCTION(NetMulticast, Reliable)
-	void MulticastFinishConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
-		FGameplayTag ReactionTag, FVector ServerFinalLocation, FRotator ServerFinalRotation);
+protected:
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
+	// Server validation rejects spam, distant targets, and unsafe transform requests.
+	bool ConsumeServerReactionRequestBudget();
+	bool ValidateServerReactionRequest(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction,
+		const FPP_ReactionTransformSettings& TransformSettings);
+	void ProcessServerConfirmedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+		FGameplayTag ReactionTag, const FPP_ReactionTransformSettings& TransformSettings,
+		const FPP_ReactionDefenseSettings& DefenseSettings,
+		const FPP_ReactionDamageSettings& DamageSettings);
+	EPP_ReactionDefenseOutcome ResolveDefenseOutcome(AActor* TargetActor,
+		const FPP_ReactionDefenseSettings& DefenseSettings) const;
+	static bool ShouldApplyReactionTransform(EPP_ReactionDefenseOutcome Outcome,
+		const FPP_ReactionDefenseSettings& DefenseSettings);
+	void ApplyDefenseOutcomeEffects(AActor* TargetActor, EPP_ReactionDefenseOutcome Outcome) const;
+	bool ShouldApplyDamage(AActor* TargetActor, EPP_ReactionDefenseOutcome Outcome,
+		const FPP_ReactionDamageSettings& DamageSettings) const;
+	void ApplyDamageEffects(AActor* TargetActor, const FPP_ReactionDamageSettings& DamageSettings) const;
+
 	// Prediction start: validate -> create marker -> transform -> montage -> server RPC.
 	bool CanPlayPredictedReactionOnTargetProxy(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction) const;
 	FPP_ReactionPredictionContext MakeReactionPredictionContext();
 	void AddPendingPredictedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
-		FGameplayTag ReactionTag);
+		FGameplayTag ReactionTag, bool bPlayedLocally);
 	void RemoveExpiredPendingPredictedReactions();
 
 	float GetReactionStartPosition(const FPP_ReactionDataEntry& Reaction) const;
@@ -156,21 +194,25 @@ private:
 
 	// Transform flow: resolve reference -> select recipients -> apply rotation and movement.
 	void ApplyReactionTransform(AActor* InstigatorActor, AActor* TargetActor,
-		const FPP_ReactionTransformSettings& TransformSettings) const;
+		const FPP_ReactionTransformSettings& TransformSettings);
 	void ApplyReactionMovement(AActor* RecipientActor, AActor* ReferenceActor,
-		const FPP_ReactionMovementSettings& MovementSettings) const;
+		const FPP_ReactionMovementSettings& MovementSettings);
 	void ApplyReactionRotation(AActor* RecipientActor, AActor* ReferenceActor,
 		const FPP_ReactionRotationSettings& RotationSettings) const;
 	void ApplyReactionTransformToRecipients(AActor* InstigatorActor, AActor* TargetActor, AActor* ReferenceActor,
 		EPP_ReactionTransformRecipient Recipient,
-		TFunctionRef<void(AActor* RecipientActor, AActor* ReferenceActor)> ApplyFunction) const;
+		TFunctionRef<void(AActor* RecipientActor, AActor* ReferenceActor)> ApplyFunction);
+	void SetReactionActorLocation(AActor* RecipientActor, const FVector& TargetLocation,
+		const FPP_ReactionMovementSettings& MovementSettings, bool bForceNoSweep = false);
+	void StopClientReactionMovementInterpolation(TWeakObjectPtr<AActor> RecipientActor);
+	void StopAllClientReactionMovementInterpolations();
 	static AActor* ResolveReactionReferenceActor(AActor* InstigatorActor, AActor* TargetActor,
 		EPP_ReactionReferenceActorSource ReferenceActorSource);
 	static ETeleportType ToTeleportType(EPP_ReactionTeleportType TeleportType);
 
 	// Start-confirmation markers suppress duplicate montage playback.
 	bool ConsumePendingPredictedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
-		FGameplayTag ReactionTag);
+		FGameplayTag* OutPredictedReactionTag = nullptr, bool* bOutPlayedLocally = nullptr);
 	void AddDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag);
 	bool ConsumeDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
@@ -198,11 +240,20 @@ private:
 	bool HasNewerReactionMarkerForTarget(const FPP_ReactionPredictionContext& Context, AActor* TargetActor);
 	void RemoveExpiredProxyPendingFinalReactionCorrections();
 
-	/** Plays authoritative owner feedback while keeping capsule correction active. */
+	/** Plays owner feedback and starts the local correction-suppression window. */
 	UFUNCTION(Client, Reliable)
-	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
-		AActor* InstigatorActor, FGameplayTag ReactionTag, FVector ServerStartLocation,
-		FRotator ServerStartRotation, FPP_ReactionTransformSettings TransformSettings);
+	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context, FGameplayTag ReactionTag,
+		FVector ServerStartLocation, FRotator ServerStartRotation, float ClientInterpolationSpeed);
+
+	/** Delivers the authoritative final transform to the target owner. */
+	UFUNCTION(Client, Reliable)
+	void ClientFinishOwnerConfirmedReaction(FPP_ReactionPredictionContext Context, FGameplayTag ReactionTag,
+		FVector ServerFinalLocation, FRotator ServerFinalRotation);
+
+	/** Corrects only the attacking client's predicted target proxy. */
+	UFUNCTION(Client, Unreliable)
+	void ClientFinishPredictedProxyReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
+		FGameplayTag ReactionTag, FVector ServerFinalLocation, FRotator ServerFinalRotation);
 
 	/** Reaction definitions used by predicted and confirmed playback. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="SyncPrediction|Reaction", meta=(AllowPrivateAccess="true"))
@@ -211,6 +262,18 @@ private:
 	/** Latest predicted reaction time per target for replay throttling. */
 	UPROPERTY(Transient)
 	mutable TMap<TWeakObjectPtr<AActor>, double> LastReactionTimeByTarget;
+
+	/** Latest accepted server reaction time per target. */
+	UPROPERTY(Transient)
+	TMap<TWeakObjectPtr<AActor>, double> LastServerReactionTimeByTarget;
+
+	/** Start of the current server request-rate window. */
+	UPROPERTY(Transient)
+	double ServerReactionRequestWindowStartSeconds = -1.0;
+
+	/** Requests received during the current server rate window. */
+	UPROPERTY(Transient)
+	int32 ServerReactionRequestsInCurrentWindow = 0;
 
 	/** Next local prediction identifier before wrapping. */
 	UPROPERTY(Transient)
@@ -243,6 +306,28 @@ private:
 	UPROPERTY(Transient)
 	TMap<TWeakObjectPtr<AActor>, int32> PredictedReactionCollisionIgnoreCounts;
 
+	/** Active client-only smoothing timers keyed by reaction recipient. */
+	TMap<TWeakObjectPtr<AActor>, FTimerHandle> ClientReactionMovementInterpolationTimers;
+
+	/** Simulated proxy meshes currently offset from their authoritative capsules. */
+	TMap<TWeakObjectPtr<AActor>, FPP_ProxyReactionVisualInterpolation> ProxyReactionVisualInterpolations;
+
+	/** Maximum reaction requests accepted from one client each second. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation", meta=(ClampMin="1"))
+	int32 MaxServerReactionRequestsPerSecond = 30;
+
+	/** Maximum attacker-to-target distance accepted by the server. Zero disables this check. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation", meta=(ClampMin="0.0", Units="Centimeters"))
+	float MaxServerReactionRequestDistance = 1200.0f;
+
+	/** Maximum forward movement accepted from a notify transform request. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation", meta=(ClampMin="0.0", Units="Centimeters"))
+	float MaxServerReactionMoveDistance = 500.0f;
+
+	/** Maximum absolute sideways movement accepted from a notify transform request. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation", meta=(ClampMin="0.0", Units="Centimeters"))
+	float MaxServerReactionLateralOffset = 500.0f;
+
 	/** Time an unconfirmed local prediction remains matchable. */
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Seconds"))
 	float PendingPredictedReactionTimeout = 2.0f;
@@ -263,7 +348,7 @@ private:
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction")
 	bool bApplyInstantFinalCorrection = true;
 
-	/** Reserved distance limit for instant proxy correction. */
+	/** Maximum proxy error eligible for an instant final correction. Zero disables the limit. */
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Centimeters"))
 	float MaxInstantFinalCorrectionDistance = 500.0f;
 

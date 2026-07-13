@@ -211,7 +211,45 @@ void UPP_CollisionNotifyState::TryPlayPredictedReaction(AActor* AttackerActor, A
 
 	if (!PredictedReactionTag.IsValid()) return;
 
-	PredictionComponent->PlayPredictedReactionOnTargetProxy(HitActor, PredictedReactionTag,
-		ReactionTransformSettings);
+	FPP_ReactionTransformSettings TransformSettings;
+
+TransformSettings.MovementSettings.MoveDirection = MoveDirection;
+TransformSettings.MovementSettings.Recipient = MovementRecipient;
+TransformSettings.MovementSettings.ReferenceActorSource = MovementReferenceActorSource;
+TransformSettings.MovementSettings.MoveDistance = MoveDistance;
+TransformSettings.MovementSettings.LateralOffsetMode = LateralOffsetMode;
+TransformSettings.MovementSettings.LateralOffset = LateralOffset;
+TransformSettings.MovementSettings.bSweep = bSweepMovement;
+TransformSettings.MovementSettings.TeleportType = MovementTeleportType;
+TransformSettings.MovementSettings.ClientInterpolationSpeed =
+ClientInterpolationSpeed;
+
+TransformSettings.RotationSettings.RotationDirection = RotationDirection;
+TransformSettings.RotationSettings.Recipient = RotationRecipient;
+TransformSettings.RotationSettings.ReferenceActorSource =
+RotationReferenceActorSource;
+TransformSettings.RotationSettings.DirectionToFace = DirectionToFace;
+TransformSettings.RotationSettings.TeleportType = RotationTeleportType;
+
+	FPP_ReactionDefenseSettings DefenseSettings;
+	DefenseSettings.Block.bBlockable = bBlockable;
+	DefenseSettings.Block.BlockAngleDegrees = BlockAngleDegrees;
+	DefenseSettings.Block.bAllowMovementWhenBlocked = bAllowMovementWhenBlocked;
+	DefenseSettings.Block.bAllowRotationWhenBlocked = bAllowRotationWhenBlocked;
+	DefenseSettings.Dodge.bDodgeable = bDodgeable;
+	DefenseSettings.SuperArmor.RequiredSuperArmor = RequiredSuperArmor;
+
+	FPP_ReactionDamageSettings DamageSettings;
+	DamageSettings.DamageEffects = DamageEffects;
+	DamageSettings.bApplyDamageWhenBlocked = bApplyDamageWhenBlocked;
+	DamageSettings.bApplyDamageWhenParried = bApplyDamageWhenParried;
+	DamageSettings.bApplyDamageWhenDodged = bApplyDamageWhenDodged;
+
+PredictionComponent->PlayPredictedReactionOnTargetProxy(
+		HitActor,
+		PredictedReactionTag,
+		TransformSettings,
+		DefenseSettings,
+		DamageSettings);
 }
 
