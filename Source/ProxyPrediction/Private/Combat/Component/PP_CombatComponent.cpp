@@ -1,5 +1,4 @@
 #include "Combat/Component/PP_CombatComponent.h"
-
 #include "AbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Combat/Data/PP_CombatAbilityData.h"
@@ -323,6 +322,7 @@ void UPP_CombatComponent::ClearReactionTimers()
 	AbilityTimers.Reset();
 	RemoveEffectTimers.Reset();
 	ApplyEffectTimers.Reset();
+	AppliedEffectHandles.Reset();
 }
 
 void UPP_CombatComponent::GrantAbilities()
@@ -536,8 +536,22 @@ void UPP_CombatComponent::QueueEffectRemove(const FPP_CombatTagReactionBinding& 
 {
 	if (Binding.Effects.Remove.Num() <= 0 || !ASC) return;
 
-	auto Fn = [ASC, Binding]
+	const FName RemoveTimerKey = GetRemoveTimerKey(Binding, TriggeredTag);
+	auto Fn = [this, ASC, Binding, RemoveTimerKey]
 	{
+		if (TArray<FActiveGameplayEffectHandle>* Handles = AppliedEffectHandles.Find(RemoveTimerKey))
+		{
+			for (const FActiveGameplayEffectHandle& Handle : *Handles)
+			{
+				if (Handle.IsValid())
+				{
+					ASC->RemoveActiveGameplayEffect(Handle);
+				}
+			}
+
+			AppliedEffectHandles.Remove(RemoveTimerKey);
+		}
+
 		for (const TSubclassOf<UGameplayEffect>& Effect : Binding.Effects.Remove)
 		{
 			if (!Effect) continue;
@@ -548,7 +562,7 @@ void UPP_CombatComponent::QueueEffectRemove(const FPP_CombatTagReactionBinding& 
 		}
 	};
 
-	FTimerHandle& Handle = RemoveEffectTimers.FindOrAdd(GetRemoveTimerKey(Binding, TriggeredTag));
+	FTimerHandle& Handle = RemoveEffectTimers.FindOrAdd(RemoveTimerKey);
 	ExecuteDelayed(Fn, Binding.Effects.RemoveDelaySeconds, Handle);
 }
 
@@ -563,7 +577,8 @@ void UPP_CombatComponent::QueueEffectApply(const FPP_CombatTagReactionBinding& B
 {
 	if (Binding.Effects.Apply.Num() <= 0 || !ASC) return;
 
-	auto Fn = [this, ASC, Binding]
+	const FName RemoveTimerKey = GetRemoveTimerKey(Binding, TriggeredTag);
+	auto Fn = [this, ASC, Binding, RemoveTimerKey]
 	{
 		for (const TSubclassOf<UGameplayEffect>& Effect : Binding.Effects.Apply)
 		{
@@ -575,7 +590,11 @@ void UPP_CombatComponent::QueueEffectApply(const FPP_CombatTagReactionBinding& B
 			FGameplayEffectSpecHandle Spec = ASC->MakeOutgoingSpec(Effect, 1.f, Ctx);
 			if (Spec.IsValid())
 			{
-				ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+				const FActiveGameplayEffectHandle AppliedHandle = ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+				if (AppliedHandle.IsValid())
+				{
+					AppliedEffectHandles.FindOrAdd(RemoveTimerKey).Add(AppliedHandle);
+				}
 			}
 		}
 	};

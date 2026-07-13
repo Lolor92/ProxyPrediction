@@ -83,6 +83,7 @@ void UPP_GameplayAbility::ActivateAbility(const FGameplayAbilitySpecHandle Handl
 	CleanupOwnedEffects();
 	ActivationSequenceId = (ActivationSequenceId == MAX_uint32) ? 1u : (ActivationSequenceId + 1u);
 	ResetComboWindow();
+	ActivatedMontagePlayRate = ResolveActivationMontagePlayRate(ActorInfo);
 
 	RotateAvatarToControllerYawOnActivate();
 
@@ -92,11 +93,11 @@ void UPP_GameplayAbility::ActivateAbility(const FGameplayAbilitySpecHandle Handl
 	RemoveConfiguredGameplayEffectsOnActivate();
 	ApplyAbilityLifetimeEffects();
 
-	// Blueprint montage tasks start after this native activation returns; schedule once for next tick.
+	// Blueprint montage tasks start after this native activation returns; initialize once for next tick.
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().SetTimerForNextTick(
-			FTimerDelegate::CreateUObject(this, &ThisClass::ScheduleMontageEffectWindows, ActivationSequenceId));
+			FTimerDelegate::CreateUObject(this, &ThisClass::InitializeActivatedMontage, ActivationSequenceId));
 	}
 	OpenComboWindow();
 }
@@ -105,6 +106,7 @@ void UPP_GameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle,
 	const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo,
 	bool bReplicateEndAbility, bool bWasCancelled)
 {
+	RestoreConfiguredMontagePlayRate();
 	CleanupOwnedEffects();
 
 	if (ACharacter* Character = Cast<ACharacter>(GetAvatarActorFromActorInfo()))
@@ -161,6 +163,76 @@ void UPP_GameplayAbility::RemoveConfiguredGameplayEffectsOnActivate() const
 		// Local-predicted abilities clear responsive local state; authority confirms the same removal.
 		ASC->RemoveActiveEffectsWithGrantedTags(RemoveGameplayEffectsWithTagsOnActivate);
 	}
+}
+
+void UPP_GameplayAbility::InitializeActivatedMontage(const uint32 ExpectedActivationSequenceId)
+{
+	ApplyConfiguredMontagePlayRate(ExpectedActivationSequenceId);
+	ScheduleMontageEffectWindows(ExpectedActivationSequenceId);
+}
+
+float UPP_GameplayAbility::ResolveActivationMontagePlayRate(const FGameplayAbilityActorInfo* ActorInfo) const
+{
+	const UAbilitySystemComponent* ASC = ActorInfo ? ActorInfo->AbilitySystemComponent.Get() : nullptr;
+	if (!ASC)
+	{
+		ASC = GetAbilitySystemComponentFromActorInfo();
+	}
+
+	const UPP_GameplayAbility* PreviousAbility = Cast<UPP_GameplayAbility>(ASC ? ASC->GetAnimatingAbility() : nullptr);
+	if (!PreviousAbility || !PreviousAbility->IsComboWindowOpen() ||
+		!PreviousAbility->bUseComboNextAbilityMontagePlayRate)
+	{
+		return 1.f;
+	}
+
+	const UClass* ActivatingAbilityClass = GetClass();
+	const UClass* ConfiguredNextComboAbilityClass = PreviousAbility->ComboAbilityClass.Get();
+	if (!ActivatingAbilityClass || !ConfiguredNextComboAbilityClass ||
+		!ActivatingAbilityClass->IsChildOf(ConfiguredNextComboAbilityClass))
+	{
+		return 1.f;
+	}
+
+	return FMath::Max(PreviousAbility->ComboNextAbilityMontagePlayRate, KINDA_SMALL_NUMBER);
+}
+
+void UPP_GameplayAbility::ApplyConfiguredMontagePlayRate(const uint32 ExpectedActivationSequenceId)
+{
+	if (ExpectedActivationSequenceId != ActivationSequenceId || !IsActive() ||
+		FMath::IsNearlyEqual(ActivatedMontagePlayRate, 1.f))
+	{
+		return;
+	}
+
+	ACharacter* Character = Cast<ACharacter>(GetAvatarActorFromActorInfo());
+	UAnimMontage* Montage = GetCurrentMontage();
+	UAnimInstance* AnimInstance = Character && Character->GetMesh()
+		? Character->GetMesh()->GetAnimInstance()
+		: nullptr;
+	if (!Montage || !AnimInstance) return;
+
+	AnimInstance->Montage_SetPlayRate(Montage, FMath::Max(ActivatedMontagePlayRate, KINDA_SMALL_NUMBER));
+}
+
+void UPP_GameplayAbility::RestoreConfiguredMontagePlayRate()
+{
+	if (FMath::IsNearlyEqual(ActivatedMontagePlayRate, 1.f))
+	{
+		return;
+	}
+
+	ACharacter* Character = Cast<ACharacter>(GetAvatarActorFromActorInfo());
+	UAnimMontage* Montage = GetCurrentMontage();
+	UAnimInstance* AnimInstance = Character && Character->GetMesh()
+		? Character->GetMesh()->GetAnimInstance()
+		: nullptr;
+	if (Montage && AnimInstance)
+	{
+		AnimInstance->Montage_SetPlayRate(Montage, 1.f);
+	}
+
+	ActivatedMontagePlayRate = 1.f;
 }
 
 void UPP_GameplayAbility::ScheduleMontageEffectWindows(const uint32 ExpectedActivationSequenceId)
@@ -344,10 +416,21 @@ bool UPP_GameplayAbility::CanInterruptAnimatingAbility(const FGameplayAbilityAct
 
 	const float CurrentPosition = AnimInstance->Montage_GetPosition(AnimatingMontage);
 	const float PlayedPercent = FMath::Clamp((CurrentPosition / MontageLength) * 100.f, 0.f, 100.f);
-	const float UnlockPercent = FMath::Clamp(
-		AnimatingMotionAbility->MontageLockout.MontageProgressBeforeInterrupt,
-		0.f,
-		100.f);
+	float UnlockPercent = FMath::Clamp(
+		AnimatingMotionAbility->MontageLockout.MontageProgressBeforeInterrupt, 0.f, 100.f);
+
+	const UClass* ThisAbilityClass = GetClass();
+	const UClass* ConfiguredComboAbilityClass = AnimatingMotionAbility->ComboAbilityClass.Get();
+	const bool bActivatingConfiguredCombo =
+		AnimatingMotionAbility->IsComboWindowOpen() &&
+		ThisAbilityClass &&
+		ConfiguredComboAbilityClass &&
+		ThisAbilityClass->IsChildOf(ConfiguredComboAbilityClass);
+	if (bActivatingConfiguredCombo && AnimatingMotionAbility->bUseComboMontageProgressBeforeInterrupt)
+	{
+		UnlockPercent = FMath::Clamp(
+			AnimatingMotionAbility->ComboMontageProgressBeforeInterrupt, 0.f, 100.f);
+	}
 
 	return PlayedPercent >= UnlockPercent;
 }

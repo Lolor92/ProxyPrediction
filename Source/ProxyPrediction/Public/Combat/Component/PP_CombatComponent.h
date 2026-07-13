@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ActiveGameplayEffectHandle.h"
 #include "Abilities/GameplayAbility.h"
 #include "Components/ActorComponent.h"
 #include "Combat/Data/PP_CombatTagReactionData.h"
@@ -193,6 +194,7 @@ private:
 	TMap<FGameplayTag, FTimerHandle> AbilityTimers;
 	TMap<FName, FTimerHandle> RemoveEffectTimers;
 	TMap<FGameplayTag, FTimerHandle> ApplyEffectTimers;
+	TMap<FName, TArray<FActiveGameplayEffectHandle>> AppliedEffectHandles;
 	TMap<FGameplayTag, FDelegateHandle> TagListenerHandles;
 	FTimerHandle AbilitySystemRetryTimer;
 	int32 AbilitySystemRetryCount = 0;

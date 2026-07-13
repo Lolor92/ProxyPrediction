@@ -56,6 +56,21 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo", meta=(ClampMin="0.0", Units="Seconds"))
 	float ComboWindowDuration = 2.f;
 
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo")
+	bool bUseComboMontageProgressBeforeInterrupt = false;
+
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo",
+		meta=(EditCondition="bUseComboMontageProgressBeforeInterrupt",
+			ClampMin="0.0", ClampMax="100.0", UIMin="0.0", UIMax="100.0", Units="Percent"))
+	float ComboMontageProgressBeforeInterrupt = 50.f;
+
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo")
+	bool bUseComboNextAbilityMontagePlayRate = false;
+
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo",
+		meta=(EditCondition="bUseComboNextAbilityMontagePlayRate", ClampMin="0.01", UIMin="0.01"))
+	float ComboNextAbilityMontagePlayRate = 1.f;
+
 	TSubclassOf<UGameplayAbility> GetComboAbilityClass() const { return ComboAbilityClass; }
 	float GetComboWindowDuration() const { return ComboWindowDuration; }
 	bool IsComboWindowOpen() const { return bComboWindowOpen; }
@@ -151,6 +166,10 @@ private:
 	FActiveGameplayEffectHandle ApplyOwnedEffect(TSubclassOf<UGameplayEffect> EffectClass, float EffectLevel) const;
 	void ApplyAbilityLifetimeEffects();
 	void RemoveConfiguredGameplayEffectsOnActivate() const;
+	float ResolveActivationMontagePlayRate(const FGameplayAbilityActorInfo* ActorInfo) const;
+	void InitializeActivatedMontage(uint32 ExpectedActivationSequenceId);
+	void ApplyConfiguredMontagePlayRate(uint32 ExpectedActivationSequenceId);
+	void RestoreConfiguredMontagePlayRate();
 	void ScheduleMontageEffectWindows(uint32 ExpectedActivationSequenceId);
 	void ApplyMontageEffectWindow(uint32 ExpectedActivationSequenceId, int32 WindowIndex);
 	void RemoveMontageEffectWindow(uint32 ExpectedActivationSequenceId, int32 WindowIndex);
@@ -161,6 +180,7 @@ private:
 	bool bComboWindowOpen = false;
 
 	uint32 ActivationSequenceId = 0;
+	float ActivatedMontagePlayRate = 1.f;
 	TArray<FActiveGameplayEffectHandle> AbilityLifetimeEffectHandles;
 	TArray<FPP_AbilityMontageEffectWindowRuntime> MontageEffectWindowRuntime;
 };
