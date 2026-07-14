@@ -12,9 +12,13 @@
 #include "GameFramework/Controller.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameplayEffect.h"
+#include "NativeGameplayTags.h"
 
 namespace
 {
+	UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_Ability_ActivateFail_MontageLockout,
+		"Ability.ActivateFail.MontageLockout");
+
 	void RefreshLocalCameraAfterAbilityYaw(ACharacter* Character)
 	{
 		if (!Character || !Character->IsLocallyControlled())
@@ -57,9 +61,15 @@ UPP_GameplayAbility::UPP_GameplayAbility()
 	ReplicationPolicy = EGameplayAbilityReplicationPolicy::ReplicateNo;
 	InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
 	NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::LocalPredicted;
-	NetSecurityPolicy = EGameplayAbilityNetSecurityPolicy::ClientOrServer;
+	// The server must keep its old activation alive until the replacement activation RPC arrives,
+	// so it can validate the interrupt percentage against its own montage. The client still predicts
+	// local ending/retriggering, but cannot prematurely terminate the authoritative activation.
+	NetSecurityPolicy = EGameplayAbilityNetSecurityPolicy::ServerOnlyTermination;
 
 	bServerRespectsRemoteAbilityCancellation = false;
+	// GAS ends the current InstancedPerActor activation before starting its replacement. Our
+	// CanActivateAbility and input routing only reach this path after the montage unlock point;
+	// restarting the montage immediately closes the gate again and prevents prediction-key spam.
 	bRetriggerInstancedAbility = true;
 }
 
@@ -72,7 +82,46 @@ bool UPP_GameplayAbility::CanActivateAbility(const FGameplayAbilitySpecHandle Ha
 		return false;
 	}
 
+	const UAbilitySystemComponent* ASC = ActorInfo ? ActorInfo->AbilitySystemComponent.Get() : nullptr;
+	const FGameplayAbilitySpec* ExistingSpec = ASC ? ASC->FindAbilitySpecFromHandle(Handle) : nullptr;
+	if (ExistingSpec && ExistingSpec->IsActive() && !IsMontageGatedSelfRetrigger(ActorInfo))
+	{
+		// bRetriggerInstancedAbility is enabled for the intentional montage replacement below.
+		// Do not let unrelated direct activation calls retrigger an active ability with no gate.
+		return false;
+	}
+
+	if (!CanInterruptAnimatingAbility(ActorInfo))
+	{
+		if (OptionalRelevantTags)
+		{
+			OptionalRelevantTags->AddTag(TAG_Ability_ActivateFail_MontageLockout);
+		}
+		return false;
+	}
+
+	return true;
+}
+
+bool UPP_GameplayAbility::CanActivateDuringCurrentMontage(const FGameplayAbilityActorInfo* ActorInfo) const
+{
 	return CanInterruptAnimatingAbility(ActorInfo);
+}
+
+bool UPP_GameplayAbility::IsMontageGatedSelfRetrigger(const FGameplayAbilityActorInfo* ActorInfo) const
+{
+	const UAbilitySystemComponent* ASC = ActorInfo ? ActorInfo->AbilitySystemComponent.Get() : nullptr;
+	if (!ASC)
+	{
+		ASC = GetAbilitySystemComponentFromActorInfo();
+	}
+
+	const UPP_GameplayAbility* AnimatingAbility =
+		ASC ? Cast<UPP_GameplayAbility>(ASC->GetAnimatingAbility()) : nullptr;
+	return AnimatingAbility &&
+		AnimatingAbility->GetClass() == GetClass() &&
+		AnimatingAbility->MontageLockout.bUseMontageProgressLockout &&
+		AnimatingAbility->MontageLockout.bBlockAbilityActivationUntilUnlock;
 }
 
 void UPP_GameplayAbility::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
@@ -430,6 +479,19 @@ bool UPP_GameplayAbility::CanInterruptAnimatingAbility(const FGameplayAbilityAct
 	{
 		UnlockPercent = FMath::Clamp(
 			AnimatingMotionAbility->ComboMontageProgressBeforeInterrupt, 0.f, 100.f);
+	}
+
+	// The local player unlocks exactly at the authored percentage. Only the authoritative
+	// copy of a remote player's ability receives a small early-acceptance tolerance. That
+	// keeps prediction responsive while still validating the request against server state.
+	if (ActorInfo && ActorInfo->IsNetAuthority() && !ActorInfo->IsLocallyControlled())
+	{
+		const float EarlyAcceptanceSeconds = FMath::Max(
+			0.f, AnimatingMotionAbility->MontageLockout.ServerInterruptEarlyAcceptanceTolerance);
+		UnlockPercent = FMath::Clamp(
+			UnlockPercent - (EarlyAcceptanceSeconds / MontageLength) * 100.f,
+			0.f,
+			100.f);
 	}
 
 	return PlayedPercent >= UnlockPercent;

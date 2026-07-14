@@ -188,8 +188,6 @@ void UPP_CharacterMovementComponent::SetIgnoreServerRootMotionMontageTrackCorrec
 	}
 
 	bIgnoreServerRootMotionMontageTrackCorrection = bInIgnore;
-	bHasOwnerReactionTraceLocation = false;
-	LastOwnerReactionTraceLocation = CharacterOwner ? CharacterOwner->GetActorLocation() : FVector::ZeroVector;
 	RefreshAbilityRootMotionMode();
 }
 
@@ -215,15 +213,6 @@ void UPP_CharacterMovementComponent::TickComponent(float DeltaTime, enum ELevelT
 	}
 
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
-
-	if (!bLocalOwnerReaction)
-	{
-		bHasOwnerReactionTraceLocation = false;
-		return;
-	}
-
-	LastOwnerReactionTraceLocation = CharacterOwner->GetActorLocation();
-	bHasOwnerReactionTraceLocation = true;
 }
 
 void UPP_CharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
@@ -294,11 +283,11 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionPosition_Implementati
 	bool bBaseRelativePosition,
 	uint8 ServerMovementMode)
 {
-	if (bIgnoreServerRootMotionMontageTrackCorrection)
-	{
-		return;
-	}
-
+	// Let Character Movement acknowledge the corrected move even while the local reaction
+	// owns the montage timeline. Temporarily disabling montage root motion prevents Super
+	// from jumping the montage track, without dropping the response or filling SavedMoves.
+	FScopedIgnoreMontageTrackCorrection IgnoreMontageTrackCorrection(
+		CharacterOwner, bIgnoreServerRootMotionMontageTrackCorrection);
 	Super::ClientAdjustRootMotionPosition_Implementation(TimeStamp, ServerMontageTrackPosition, ServerLoc,
 		ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData, ServerBoneName, bHasBase,
 		bBaseRelativePosition, ServerMovementMode);
@@ -338,11 +327,10 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implem
 	bool bBaseRelativePosition,
 	uint8 ServerMovementMode)
 {
-	if (bIgnoreServerRootMotionMontageTrackCorrection && bHasAnimRootMotion)
-	{
-		return;
-	}
-
+	// Root-motion-source corrections may also carry an anim-montage correction. Preserve
+	// source reconciliation and the move acknowledgement while suppressing only that track jump.
+	FScopedIgnoreMontageTrackCorrection IgnoreMontageTrackCorrection(
+		CharacterOwner, bIgnoreServerRootMotionMontageTrackCorrection && bHasAnimRootMotion);
 	Super::ClientAdjustRootMotionSourcePosition_Implementation(TimeStamp, ServerRootMotion, bHasAnimRootMotion,
 		ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData,
 		ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);

@@ -276,7 +276,7 @@ void UPP_AbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 void UPP_AbilityMotionComponent::ClearRootMotionCollisionProbe()
 {
 	bRootMotionCollisionProbeEnabled = false;
-	bLastLoggedRootMotionCollisionBlocked = false;
+	bLastRootMotionCollisionBlocked = false;
 	LastRootMotionCollisionBlockTimeSeconds = -1000.f;
 	RootMotionCollisionProbeDistance = 0.f;
 	RootMotionCollisionFallbackProbeDistance = 0.f;
@@ -344,7 +344,7 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		const bool bStrictAngleBlock = Dot >= RequiredDot;
 		const bool bAngleGraceBlock =
 			!bStrictAngleBlock &&
-			bLastLoggedRootMotionCollisionBlocked &&
+			bLastRootMotionCollisionBlocked &&
 			Dot >= GraceRequiredDot;
 
 		float ContactAngle = 0.f;
@@ -355,13 +355,13 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 			RootMotionCollisionProbeDistance,
 			RequiredDot,
 			GraceRequiredDot,
-			bLastLoggedRootMotionCollisionBlocked,
+			bLastRootMotionCollisionBlocked,
 			ContactAngle,
 			ContactDot);
 
 		if (bStrictAngleBlock || bAngleGraceBlock || bContactBlock)
 		{
-			bLastLoggedRootMotionCollisionBlocked = true;
+			bLastRootMotionCollisionBlocked = true;
 			LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
 			return true;
 		}
@@ -376,7 +376,7 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 
 	const float SecondsSinceBlock = NowSeconds - LastRootMotionCollisionBlockTimeSeconds;
 	const bool bLostOverlapGraceBlock =
-		bLastLoggedRootMotionCollisionBlocked &&
+		bLastRootMotionCollisionBlocked &&
 		SecondsSinceBlock >= 0.f &&
 		SecondsSinceBlock <= PPAbilityMotionCollisionProbe::LostOverlapGraceSeconds;
 
@@ -389,16 +389,16 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 	float FallbackAngle = 0.f;
 	float FallbackDot = -1.f;
 	ACharacter* FallbackCharacter = nullptr;
-	if (bLastLoggedRootMotionCollisionBlocked &&
+	if (bLastRootMotionCollisionBlocked &&
 		HasFallbackRootMotionBlockingCharacterCollision(RequiredDot, GraceRequiredDot, FallbackAngle, FallbackDot, FallbackCharacter))
 	{
 		// Manual overlap is a backup when component overlap events arrive late.
-		bLastLoggedRootMotionCollisionBlocked = true;
+		bLastRootMotionCollisionBlocked = true;
 		LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
 		return true;
 	}
 
-	bLastLoggedRootMotionCollisionBlocked = false;
+	bLastRootMotionCollisionBlocked = false;
 	return false;
 }
 

@@ -114,8 +114,8 @@ private:
 	float RootMotionCollisionFallbackProbeDistance = 0.f;
 	/** Maximum forward angle accepted as a blocking character. */
 	float RootMotionCollisionForwardAngleDegrees = 0.f;
-	/** Last reported blocking state used to avoid duplicate diagnostics. */
-	bool bLastLoggedRootMotionCollisionBlocked = false;
+	/** Previous blocking state used by the short collision grace window. */
+	bool bLastRootMotionCollisionBlocked = false;
 	/** Time of the latest blocking result, used by the short grace window. */
 	float LastRootMotionCollisionBlockTimeSeconds = -1000.f;
 

@@ -1,4 +1,5 @@
 #include "Prediction/Notifies/PP_CollisionNotifyState.h"
+#include "Animation/AnimNotifyQueue.h"
 #include "DrawDebugHelpers.h"
 #include "Prediction/Component/PP_PredictionComponent.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -12,19 +13,16 @@ void UPP_CollisionNotifyState::NotifyBegin(USkeletalMeshComponent* MeshComp, UAn
 	
 	if (!MeshComp) return;
 	
-	FPP_NotifyRuntimeWindow& Window = ActiveWindowsByMesh.FindOrAdd(MeshComp);
-	// Each notify window may predict a reaction on each target only once.
-	Window.WindowId = FGuid::NewGuid();
-	Window.ProcessedTargets.Reset();
-	
 	AActor* OwnerActor = MeshComp->GetOwner();
 	if (!ShouldRunPredictedCollision(OwnerActor)) return;
 	
 	FTransform CurrentTransform;
 	if (!BuildTraceTransform(MeshComp, CurrentTransform)) return;
-	
-	PreviousTransforms.Add(MeshComp, CurrentTransform);
-	
+
+	const FPP_NotifyRuntimeKey RuntimeKey = MakeRuntimeKey(MeshComp, EventReference);
+	FPP_NotifyRuntimeWindow& Window = ActiveWindows.FindOrAdd(RuntimeKey);
+	Window.ProcessedTargets.Reset();
+	Window.PreviousSweepTransform = CurrentTransform;
 }
 
 void UPP_CollisionNotifyState::NotifyTick(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation,
@@ -34,21 +32,32 @@ void UPP_CollisionNotifyState::NotifyTick(USkeletalMeshComponent* MeshComp, UAni
 	
 	if (!MeshComp) return;
 
-	FTransform* PreviousTransform = PreviousTransforms.Find(MeshComp);
-	if (!PreviousTransform) return;
-	
+	const FPP_NotifyRuntimeKey RuntimeKey = MakeRuntimeKey(MeshComp, EventReference);
+	FPP_NotifyRuntimeWindow* Window = ActiveWindows.Find(RuntimeKey);
+	if (!Window) return;
+
 	FTransform CurrentTransform;
 	if (!BuildTraceTransform(MeshComp, CurrentTransform)) return;
-	
-	SweepCollision(MeshComp, *PreviousTransform, CurrentTransform);
 
-	*PreviousTransform = CurrentTransform;
+	const float SocketDistance = FVector::Dist(
+		Window->PreviousSweepTransform.GetLocation(), CurrentTransform.GetLocation());
+	const bool bRejectedDiscontinuity = MaxSocketSweepDistance > 0.f && SocketDistance > MaxSocketSweepDistance;
+
+	if (!bRejectedDiscontinuity)
+	{
+		SweepCollision(MeshComp, Window->PreviousSweepTransform, CurrentTransform, *Window);
+	}
+
+	Window->PreviousSweepTransform = CurrentTransform;
 }
 
 void UPP_CollisionNotifyState::NotifyEnd(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation,
 	const FAnimNotifyEventReference& EventReference)
 {
 	Super::NotifyEnd(MeshComp, Animation, EventReference);
+
+	const FPP_NotifyRuntimeKey RuntimeKey = MakeRuntimeKey(MeshComp, EventReference);
+	ActiveWindows.Remove(RuntimeKey);
 }
 
 bool UPP_CollisionNotifyState::ShouldRunPredictedCollision(const AActor* OwnerActor) const
@@ -61,6 +70,15 @@ bool UPP_CollisionNotifyState::ShouldRunPredictedCollision(const AActor* OwnerAc
 	if (OwnerPawn && OwnerPawn->IsLocallyControlled()) return true;
 
 	return false;
+}
+
+FPP_NotifyRuntimeKey UPP_CollisionNotifyState::MakeRuntimeKey(
+	USkeletalMeshComponent* MeshComp, const FAnimNotifyEventReference& EventReference)
+{
+	FPP_NotifyRuntimeKey Key;
+	Key.MeshComp = MeshComp;
+	Key.NotifyInstanceId = EventReference.GetNotifyInstanceID();
+	return Key;
 }
 
 bool UPP_CollisionNotifyState::BuildTraceTransform(USkeletalMeshComponent* MeshComp, FTransform& OutTransform) const
@@ -79,7 +97,7 @@ bool UPP_CollisionNotifyState::BuildTraceTransform(USkeletalMeshComponent* MeshC
 }
 
 void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, const FTransform& PreviousTransform,
-	const FTransform& CurrentTransform)
+	const FTransform& CurrentTransform, FPP_NotifyRuntimeWindow& Window)
 {
 	if (!MeshComp) return;
 
@@ -94,7 +112,8 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 	const FVector CurrentLocation = CurrentTransform.GetLocation();
 	const float SweepDistance = FVector::Dist(PreviousLocation, CurrentLocation);
 	const float SafeStepDistance = FMath::Max(MaxSweepStepDistance, 1.f);
-	const int32 NumSteps = FMath::Max(1, FMath::CeilToInt(SweepDistance / SafeStepDistance));
+	const int32 UnclampedNumSteps = FMath::Max(1, FMath::CeilToInt(SweepDistance / SafeStepDistance));
+	const int32 NumSteps = FMath::Min(UnclampedNumSteps, FMath::Max(1, MaxSweepSubsteps));
 	const FCollisionShape Shape = MakeCollisionShape();
 
 	// Sub-sweeps cover fast socket movement between animation updates.
@@ -104,16 +123,19 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 		const float EndAlpha = static_cast<float>(StepIndex + 1) / static_cast<float>(NumSteps);
 		const FVector StepStart = FMath::Lerp(PreviousLocation, CurrentLocation, StartAlpha);
 		const FVector StepEnd = FMath::Lerp(PreviousLocation, CurrentLocation, EndAlpha);
+		const FQuat StepRotation = FQuat::Slerp(
+			PreviousTransform.GetRotation(), CurrentTransform.GetRotation(), EndAlpha).GetNormalized();
 
 		TArray<FHitResult> Hits;
-		const bool bHit = World->SweepMultiByChannel(Hits, StepStart, StepEnd, CurrentTransform.GetRotation(),
-			TraceChannel.GetValue(), Shape, QueryParams);
-		
+		const FCollisionObjectQueryParams ObjectQueryParams(TraceChannel.GetValue());
+		const bool bHit = World->SweepMultiByObjectType(Hits, StepStart, StepEnd, StepRotation,
+			ObjectQueryParams, Shape, QueryParams);
+
 		if (bDrawDebug)
 		{
 			const float DrawTime = 0.25f;
 			const FColor DebugColor = bHit ? FColor::Red : FColor::Green;
-			const FQuat ShapeRotation = CurrentTransform.GetRotation();
+			const FQuat ShapeRotation = StepRotation;
 
 			switch (CollisionShape)
 			{
@@ -137,12 +159,23 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 		for (const FHitResult& Hit : Hits)
 		{
 			AActor* HitActor = Hit.GetActor();
-			if (!HitActor || HitActor == OwnerActor) continue;
-			if (HasAlreadyProcessedTarget(MeshComp, HitActor)) continue;
+			const bool bSelfHit = HitActor == OwnerActor;
+			const bool bAlreadyProcessed = HasAlreadyProcessedTarget(Window, HitActor);
+			if (!HitActor || bSelfHit) continue;
+
+			// Object responses can be misconfigured on individual components. Predicted reactions are actor-to-actor
+			// combat events, so never mark or process world geometry and other non-pawn actors as targets.
+			APawn* HitPawn = Cast<APawn>(HitActor);
+			if (!HitPawn)
+			{
+				continue;
+			}
+
+			if (bAlreadyProcessed) continue;
 
 			// Mark before prediction so overlapping sub-sweeps cannot replay the hit.
-			MarkTargetProcessed(MeshComp, HitActor);
-			TryPlayPredictedReaction(OwnerActor, HitActor);
+			MarkTargetProcessed(Window, HitActor);
+			HandleCollisionTarget(OwnerActor, HitActor);
 		}
 	}
 }
@@ -164,27 +197,78 @@ FCollisionShape UPP_CollisionNotifyState::MakeCollisionShape() const
 	}
 }
 
-bool UPP_CollisionNotifyState::HasAlreadyProcessedTarget(USkeletalMeshComponent* MeshComp, AActor* TargetActor) const
+bool UPP_CollisionNotifyState::HasAlreadyProcessedTarget(
+	const FPP_NotifyRuntimeWindow& Window, AActor* TargetActor)
 {
-	if (!MeshComp || !TargetActor) return true;
-
-	const TWeakObjectPtr<USkeletalMeshComponent> MeshKey(MeshComp);
-	const FPP_NotifyRuntimeWindow* Window = ActiveWindowsByMesh.Find(MeshKey);
-	if (!Window) return false;
+	if (!TargetActor) return true;
 
 	const TWeakObjectPtr<AActor> TargetKey(TargetActor);
-	return Window->ProcessedTargets.Contains(TargetKey);
+	return Window.ProcessedTargets.Contains(TargetKey);
 }
 
-void UPP_CollisionNotifyState::MarkTargetProcessed(USkeletalMeshComponent* MeshComp, AActor* TargetActor)
+void UPP_CollisionNotifyState::MarkTargetProcessed(FPP_NotifyRuntimeWindow& Window, AActor* TargetActor)
 {
-	if (!MeshComp || !TargetActor) return;
-
-	const TWeakObjectPtr<USkeletalMeshComponent> MeshKey(MeshComp);
-	FPP_NotifyRuntimeWindow& Window = ActiveWindowsByMesh.FindOrAdd(MeshKey);
+	if (!TargetActor) return;
 
 	const TWeakObjectPtr<AActor> TargetKey(TargetActor);
 	Window.ProcessedTargets.Add(TargetKey);
+}
+
+void UPP_CollisionNotifyState::BuildReactionSettings(
+	FPP_ReactionTransformSettings& OutTransformSettings,
+	FPP_ReactionDefenseSettings& OutDefenseSettings,
+	FPP_ReactionDamageSettings& OutDamageSettings) const
+{
+	OutTransformSettings.MovementSettings.MoveDirection = MoveDirection;
+	OutTransformSettings.MovementSettings.Recipient = MovementRecipient;
+	OutTransformSettings.MovementSettings.ReferenceActorSource = MovementReferenceActorSource;
+	OutTransformSettings.MovementSettings.MoveDistance = MoveDistance;
+	OutTransformSettings.MovementSettings.LateralOffsetMode = LateralOffsetMode;
+	OutTransformSettings.MovementSettings.LateralOffset = LateralOffset;
+	OutTransformSettings.MovementSettings.bSweep = bSweepMovement;
+	OutTransformSettings.MovementSettings.TeleportType = MovementTeleportType;
+	OutTransformSettings.MovementSettings.ClientInterpolationSpeed = ClientInterpolationSpeed;
+
+	OutTransformSettings.RotationSettings.RotationDirection = RotationDirection;
+	OutTransformSettings.RotationSettings.Recipient = RotationRecipient;
+	OutTransformSettings.RotationSettings.ReferenceActorSource = RotationReferenceActorSource;
+	OutTransformSettings.RotationSettings.DirectionToFace = DirectionToFace;
+	OutTransformSettings.RotationSettings.TeleportType = RotationTeleportType;
+
+	OutDefenseSettings.Block.bBlockable = bBlockable;
+	OutDefenseSettings.Block.BlockAngleDegrees = BlockAngleDegrees;
+	OutDefenseSettings.Block.bAllowMovementWhenBlocked = bAllowMovementWhenBlocked;
+	OutDefenseSettings.Block.bAllowRotationWhenBlocked = bAllowRotationWhenBlocked;
+	OutDefenseSettings.Dodge.bDodgeable = bDodgeable;
+	OutDefenseSettings.SuperArmor.RequiredSuperArmor = RequiredSuperArmor;
+
+	OutDamageSettings.DamageEffects = DamageEffects;
+	OutDamageSettings.bApplyDamageWhenBlocked = bApplyDamageWhenBlocked;
+	OutDamageSettings.bApplyDamageWhenParried = bApplyDamageWhenParried;
+	OutDamageSettings.bApplyDamageWhenDodged = bApplyDamageWhenDodged;
+}
+
+void UPP_CollisionNotifyState::HandleCollisionTarget(AActor* AttackerActor, AActor* HitActor) const
+{
+	if (!AttackerActor || !HitActor || !PredictedReactionTag.IsValid()) return;
+
+	UPP_PredictionComponent* PredictionComponent =
+		AttackerActor->FindComponentByClass<UPP_PredictionComponent>();
+	if (!PredictionComponent) return;
+
+	FPP_ReactionTransformSettings TransformSettings;
+	FPP_ReactionDefenseSettings DefenseSettings;
+	FPP_ReactionDamageSettings DamageSettings;
+	BuildReactionSettings(TransformSettings, DefenseSettings, DamageSettings);
+
+	if (AttackerActor->HasAuthority())
+	{
+		PredictionComponent->RecordAuthoritativeCollision(
+			HitActor, PredictedReactionTag, TransformSettings, DefenseSettings, DamageSettings);
+		return;
+	}
+
+	TryPlayPredictedReaction(AttackerActor, HitActor);
 }
 
 void UPP_CollisionNotifyState::TryPlayPredictedReaction(AActor* AttackerActor, AActor* HitActor) const
@@ -212,40 +296,11 @@ void UPP_CollisionNotifyState::TryPlayPredictedReaction(AActor* AttackerActor, A
 	if (!PredictedReactionTag.IsValid()) return;
 
 	FPP_ReactionTransformSettings TransformSettings;
-
-TransformSettings.MovementSettings.MoveDirection = MoveDirection;
-TransformSettings.MovementSettings.Recipient = MovementRecipient;
-TransformSettings.MovementSettings.ReferenceActorSource = MovementReferenceActorSource;
-TransformSettings.MovementSettings.MoveDistance = MoveDistance;
-TransformSettings.MovementSettings.LateralOffsetMode = LateralOffsetMode;
-TransformSettings.MovementSettings.LateralOffset = LateralOffset;
-TransformSettings.MovementSettings.bSweep = bSweepMovement;
-TransformSettings.MovementSettings.TeleportType = MovementTeleportType;
-TransformSettings.MovementSettings.ClientInterpolationSpeed =
-ClientInterpolationSpeed;
-
-TransformSettings.RotationSettings.RotationDirection = RotationDirection;
-TransformSettings.RotationSettings.Recipient = RotationRecipient;
-TransformSettings.RotationSettings.ReferenceActorSource =
-RotationReferenceActorSource;
-TransformSettings.RotationSettings.DirectionToFace = DirectionToFace;
-TransformSettings.RotationSettings.TeleportType = RotationTeleportType;
-
 	FPP_ReactionDefenseSettings DefenseSettings;
-	DefenseSettings.Block.bBlockable = bBlockable;
-	DefenseSettings.Block.BlockAngleDegrees = BlockAngleDegrees;
-	DefenseSettings.Block.bAllowMovementWhenBlocked = bAllowMovementWhenBlocked;
-	DefenseSettings.Block.bAllowRotationWhenBlocked = bAllowRotationWhenBlocked;
-	DefenseSettings.Dodge.bDodgeable = bDodgeable;
-	DefenseSettings.SuperArmor.RequiredSuperArmor = RequiredSuperArmor;
-
 	FPP_ReactionDamageSettings DamageSettings;
-	DamageSettings.DamageEffects = DamageEffects;
-	DamageSettings.bApplyDamageWhenBlocked = bApplyDamageWhenBlocked;
-	DamageSettings.bApplyDamageWhenParried = bApplyDamageWhenParried;
-	DamageSettings.bApplyDamageWhenDodged = bApplyDamageWhenDodged;
+	BuildReactionSettings(TransformSettings, DefenseSettings, DamageSettings);
 
-PredictionComponent->PlayPredictedReactionOnTargetProxy(
+	PredictionComponent->PlayPredictedReactionOnTargetProxy(
 		HitActor,
 		PredictedReactionTag,
 		TransformSettings,

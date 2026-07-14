@@ -14,6 +14,15 @@ class UEnhancedInputComponent;
 class UGameplayAbility;
 struct FInputActionValue;
 
+enum class EPP_AbilityPressResult : uint8
+{
+	NotHandled,
+	Handled,
+	Activated,
+	BlockedByMontage,
+	BlockedOther
+};
+
 /** Runtime state for one active ability combo chain. */
 struct FPP_InputActiveComboChain
 {
@@ -65,6 +74,20 @@ public:
 		meta=(EditCondition="bRetryHeldAbilityActivation"))
 	FGameplayTagContainer HeldActivationRetryIncludedInputTags;
 
+	/** Keeps only the most recent ability press made during a montage lockout. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="PPInput|Ability Buffer")
+	bool bBufferAbilityInputDuringMontageLockout = true;
+
+	/** Maximum time a montage-locked press remains buffered. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="PPInput|Ability Buffer",
+		meta=(EditCondition="bBufferAbilityInputDuringMontageLockout", ClampMin="0.0", UIMin="0.0", Units="Seconds"))
+	float AbilityInputBufferDuration = 0.5f;
+
+	/** How often the single buffered press checks the montage interrupt point. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="PPInput|Ability Buffer",
+		meta=(EditCondition="bBufferAbilityInputDuringMontageLockout", ClampMin="0.02", UIMin="0.02", Units="Seconds"))
+	float AbilityInputBufferRetryInterval = 0.02f;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -86,8 +109,11 @@ private:
 	bool DoesSpecMatchInputTag(const FGameplayAbilitySpec& Spec, const FGameplayTag& InputTag) const;
 	bool HasAbilityForInputTag(FGameplayTag InputTag) const;
 	bool CanLocallyActivateSpec(const FGameplayAbilitySpec& Spec) const;
-	bool TryHandleAbilityPressed(FGameplayTag InputTag, bool bSendInputPressedEvent);
-	bool TryActivateComboAbility(const FGameplayAbilitySpec& RequestedAbilitySpec, bool& bOutComboHandled);
+	bool IsSpecBlockedByMontageLockout(const FGameplayAbilitySpec& Spec) const;
+	EPP_AbilityPressResult TryHandleAbilityPressed(FGameplayTag InputTag, bool bSendInputPressedEvent);
+	EPP_AbilityPressResult TryActivateComboAbility(
+		const FGameplayAbilitySpec& RequestedAbilitySpec, bool& bOutComboHandled);
+	void SendInputPressedToActiveSpec(FGameplayAbilitySpec& Spec) const;
 	void UpdateComboChain(FGameplayAbilitySpecHandle StarterHandle, const FGameplayAbilitySpec& CurrentAbilitySpec);
 	void ClearComboChain(FGameplayAbilitySpecHandle StarterHandle);
 	void ClearAllComboChains();
@@ -98,6 +124,13 @@ private:
 	void StopHeldActivationRetry(FGameplayTag InputTag);
 	void StopAllHeldActivationRetries();
 	void RetryHeldActivation(FGameplayTag InputTag);
+	void BufferAbilityInput(FGameplayTag InputTag);
+	void RetryBufferedAbilityInput();
+	void ClearBufferedAbilityInput();
+	void TrackPendingSelfRetrigger(FGameplayAbilitySpecHandle AbilityHandle);
+	void ResolvePendingSelfRetrigger(
+		FGameplayAbilitySpecHandle AbilityHandle, int16 PredictionKey, bool bRejected);
+	void RetryBufferedAbilityInputAfterPredictionResolution();
 
 	void HandleActionPressed(FGameplayTag InputTag);
 	void HandleActionReleased(FGameplayTag InputTag);
@@ -121,6 +154,19 @@ private:
 	TMap<FGameplayTag, FTimerHandle> HeldActivationRetryTimers;
 	/** Input tags that are currently held. */
 	TSet<FGameplayTag> HeldActivationInputTags;
+	/** Last-input-wins buffer used only while another ability owns the montage lockout. */
+	FGameplayTag BufferedAbilityInputTag;
+	FTimerHandle BufferedAbilityInputTimer;
+	double BufferedAbilityInputExpirationTime = 0.0;
+	/**
+	 * One outstanding locally predicted self-retrigger per ability spec. A later press may stay in
+	 * the shared input buffer, but cannot generate another prediction key until this one resolves.
+	 */
+	TMap<FGameplayAbilitySpecHandle, int16> PendingSelfRetriggerPredictionKeys;
+	/** Defers rejection retries until GAS has finished ending the rejected ability instance. */
+	FTimerHandle SelfRetriggerResolutionRetryTimer;
+	/** Prevents two Enhanced Input callbacks in one frame from both starting an ability. */
+	uint64 LastAbilityActivationFrame = MAX_uint64;
 
 	/** Controller that owns the injected input component. */
 	TWeakObjectPtr<APlayerController> CachedPlayerController;
