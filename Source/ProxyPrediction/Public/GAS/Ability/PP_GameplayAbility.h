@@ -75,6 +75,10 @@ public:
 	float GetComboWindowDuration() const { return ComboWindowDuration; }
 	bool IsComboWindowOpen() const { return bComboWindowOpen; }
 	uint32 GetActivationSequenceId() const { return ActivationSequenceId; }
+	/** Uses the same montage lockout rule as CanActivateAbility without checking cooldown, cost, or tags. */
+	bool CanActivateDuringCurrentMontage(const FGameplayAbilityActorInfo* ActorInfo) const;
+	/** True only while this ability owns a progress-gated montage that may safely replace itself. */
+	bool IsMontageGatedSelfRetrigger(const FGameplayAbilityActorInfo* ActorInfo) const;
 
 	/** Returns whether this ability should temporarily pause root motion when the owning character is blocked by another character capsule. */
 	bool IsRootMotionCharacterCollisionPauseEnabled() const { return bPauseRootMotionOnCharacterCollision; }

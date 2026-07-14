@@ -1,5 +1,4 @@
 #include "Prediction/Component/PP_PredictionComponent.h"
-
 #include "Combat/Component/PP_CombatComponent.h"
 #include "TimerManager.h"
 #include "AbilitySystemBlueprintLibrary.h"
@@ -19,9 +18,18 @@
 #include "AbilityMotion/Component/PP_AbilityMotionComponent.h"
 #include "AbilityMotion/Movement/PP_CharacterMovementComponent.h"
 
-
 namespace
 {
+	constexpr double PPPredictedRootMotionReconciliationTimeoutSeconds = 1.0;
+
+	float PP_GetRotationDistance(const FRotator& A, const FRotator& B)
+	{
+		return FMath::Max3(
+			FMath::Abs(FRotator::NormalizeAxis(A.Pitch - B.Pitch)),
+			FMath::Abs(FRotator::NormalizeAxis(A.Yaw - B.Yaw)),
+			FMath::Abs(FRotator::NormalizeAxis(A.Roll - B.Roll)));
+	}
+
 	template <typename TEnum>
 	bool PP_IsValidReactionEnumValue(TEnum Value)
 	{
@@ -29,29 +37,9 @@ namespace
 		return Enum && Enum->IsValidEnumValue(static_cast<int64>(Value));
 	}
 
-	static void PP_PrepareCharacterForReactionRootMotion
-	(AActor* Actor, const TCHAR* Role, int32 PredictionId,
-	 FGameplayTag ReactionTag)
-	{
-		ACharacter* Character = Cast<ACharacter>(Actor);
-		if (!Character) return;
-
-		UCharacterMovementComponent* MovementComponent = Character->GetCharacterMovement();
-		if (!MovementComponent) return;
-
-		MovementComponent->StopMovementImmediately();
-		MovementComponent->ClearAccumulatedForces();
-		Character->ConsumeMovementInputVector();
-		MovementComponent->Velocity = FVector::ZeroVector;
-		MovementComponent->UpdateComponentVelocity();
-	}
-
 	static void PP_SetOwnerMontageTrackCorrectionSuppressed
 	(UCharacterMovementComponent* MovementComponent,
-	 bool bSuppressed,
-	 const FPP_ReactionPredictionContext& Context,
-	 AActor* TargetActor, FGameplayTag ReactionTag,
-	 const TCHAR* Reason)
+	 bool bSuppressed)
 	{
 		UPP_CharacterMovementComponent* SyncMoveComponent =
 			Cast<UPP_CharacterMovementComponent>(MovementComponent);
@@ -63,14 +51,532 @@ namespace
 
 UPP_PredictionComponent::UPP_PredictionComponent()
 {
-	PrimaryComponentTick.bCanEverTick = false;
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.bStartWithTickEnabled = false;
+	PrimaryComponentTick.TickInterval = 0.0f;
+	PrimaryComponentTick.TickGroup = TG_PrePhysics;
 	SetIsReplicatedByDefault(true);
 }
 
 void UPP_PredictionComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	StopAllClientReactionMovementInterpolations();
+	AuthoritativeCollisionRecords.Reset();
+	PendingServerReactionRequests.Reset();
+	for (const FPP_DeferredServerReactionFromCollision& State : DeferredServerReactionsFromCollision)
+	{
+		if (UCharacterMovementComponent* MovementComponent = State.MovementComponent.Get())
+		{
+			MovementComponent->RemoveTickPrerequisiteComponent(this);
+		}
+	}
+	DeferredServerReactionsFromCollision.Reset();
+	for (const FPP_OwnerFinalReconciliationGraceState& State : OwnerFinalReconciliationGraceStates)
+	{
+		if (State.bHoldMovementCorrections)
+		{
+			if (UPP_CharacterMovementComponent* MovementComponent =
+				Cast<UPP_CharacterMovementComponent>(State.MovementComponent.Get()))
+			{
+				MovementComponent->SetIgnoreServerRootMotionMontageTrackCorrection(false);
+			}
+		}
+	}
+	OwnerFinalReconciliationGraceStates.Reset();
+	while (!PredictedProxyRootMotionReconciliations.IsEmpty())
+	{
+		RemovePredictedProxyRootMotionReconciliation(
+			PredictedProxyRootMotionReconciliations.Num() - 1);
+	}
 	Super::EndPlay(EndPlayReason);
+}
+
+void UPP_PredictionComponent::TickComponent(
+	float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	ProcessDeferredServerReactionsFromCollision();
+	UpdatePredictedProxyRootMotionReconciliations();
+
+	if (PredictedProxyRootMotionReconciliations.IsEmpty() &&
+		DeferredServerReactionsFromCollision.IsEmpty())
+	{
+		SetComponentTickEnabled(false);
+	}
+}
+
+void UPP_PredictionComponent::BeginPredictedProxyRootMotionReconciliation(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor,
+	FGameplayTag ReactionTag)
+{
+	ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
+	UWorld* World = GetWorld();
+	if (!World || !Context.IsValid() || !TargetCharacter || TargetCharacter->IsLocallyControlled() ||
+		!ReactionData || !ReactionTag.IsValid())
+	{
+		return;
+	}
+
+	FPP_ReactionDataEntry Reaction;
+	if (!ReactionData->FindReaction(ReactionTag, Reaction) || !Reaction.Montage) return;
+
+	for (int32 Index = PredictedProxyRootMotionReconciliations.Num() - 1; Index >= 0; --Index)
+	{
+		if (PredictedProxyRootMotionReconciliations[Index].TargetCharacter.Get() == TargetCharacter)
+		{
+			RemovePredictedProxyRootMotionReconciliation(Index);
+		}
+	}
+
+	FPP_PredictedProxyRootMotionReconciliation& State =
+		PredictedProxyRootMotionReconciliations.AddDefaulted_GetRef();
+	State.TargetCharacter = TargetCharacter;
+	State.Montage = Reaction.Montage;
+	const USkeletalMeshComponent* TargetMesh = TargetCharacter->GetMesh();
+	const UAnimInstance* AnimInstance = TargetMesh ? TargetMesh->GetAnimInstance() : nullptr;
+	const float CurrentMontagePosition = AnimInstance
+		? AnimInstance->Montage_GetPosition(Reaction.Montage)
+		: GetReactionStartPosition(Reaction);
+	const float MontagePlayRate = AnimInstance
+		? FMath::Abs(AnimInstance->Montage_GetPlayRate(Reaction.Montage))
+		: 1.0f;
+	const double RemainingMontageSeconds = MontagePlayRate > KINDA_SMALL_NUMBER
+		? FMath::Max(0.0f, Reaction.Montage->GetPlayLength() - CurrentMontagePosition) / MontagePlayRate
+		: 0.0;
+	State.ExpireTimeSeconds = World->GetTimeSeconds() + FMath::Max(
+		PPPredictedRootMotionReconciliationTimeoutSeconds, RemainingMontageSeconds + 0.5);
+
+	if (UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement())
+	{
+		// Ensure replicated root-motion replay is suppressed before Character Movement can consume it.
+		MovementComponent->AddTickPrerequisiteComponent(this);
+	}
+
+	TargetCharacter->RootMotionRepMoves.Reset();
+	SetComponentTickEnabled(true);
+}
+
+void UPP_PredictionComponent::UpdatePredictedProxyRootMotionReconciliations()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		while (!PredictedProxyRootMotionReconciliations.IsEmpty())
+		{
+			RemovePredictedProxyRootMotionReconciliation(
+				PredictedProxyRootMotionReconciliations.Num() - 1);
+		}
+		return;
+	}
+
+	const double NowSeconds = World->GetTimeSeconds();
+	for (int32 StateIndex = PredictedProxyRootMotionReconciliations.Num() - 1; StateIndex >= 0; --StateIndex)
+	{
+		FPP_PredictedProxyRootMotionReconciliation& State =
+			PredictedProxyRootMotionReconciliations[StateIndex];
+		ACharacter* TargetCharacter = State.TargetCharacter.Get();
+		UAnimMontage* Montage = State.Montage.Get();
+		if (!TargetCharacter || !Montage || NowSeconds >= State.ExpireTimeSeconds)
+		{
+			RemovePredictedProxyRootMotionReconciliation(StateIndex);
+			continue;
+		}
+
+		UAnimInstance* AnimInstance = TargetCharacter->GetMesh()
+			? TargetCharacter->GetMesh()->GetAnimInstance()
+			: nullptr;
+		const bool bPredictedMontageStillPlaying =
+			AnimInstance && AnimInstance->Montage_IsPlaying(Montage);
+		const UAnimSequenceBase* ExpectedReplicatedAnimation = Montage->IsDynamicMontage()
+			? Montage->GetFirstAnimReference()
+			: Montage;
+		for (int32 MoveIndex = TargetCharacter->RootMotionRepMoves.Num() - 1; MoveIndex >= 0; --MoveIndex)
+		{
+			const FRepRootMotionMontage& RootMotion =
+				TargetCharacter->RootMotionRepMoves[MoveIndex].RootMotion;
+			if (RootMotion.Animation.Get() != ExpectedReplicatedAnimation) continue;
+
+			TargetCharacter->RootMotionRepMoves.RemoveAtSwap(MoveIndex, 1, EAllowShrinking::No);
+		}
+
+		if (!bPredictedMontageStillPlaying)
+		{
+			RemovePredictedProxyRootMotionReconciliation(StateIndex);
+		}
+	}
+}
+
+void UPP_PredictionComponent::RemovePredictedProxyRootMotionReconciliation(int32 Index)
+{
+	if (!PredictedProxyRootMotionReconciliations.IsValidIndex(Index)) return;
+
+	if (ACharacter* TargetCharacter = PredictedProxyRootMotionReconciliations[Index].TargetCharacter.Get())
+	{
+		if (UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement())
+		{
+			MovementComponent->RemoveTickPrerequisiteComponent(this);
+		}
+	}
+
+	PredictedProxyRootMotionReconciliations.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+}
+
+void UPP_PredictionComponent::RecordAuthoritativeCollision(
+	AActor* TargetActor,
+	FGameplayTag ReactionTag,
+	const FPP_ReactionTransformSettings& TransformSettings,
+	const FPP_ReactionDefenseSettings& DefenseSettings,
+	const FPP_ReactionDamageSettings& DamageSettings)
+{
+	AActor* OwnerActor = GetOwner();
+	UWorld* World = GetWorld();
+	if (!OwnerActor || !OwnerActor->HasAuthority() || !World || !TargetActor ||
+		TargetActor == OwnerActor || !ReactionTag.IsValid())
+	{
+		return;
+	}
+
+	// A listen-server or standalone owner has no remote predicting client request to match.
+	const APawn* OwnerPawn = Cast<APawn>(OwnerActor);
+	if (OwnerPawn && OwnerPawn->IsLocallyControlled())
+	{
+		const FPP_ReactionPredictionContext Context = MakeReactionPredictionContext();
+		DeferServerConfirmedReactionFromCollision(Context, TargetActor, ReactionTag,
+			TransformSettings, DefenseSettings, DamageSettings);
+		return;
+	}
+
+	RemoveExpiredAuthoritativeCollisionState();
+
+	for (int32 Index = 0; Index < PendingServerReactionRequests.Num(); ++Index)
+	{
+		const FPP_PendingServerReactionRequest& Request = PendingServerReactionRequests[Index];
+		if (Request.TargetActor.Get() != TargetActor || Request.ReactionTag != ReactionTag) continue;
+
+		const FPP_ReactionPredictionContext Context = Request.Context;
+		PendingServerReactionRequests.RemoveAt(Index, 1, EAllowShrinking::No);
+		DeferServerConfirmedReactionFromCollision(Context, TargetActor, ReactionTag,
+			TransformSettings, DefenseSettings, DamageSettings);
+		return;
+	}
+
+	for (FPP_AuthoritativeCollisionRecord& ExistingRecord : AuthoritativeCollisionRecords)
+	{
+		if (ExistingRecord.TargetActor.Get() != TargetActor || ExistingRecord.ReactionTag != ReactionTag) continue;
+
+		ExistingRecord.TransformSettings = TransformSettings;
+		ExistingRecord.DefenseSettings = DefenseSettings;
+		ExistingRecord.DamageSettings = DamageSettings;
+		ExistingRecord.TimeSeconds = World->GetTimeSeconds();
+		return;
+	}
+
+	if (AuthoritativeCollisionRecords.Num() >= MaxAuthoritativeCollisionRecords)
+	{
+		AuthoritativeCollisionRecords.RemoveAt(0, 1, EAllowShrinking::No);
+	}
+
+	FPP_AuthoritativeCollisionRecord& Record = AuthoritativeCollisionRecords.AddDefaulted_GetRef();
+	Record.TargetActor = TargetActor;
+	Record.ReactionTag = ReactionTag;
+	Record.TransformSettings = TransformSettings;
+	Record.DefenseSettings = DefenseSettings;
+	Record.DamageSettings = DamageSettings;
+	Record.TimeSeconds = World->GetTimeSeconds();
+}
+
+void UPP_PredictionComponent::DeferServerConfirmedReactionFromCollision(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor,
+	FGameplayTag ReactionTag,
+	const FPP_ReactionTransformSettings& TransformSettings,
+	const FPP_ReactionDefenseSettings& DefenseSettings,
+	const FPP_ReactionDamageSettings& DamageSettings)
+{
+	UWorld* World = GetWorld();
+	if (!World || !Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return;
+
+	// Collision notifies run during an actor's animation tick. Starting root motion on another
+	// character here is tick-order dependent: if that target already moved this frame, its mesh can
+	// advance the montage once before Character Movement can consume the first root-motion slice.
+	// Queue until the following frame and make target movement depend on this component for that
+	// frame. Request-after-collision processing remains immediate and does not use this queue.
+	for (FPP_DeferredServerReactionFromCollision& Existing : DeferredServerReactionsFromCollision)
+	{
+		if (Existing.Context.PredictionId != Context.PredictionId) continue;
+
+		Existing.TargetActor = TargetActor;
+		Existing.ReactionTag = ReactionTag;
+		Existing.TransformSettings = TransformSettings;
+		Existing.DefenseSettings = DefenseSettings;
+		Existing.DamageSettings = DamageSettings;
+		return;
+	}
+
+	FPP_DeferredServerReactionFromCollision& State =
+		DeferredServerReactionsFromCollision.AddDefaulted_GetRef();
+	State.Context = Context;
+	State.TargetActor = TargetActor;
+	State.ReactionTag = ReactionTag;
+	State.TransformSettings = TransformSettings;
+	State.DefenseSettings = DefenseSettings;
+	State.DamageSettings = DamageSettings;
+	State.EarliestFrameCounter = GFrameCounter + 1;
+
+	if (ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor))
+	{
+		State.MovementComponent = TargetCharacter->GetCharacterMovement();
+		if (UCharacterMovementComponent* MovementComponent = State.MovementComponent.Get())
+		{
+			MovementComponent->AddTickPrerequisiteComponent(this);
+		}
+	}
+
+	SetComponentTickEnabled(true);
+}
+
+void UPP_PredictionComponent::ProcessDeferredServerReactionsFromCollision()
+{
+	for (int32 Index = DeferredServerReactionsFromCollision.Num() - 1; Index >= 0; --Index)
+	{
+		if (GFrameCounter < DeferredServerReactionsFromCollision[Index].EarliestFrameCounter) continue;
+
+		const FPP_DeferredServerReactionFromCollision State =
+			DeferredServerReactionsFromCollision[Index];
+		DeferredServerReactionsFromCollision.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+
+		UCharacterMovementComponent* MovementComponent = State.MovementComponent.Get();
+		const bool bMovementStillRequired = MovementComponent &&
+			DeferredServerReactionsFromCollision.ContainsByPredicate(
+				[MovementComponent](const FPP_DeferredServerReactionFromCollision& Other)
+				{
+					return Other.MovementComponent.Get() == MovementComponent;
+				});
+		if (MovementComponent && !bMovementStillRequired)
+		{
+			MovementComponent->RemoveTickPrerequisiteComponent(this);
+		}
+
+		AActor* TargetActor = State.TargetActor.Get();
+		if (!TargetActor) continue;
+
+		if (!ProcessServerConfirmedReaction(
+			State.Context, TargetActor, State.ReactionTag,
+			State.TransformSettings, State.DefenseSettings, State.DamageSettings))
+		{
+			ClientRejectPredictedReaction(
+				State.Context, TargetActor, State.ReactionTag,
+				TargetActor->GetActorLocation(), TargetActor->GetActorRotation());
+		}
+	}
+}
+
+void UPP_PredictionComponent::ScheduleServerRootMotionStartAlignment(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor,
+	FGameplayTag ReactionTag,
+	UAnimMontage* Montage,
+	float StartPosition,
+	const FVector& ServerStartLocation,
+	int32 Attempt)
+{
+	UWorld* World = GetWorld();
+	if (!World || !GetOwner() || !GetOwner()->HasAuthority() || !Context.IsValid() ||
+		!TargetActor || !Montage || !ReactionTag.IsValid())
+	{
+		return;
+	}
+
+	const TWeakObjectPtr<UPP_PredictionComponent> WeakThis(this);
+	const TWeakObjectPtr<AActor> WeakTarget(TargetActor);
+	const TWeakObjectPtr<UAnimMontage> WeakMontage(Montage);
+	const FPP_ReactionPredictionContext CapturedContext = Context;
+	const FGameplayTag CapturedReactionTag = ReactionTag;
+
+	// Sample after animation/movement have had a chance to advance the montage. Depending on actor
+	// tick order, the first next-tick callback can still see the montage at StartPosition, so retry a
+	// few frames instead of treating "not advanced yet" as proof that no alignment is needed.
+	World->GetTimerManager().SetTimerForNextTick(
+		[WeakThis, WeakTarget, WeakMontage, CapturedContext, CapturedReactionTag,
+			StartPosition, ServerStartLocation, Attempt]()
+		{
+			UPP_PredictionComponent* StrongThis = WeakThis.Get();
+			ACharacter* StrongTarget = Cast<ACharacter>(WeakTarget.Get());
+			UAnimMontage* StrongMontage = WeakMontage.Get();
+			if (!StrongThis || !StrongTarget || !StrongMontage) return;
+
+			USkeletalMeshComponent* Mesh = StrongTarget->GetMesh();
+			UAnimInstance* AnimInstance = Mesh ? Mesh->GetAnimInstance() : nullptr;
+			UCharacterMovementComponent* MovementComponent = StrongTarget->GetCharacterMovement();
+			if (!AnimInstance || !MovementComponent) return;
+
+			const float CurrentPosition = AnimInstance->Montage_GetPosition(StrongMontage);
+			if (CurrentPosition <= StartPosition + KINDA_SMALL_NUMBER)
+			{
+				if (Attempt < 3 && AnimInstance->Montage_IsPlaying(StrongMontage))
+				{
+					StrongThis->ScheduleServerRootMotionStartAlignment(
+						CapturedContext, StrongTarget, CapturedReactionTag, StrongMontage,
+						StartPosition, ServerStartLocation, Attempt + 1);
+				}
+				return;
+			}
+
+			// Build the position the authoritative character should have reached from the montage curve,
+			// measured from the location captured immediately before montage playback. A collision notify
+			// can start another actor's montage at an awkward point in the frame; in that case animation
+			// advances but Character Movement misses that initial root-motion slice. This comparison finds
+			// only that missing start displacement and does not continuously steer the reaction.
+			const FTransform LocalRootMotion = StrongMontage->ExtractRootMotionFromTrackRange(
+				StartPosition, CurrentPosition, FAnimExtractContext());
+			const FTransform WorldRootMotion = MovementComponent->ConvertLocalRootMotionToWorld(
+				LocalRootMotion, StrongTarget->GetWorld() ? StrongTarget->GetWorld()->GetDeltaSeconds() : 0.0f);
+
+			const FVector ActualLocation = StrongTarget->GetActorLocation();
+			FVector ExpectedLocation = ServerStartLocation + WorldRootMotion.GetTranslation();
+			// Walking Character Movement intentionally discards montage Z translation, so matching Z here
+			// would manufacture a vertical correction that normal montage movement never applied.
+			ExpectedLocation.Z = ActualLocation.Z;
+			const float MissingDistance = FVector::Dist2D(ActualLocation, ExpectedLocation);
+			const float MinDistance = FMath::Max(0.0f, StrongThis->ServerRootMotionStartAlignmentMinDistance);
+			const float MaxDistance = FMath::Max(MinDistance, StrongThis->ServerRootMotionStartAlignmentMaxDistance);
+			// Leave already-close starts alone (the normal replication path handles their small error), and
+			// reject unusually large differences because they are more likely stale/bad state than one lost
+			// root-motion slice. The accepted correction is swept below so world collision is still respected.
+			const bool bApplyAlignment = MissingDistance > MinDistance && MissingDistance <= MaxDistance;
+
+			if (!bApplyAlignment) return;
+
+			// This is an authoritative alignment, not a teleport through geometry. A blocking sweep may stop
+			// short of ExpectedLocation.
+			StrongTarget->SetActorLocation(ExpectedLocation, true, nullptr, ETeleportType::None);
+		});
+}
+
+void UPP_PredictionComponent::RemoveExpiredAuthoritativeCollisionState()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		AuthoritativeCollisionRecords.Reset();
+		PendingServerReactionRequests.Reset();
+		return;
+	}
+
+	const double NowSeconds = World->GetTimeSeconds();
+	const double Timeout = FMath::Max(0.1f, AuthoritativeCollisionMatchTimeout);
+
+	for (int32 Index = AuthoritativeCollisionRecords.Num() - 1; Index >= 0; --Index)
+	{
+		const FPP_AuthoritativeCollisionRecord& Record = AuthoritativeCollisionRecords[Index];
+		if (!Record.TargetActor.IsValid() || NowSeconds - Record.TimeSeconds > Timeout)
+		{
+			AuthoritativeCollisionRecords.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+		}
+	}
+
+	for (int32 Index = PendingServerReactionRequests.Num() - 1; Index >= 0; --Index)
+	{
+		const FPP_PendingServerReactionRequest& Request = PendingServerReactionRequests[Index];
+		// Valid pending requests are removed by their rejection timer so the client always receives a result.
+		if (!Request.TargetActor.IsValid())
+		{
+			PendingServerReactionRequests.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+		}
+	}
+}
+
+bool UPP_PredictionComponent::ConsumeAuthoritativeCollision(
+	AActor* TargetActor,
+	FGameplayTag ReactionTag,
+	FPP_ReactionTransformSettings& OutTransformSettings,
+	FPP_ReactionDefenseSettings& OutDefenseSettings,
+	FPP_ReactionDamageSettings& OutDamageSettings)
+{
+	RemoveExpiredAuthoritativeCollisionState();
+
+	for (int32 Index = 0; Index < AuthoritativeCollisionRecords.Num(); ++Index)
+	{
+		const FPP_AuthoritativeCollisionRecord& Record = AuthoritativeCollisionRecords[Index];
+		if (Record.TargetActor.Get() != TargetActor || Record.ReactionTag != ReactionTag) continue;
+
+		OutTransformSettings = Record.TransformSettings;
+		OutDefenseSettings = Record.DefenseSettings;
+		OutDamageSettings = Record.DamageSettings;
+		AuthoritativeCollisionRecords.RemoveAt(Index, 1, EAllowShrinking::No);
+		return true;
+	}
+
+	return false;
+}
+
+void UPP_PredictionComponent::QueuePendingServerReactionRequest(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor,
+	FGameplayTag ReactionTag)
+{
+	UWorld* World = GetWorld();
+	if (!World || !Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return;
+
+	RemoveExpiredAuthoritativeCollisionState();
+
+	for (FPP_PendingServerReactionRequest& ExistingRequest : PendingServerReactionRequests)
+	{
+		if (ExistingRequest.Context.PredictionId != Context.PredictionId) continue;
+
+		// A reliable RPC should not duplicate, but do not extend the validation window if it does.
+		return;
+	}
+
+	if (PendingServerReactionRequests.Num() >= MaxPendingServerReactionRequests)
+	{
+		const FPP_PendingServerReactionRequest EvictedRequest = PendingServerReactionRequests[0];
+		PendingServerReactionRequests.RemoveAt(0, 1, EAllowShrinking::No);
+		if (AActor* EvictedTarget = EvictedRequest.TargetActor.Get())
+		{
+			ClientRejectPredictedReaction(
+				EvictedRequest.Context, EvictedTarget, EvictedRequest.ReactionTag,
+				EvictedTarget->GetActorLocation(), EvictedTarget->GetActorRotation());
+		}
+	}
+
+	FPP_PendingServerReactionRequest& Request = PendingServerReactionRequests.AddDefaulted_GetRef();
+	Request.Context = Context;
+	Request.TargetActor = TargetActor;
+	Request.ReactionTag = ReactionTag;
+	Request.TimeSeconds = World->GetTimeSeconds();
+
+	const TWeakObjectPtr<UPP_PredictionComponent> WeakThis(this);
+	const TWeakObjectPtr<AActor> WeakTarget(TargetActor);
+	const FPP_ReactionPredictionContext CapturedContext = Context;
+	const FGameplayTag CapturedReactionTag = ReactionTag;
+	const float Timeout = FMath::Max(0.1f, AuthoritativeCollisionMatchTimeout);
+	FTimerHandle RejectionTimer;
+	World->GetTimerManager().SetTimer(RejectionTimer,
+		[WeakThis, WeakTarget, CapturedContext, CapturedReactionTag]()
+		{
+			UPP_PredictionComponent* StrongThis = WeakThis.Get();
+			AActor* StrongTarget = WeakTarget.Get();
+			if (!StrongThis || !StrongTarget) return;
+
+			for (int32 Index = 0; Index < StrongThis->PendingServerReactionRequests.Num(); ++Index)
+			{
+				const FPP_PendingServerReactionRequest& Pending =
+					StrongThis->PendingServerReactionRequests[Index];
+				if (Pending.Context.PredictionId != CapturedContext.PredictionId ||
+					Pending.TargetActor.Get() != StrongTarget || Pending.ReactionTag != CapturedReactionTag)
+				{
+					continue;
+				}
+
+				StrongThis->PendingServerReactionRequests.RemoveAt(Index, 1, EAllowShrinking::No);
+				StrongThis->ClientRejectPredictedReaction(
+					CapturedContext, StrongTarget, CapturedReactionTag,
+					StrongTarget->GetActorLocation(), StrongTarget->GetActorRotation());
+				return;
+			}
+		}, Timeout, false);
 }
 
 bool UPP_PredictionComponent::ConsumeServerReactionRequestBudget()
@@ -356,11 +862,47 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation
  FPP_ReactionDefenseSettings DefenseSettings,
  FPP_ReactionDamageSettings DamageSettings)
 {
-	ProcessServerConfirmedReaction(Context, TargetActor, ReactionTag, TransformSettings,
-		DefenseSettings, DamageSettings);
+	if (bRequireAuthoritativeCollisionMatch)
+	{
+		AActor* OwnerActor = GetOwner();
+		UWorld* World = GetWorld();
+		FPP_ReactionDataEntry Reaction;
+		if (!OwnerActor || !OwnerActor->HasAuthority() || !World || !Context.IsValid() || !TargetActor ||
+			TargetActor == OwnerActor || TargetActor->GetWorld() != World || !Cast<ACharacter>(TargetActor) ||
+			!ReactionTag.IsValid() || !ReactionData || !ReactionData->FindReaction(ReactionTag, Reaction))
+		{
+			return;
+		}
+
+		FPP_ReactionTransformSettings AuthoritativeTransformSettings;
+		FPP_ReactionDefenseSettings AuthoritativeDefenseSettings;
+		FPP_ReactionDamageSettings AuthoritativeDamageSettings;
+		if (ConsumeAuthoritativeCollision(TargetActor, ReactionTag,
+			AuthoritativeTransformSettings, AuthoritativeDefenseSettings, AuthoritativeDamageSettings))
+		{
+			if (!ProcessServerConfirmedReaction(Context, TargetActor, ReactionTag,
+				AuthoritativeTransformSettings, AuthoritativeDefenseSettings, AuthoritativeDamageSettings))
+			{
+				ClientRejectPredictedReaction(
+					Context, TargetActor, ReactionTag, TargetActor->GetActorLocation(), TargetActor->GetActorRotation());
+			}
+			return;
+		}
+
+		// The reliable RPC can arrive before the server montage reaches the same notify frame.
+		QueuePendingServerReactionRequest(Context, TargetActor, ReactionTag);
+		return;
+	}
+
+	if (!ProcessServerConfirmedReaction(Context, TargetActor, ReactionTag, TransformSettings,
+		DefenseSettings, DamageSettings))
+	{
+		ClientRejectPredictedReaction(
+			Context, TargetActor, ReactionTag, TargetActor->GetActorLocation(), TargetActor->GetActorRotation());
+	}
 }
 
-void UPP_PredictionComponent::ProcessServerConfirmedReaction(
+bool UPP_PredictionComponent::ProcessServerConfirmedReaction(
 	const FPP_ReactionPredictionContext& Context,
 	AActor* TargetActor,
 	FGameplayTag ReactionTag,
@@ -372,28 +914,28 @@ void UPP_PredictionComponent::ProcessServerConfirmedReaction(
 	AActor* OwnerActor = GetOwner();
 
 
-	if (!OwnerActor || !OwnerActor->HasAuthority()) return;
+	if (!OwnerActor || !OwnerActor->HasAuthority()) return false;
 
-	if (!Context.IsValid() || !TargetActor || !ReactionData || !ReactionTag.IsValid()) return;
-	if (!ConsumeServerReactionRequestBudget()) return;
+	if (!Context.IsValid() || !TargetActor || !ReactionData || !ReactionTag.IsValid()) return false;
+	if (!ConsumeServerReactionRequestBudget()) return false;
 	if (!PP_IsValidReactionEnumValue(DefenseSettings.SuperArmor.RequiredSuperArmor) ||
 		!FMath::IsFinite(DefenseSettings.Block.BlockAngleDegrees) ||
 		DefenseSettings.Block.BlockAngleDegrees < 0.0f || DefenseSettings.Block.BlockAngleDegrees > 180.0f ||
 		DamageSettings.DamageEffects.Num() > 16)
 	{
-		return;
+		return false;
 	}
 	for (const FPP_ReactionDamageEffect& DamageEffect : DamageSettings.DamageEffects)
 	{
-		if (!FMath::IsFinite(DamageEffect.EffectLevel) || DamageEffect.EffectLevel < 0.0f) return;
+		if (!FMath::IsFinite(DamageEffect.EffectLevel) || DamageEffect.EffectLevel < 0.0f) return false;
 	}
 
 	// Resolve defense from authoritative target tags and transforms.
 	const EPP_ReactionDefenseOutcome DefenseOutcome = ResolveDefenseOutcome(TargetActor, DefenseSettings);
 
 	FPP_ReactionDataEntry Reaction;
-	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return;
-	if (!CanServerAcceptPredictedReaction(TargetActor, ReactionTag, TransformSettings)) return;
+	if (!ReactionData->FindReaction(ReactionTag, Reaction)) return false;
+	if (!CanServerAcceptPredictedReaction(TargetActor, ReactionTag, TransformSettings)) return false;
 
 	FPP_ReactionTransformSettings ResolvedTransformSettings = TransformSettings;
 	if (DefenseOutcome == EPP_ReactionDefenseOutcome::Blocked ||
@@ -417,7 +959,7 @@ void UPP_PredictionComponent::ProcessServerConfirmedReaction(
 			FRotator(0.0f, OwnerPawn->GetControlRotation().Yaw, 0.0f);
 	}
 
-	if (!ValidateServerReactionRequest(TargetActor, Reaction, ResolvedTransformSettings)) return;
+	if (!ValidateServerReactionRequest(TargetActor, Reaction, ResolvedTransformSettings)) return false;
 
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
@@ -440,14 +982,21 @@ void UPP_PredictionComponent::ProcessServerConfirmedReaction(
 	if (bCleanHit)
 	{
 		ApplyTargetEffects(OwnerActor, TargetActor, Reaction);
-		PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+		const bool bServerMontagePlayed =
+			PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+		if (bServerMontagePlayed)
+		{
+			ScheduleServerRootMotionStartAlignment(
+				Context, TargetActor, ReactionTag, Reaction.Montage, StartPosition,
+				ServerStartLocation);
+		}
 	}
 	else
 	{
 		ApplyDefenseOutcomeEffects(TargetActor, DefenseOutcome);
 		MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag,
 			ServerStartLocation, ServerStartRotation, 0.0f, false);
-		return;
+		return true;
 	}
 
 
@@ -471,7 +1020,7 @@ void UPP_PredictionComponent::ProcessServerConfirmedReaction(
 
 			                                  const FVector ServerFinalLocation = StrongTarget->GetActorLocation();
 			                                  const FRotator ServerFinalRotation = StrongTarget->GetActorRotation();
-			                                  StrongThis->ClientFinishPredictedProxyReaction(
+				                                  StrongThis->ClientFinishPredictedProxyReaction(
 				                                  CapturedContext, StrongTarget, CapturedReactionTag,
 				                                  ServerFinalLocation, ServerFinalRotation);
 
@@ -495,9 +1044,12 @@ void UPP_PredictionComponent::ProcessServerConfirmedReaction(
 			ResolvedTransformSettings.MovementSettings.ClientInterpolationSpeed);
 	}
 
+	ClientConfirmPredictedReactionStart(
+		Context, TargetActor, ReactionTag, ServerStartLocation, ServerStartRotation);
 	MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag,
 	                               ServerStartLocation, ServerStartRotation,
 	                               ResolvedTransformSettings.MovementSettings.ClientInterpolationSpeed, true);
+	return true;
 }
 
 void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation
@@ -575,6 +1127,47 @@ void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation
 	SetReactionActorLocation(TargetActor, ServerStartLocation, ConfirmedMovementSettings, true);
 
 	PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true);
+}
+
+void UPP_PredictionComponent::ClientRejectPredictedReaction_Implementation(
+	FPP_ReactionPredictionContext Context,
+	AActor* TargetActor,
+	FGameplayTag ReactionTag,
+	FVector ServerLocation,
+	FRotator ServerRotation)
+{
+	// Reuse the established rejection path, but deliver it reliably only to the predicting owner.
+	MulticastPlayConfirmedReaction_Implementation(
+		Context, TargetActor, ReactionTag, ServerLocation, ServerRotation, 0.f, false);
+}
+
+void UPP_PredictionComponent::ClientConfirmPredictedReactionStart_Implementation(
+	FPP_ReactionPredictionContext Context,
+	AActor* TargetActor,
+	FGameplayTag ReactionTag,
+	FVector ServerStartLocation,
+	FRotator ServerStartRotation)
+{
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor || OwnerActor->HasAuthority() || !Context.IsValid() || !TargetActor ||
+		!ReactionTag.IsValid())
+	{
+		return;
+	}
+
+	RemoveExpiredPendingPredictedReactions();
+	for (const FPP_PendingPredictedReaction& Pending : PendingPredictedReactions)
+	{
+		if (Pending.TargetActor.Get() != TargetActor || Pending.PredictionId != Context.PredictionId ||
+			Pending.ReactionTag != ReactionTag || !Pending.bPlayedLocally)
+		{
+			continue;
+		}
+
+		BeginPredictedProxyRootMotionReconciliation(
+			Context, TargetActor, ReactionTag);
+		return;
+	}
 }
 
 
@@ -661,8 +1254,7 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation
 
 		// Keep normal capsule/server correction and smoothing alive. Only prevent root-motion
 		// correction RPCs from fast-forwarding the locally replayed montage track.
-		PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, true, Context, TargetActor, ReactionTag,
-		                                            TEXT("OwnerReactionStart"));
+		PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, true);
 	}
 
 	const float StartPosition = GetReactionStartPosition(Reaction);
@@ -711,9 +1303,7 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation
 
 				if (MovementComponent)
 				{
-					PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, false, Context, TargetActor,
-					                                            ReactionTag,
-					                                            TEXT("OwnerPlayFailed"));
+					PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, false);
 				}
 			}
 		}
@@ -769,12 +1359,6 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation
 					return;
 				}
 
-				if (StrongTargetActor)
-				{
-					StrongThis->ApplyOwnerPendingFinalReactionCorrection(CapturedContext, StrongTargetActor,
-					                                                     CapturedReactionTag, TEXT("OwnerReactionEnd"));
-				}
-
 				if (StrongSyncMovementComponent && bCapturedAppliedAbilityRootMotionSuppression)
 				{
 					StrongSyncMovementComponent->SetAbilityRootMotionSuppressed(
@@ -786,11 +1370,19 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation
 					StrongOwnerAnimInstance->SetRootMotionMode(CapturedSavedOwnerRootMotionMode);
 				}
 
-				if (StrongMovementComponent && bCapturedAppliedCorrectionSuppression)
+				// A large early final is blended while ordinary movement correction is still suppressed.
+				// Small or late finals preserve the existing replication-settle path.
+				bool bHoldMovementCorrectionsForFinalBlend = false;
+				if (StrongTargetActor)
 				{
-					PP_SetOwnerMontageTrackCorrectionSuppressed(StrongMovementComponent, false, CapturedContext,
-					                                            StrongTargetActor,
-					                                            CapturedReactionTag, TEXT("OwnerReactionEnd"));
+					bHoldMovementCorrectionsForFinalBlend = StrongThis->BeginOwnerFinalReconciliationGrace(
+						CapturedContext, StrongTargetActor, CapturedReactionTag);
+				}
+
+				if (StrongMovementComponent && bCapturedAppliedCorrectionSuppression &&
+					!bHoldMovementCorrectionsForFinalBlend)
+				{
+					PP_SetOwnerMontageTrackCorrectionSuppressed(StrongMovementComponent, false);
 				}
 			},
 			RemainingDuration,
@@ -819,8 +1411,7 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation
 
 			if (MovementComponent)
 			{
-				PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, false, Context, TargetActor, ReactionTag,
-				                                            TEXT("NoWorld"));
+				PP_SetOwnerMontageTrackCorrectionSuppressed(MovementComponent, false);
 			}
 		}
 	}
@@ -849,6 +1440,11 @@ void UPP_PredictionComponent::ClientFinishOwnerConfirmedReaction_Implementation
 
 	if (OwnerReactionCorrectionSuppressionCount == 0)
 	{
+		if (IsOwnerFinalReconciliationGraceActive(Context, TargetActor, ReactionTag))
+		{
+			return;
+		}
+
 		ApplyOwnerPendingFinalReactionCorrection(Context, TargetActor, ReactionTag,
 			TEXT("OwnerFinalArrivedAfterReaction"));
 	}
@@ -867,7 +1463,6 @@ void UPP_PredictionComponent::ClientFinishPredictedProxyReaction_Implementation
 	{
 		return;
 	}
-
 	const APawn* TargetPawn = Cast<APawn>(TargetActor);
 	if (TargetPawn && TargetPawn->IsLocallyControlled()) return;
 
@@ -1050,6 +1645,33 @@ bool UPP_PredictionComponent::ConsumeOwnerPendingFinalReactionCorrection
 	return false;
 }
 
+bool UPP_PredictionComponent::PeekOwnerPendingFinalReactionCorrection(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor,
+	FGameplayTag ReactionTag,
+	FVector& OutServerFinalLocation,
+	FRotator& OutServerFinalRotation)
+{
+	if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return false;
+
+	RemoveExpiredOwnerPendingFinalReactionCorrections();
+
+	for (int32 Index = OwnerPendingFinalReactionCorrections.Num() - 1; Index >= 0; --Index)
+	{
+		const FPP_OwnerPendingFinalReactionCorrection& Entry = OwnerPendingFinalReactionCorrections[Index];
+		if (Entry.TargetActor.Get() == TargetActor &&
+			Entry.ReactionTag == ReactionTag &&
+			Entry.PredictionId == Context.PredictionId)
+		{
+			OutServerFinalLocation = Entry.ServerFinalLocation;
+			OutServerFinalRotation = Entry.ServerFinalRotation;
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool UPP_PredictionComponent::ApplyOwnerPendingFinalReactionCorrection
 (const FPP_ReactionPredictionContext& Context,
  AActor* TargetActor, FGameplayTag ReactionTag,
@@ -1075,8 +1697,6 @@ bool UPP_PredictionComponent::ApplyOwnerPendingFinalReactionCorrection
 		FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Pitch - ClientFinalRotation.Pitch)),
 		FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Yaw - ClientFinalRotation.Yaw)),
 		FMath::Abs(FRotator::NormalizeAxis(ServerFinalRotation.Roll - ClientFinalRotation.Roll)));
-
-
 	const bool bShouldApplyLocation = Distance > FinalCorrectionTolerance;
 	const bool bShouldApplyRotation = RotationDistance > FinalRotationCorrectionTolerance;
 	const float SmoothSeconds = FMath::Max(0.f, OwnerFinalCorrectionSmoothSeconds);
@@ -1189,6 +1809,152 @@ void UPP_PredictionComponent::RemoveExpiredOwnerPendingFinalReactionCorrections(
 			OwnerPendingFinalReactionCorrections.RemoveAtSwap(Index);
 		}
 	}
+}
+
+bool UPP_PredictionComponent::IsOwnerFinalReconciliationGraceActive(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor,
+	FGameplayTag ReactionTag) const
+{
+	if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return false;
+
+	for (const FPP_OwnerFinalReconciliationGraceState& State : OwnerFinalReconciliationGraceStates)
+	{
+		if (State.TargetActor.Get() == TargetActor &&
+			State.ReactionTag == ReactionTag &&
+			State.PredictionId == Context.PredictionId)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool UPP_PredictionComponent::BeginOwnerFinalReconciliationGrace(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor,
+	FGameplayTag ReactionTag)
+{
+	if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return false;
+
+	for (const FPP_OwnerFinalReconciliationGraceState& Existing : OwnerFinalReconciliationGraceStates)
+	{
+		if (Existing.TargetActor.Get() == TargetActor &&
+			Existing.ReactionTag == ReactionTag &&
+			Existing.PredictionId == Context.PredictionId)
+		{
+			return Existing.bHoldMovementCorrections;
+		}
+	}
+
+	FVector ServerFinalLocation = FVector::ZeroVector;
+	FRotator ServerFinalRotation = FRotator::ZeroRotator;
+	const bool bHasEarlyFinal = PeekOwnerPendingFinalReactionCorrection(
+		Context, TargetActor, ReactionTag, ServerFinalLocation, ServerFinalRotation);
+	const float LocationGap = bHasEarlyFinal
+		? FVector::Dist(TargetActor->GetActorLocation(), ServerFinalLocation)
+		: 0.0f;
+	const float RotationGap = bHasEarlyFinal
+		? PP_GetRotationDistance(TargetActor->GetActorRotation(), ServerFinalRotation)
+		: 0.0f;
+	const float PreReleaseDistanceThreshold = FMath::Max(
+		FinalCorrectionTolerance, OwnerFinalPreReleaseSmoothMinDistance);
+	UPP_CharacterMovementComponent* MovementComponent = Cast<UPP_CharacterMovementComponent>(
+		Cast<ACharacter>(TargetActor) ? Cast<ACharacter>(TargetActor)->GetCharacterMovement() : nullptr);
+	const float SmoothSeconds = FMath::Max(0.0f, OwnerFinalCorrectionSmoothSeconds);
+	const bool bLargeEarlyGap =
+		bHasEarlyFinal &&
+		(LocationGap > PreReleaseDistanceThreshold ||
+		 RotationGap > FinalRotationCorrectionTolerance);
+	const bool bHoldMovementCorrections =
+		bLargeEarlyGap && SmoothSeconds > KINDA_SMALL_NUMBER && MovementComponent &&
+		MovementComponent->ShouldIgnoreServerRootMotionMontageTrackCorrection();
+
+	UWorld* World = GetWorld();
+	const float GraceSeconds = FMath::Max(0.0f, OwnerFinalReconciliationGraceSeconds);
+	if (!World || GraceSeconds <= KINDA_SMALL_NUMBER)
+	{
+		ApplyOwnerPendingFinalReactionCorrection(
+			Context, TargetActor, ReactionTag, TEXT("OwnerReactionEndNoSettleGrace"));
+		return false;
+	}
+
+	FPP_OwnerFinalReconciliationGraceState& State =
+		OwnerFinalReconciliationGraceStates.AddDefaulted_GetRef();
+	State.TargetActor = TargetActor;
+	State.MovementComponent = MovementComponent;
+	State.ReactionTag = ReactionTag;
+	State.PredictionId = Context.PredictionId;
+	State.bHoldMovementCorrections = bHoldMovementCorrections;
+
+	if (bHoldMovementCorrections &&
+		!ApplyOwnerPendingFinalReactionCorrection(
+			Context, TargetActor, ReactionTag, TEXT("OwnerPreReleaseSmooth")))
+	{
+		OwnerFinalReconciliationGraceStates.Pop(EAllowShrinking::No);
+		return false;
+	}
+
+	TWeakObjectPtr<UPP_PredictionComponent> WeakThis(this);
+	TWeakObjectPtr<AActor> WeakTarget(TargetActor);
+	TWeakObjectPtr<UCharacterMovementComponent> WeakMovementComponent(MovementComponent);
+	const FPP_ReactionPredictionContext CapturedContext = Context;
+	const FGameplayTag CapturedReactionTag = ReactionTag;
+	const float ReconciliationSeconds = bHoldMovementCorrections
+		? FMath::Max(GraceSeconds, SmoothSeconds + (1.0f / 60.0f))
+		: GraceSeconds;
+
+	FTimerHandle TimerHandle;
+	World->GetTimerManager().SetTimer(
+		TimerHandle,
+		[WeakThis, WeakTarget, WeakMovementComponent, CapturedContext, CapturedReactionTag]()
+		{
+			UPP_PredictionComponent* StrongThis = WeakThis.Get();
+			AActor* StrongTarget = WeakTarget.Get();
+			if (!StrongThis) return;
+
+			bool bRemovedGrace = false;
+			bool bHeldMovementCorrections = false;
+			for (int32 Index = StrongThis->OwnerFinalReconciliationGraceStates.Num() - 1;
+				 Index >= 0; --Index)
+			{
+				const FPP_OwnerFinalReconciliationGraceState& Existing =
+					StrongThis->OwnerFinalReconciliationGraceStates[Index];
+				if (Existing.TargetActor.Get() == StrongTarget &&
+					Existing.ReactionTag == CapturedReactionTag &&
+					Existing.PredictionId == CapturedContext.PredictionId)
+				{
+					bHeldMovementCorrections = Existing.bHoldMovementCorrections;
+					StrongThis->OwnerFinalReconciliationGraceStates.RemoveAtSwap(
+						Index, 1, EAllowShrinking::No);
+					bRemovedGrace = true;
+					break;
+				}
+			}
+
+			if (!bRemovedGrace) return;
+
+			if (bHeldMovementCorrections && StrongThis->OwnerReactionCorrectionSuppressionCount == 0)
+			{
+				PP_SetOwnerMontageTrackCorrectionSuppressed(WeakMovementComponent.Get(), false);
+			}
+
+			if (!StrongTarget) return;
+
+			// A newer overlapping reaction owns reconciliation until it ends. Never apply this older
+			// transform in the middle of the newer reaction.
+			if (StrongThis->OwnerReactionCorrectionSuppressionCount == 0)
+			{
+				StrongThis->ApplyOwnerPendingFinalReactionCorrection(
+					CapturedContext, StrongTarget, CapturedReactionTag,
+					TEXT("OwnerReactionEndAfterSettleGrace"));
+			}
+		},
+		ReconciliationSeconds,
+		false);
+
+	return bHoldMovementCorrections;
 }
 
 
@@ -2040,7 +2806,8 @@ void UPP_PredictionComponent::ApplyReactionRotation
 
 	const FVector ReferenceLocation = ReferenceActor->GetActorLocation();
 	const FVector RecipientLocation = RecipientActor->GetActorLocation();
-	FRotator DesiredRotation = RecipientActor->GetActorRotation();
+	const FRotator BeforeRotation = RecipientActor->GetActorRotation();
+	FRotator DesiredRotation = BeforeRotation;
 
 	switch (RotationSettings.RotationDirection)
 	{

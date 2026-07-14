@@ -85,12 +85,5 @@ private:
 	UPROPERTY(Transient)
 	bool bSavedOwnerReactionIgnoreErrorChecksAndCorrection = false;
 
-	/** True after an owner-reaction trace position has been recorded. */
-	UPROPERTY(Transient)
-	bool bHasOwnerReactionTraceLocation = false;
-
-	/** Previous owner-reaction trace position used for movement diagnostics. */
-	UPROPERTY(Transient)
-	FVector LastOwnerReactionTraceLocation = FVector::ZeroVector;
 };
 

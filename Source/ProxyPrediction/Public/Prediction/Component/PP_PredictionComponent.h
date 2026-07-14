@@ -10,6 +10,7 @@
 class AActor;
 class ACharacter;
 class UAbilitySystemComponent;
+class UAnimMontage;
 class UCharacterMovementComponent;
 class USkeletalMeshComponent;
 
@@ -119,6 +120,81 @@ struct FPP_ProxyReactionVisualInterpolation
 	uint8 SavedNetworkSmoothingMode = 0;
 };
 
+/** Server-observed collision waiting to be matched with the predicting client's request. */
+USTRUCT()
+struct FPP_AuthoritativeCollisionRecord
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TWeakObjectPtr<AActor> TargetActor;
+
+	UPROPERTY()
+	FGameplayTag ReactionTag;
+
+	UPROPERTY()
+	FPP_ReactionTransformSettings TransformSettings;
+
+	UPROPERTY()
+	FPP_ReactionDefenseSettings DefenseSettings;
+
+	UPROPERTY()
+	FPP_ReactionDamageSettings DamageSettings;
+
+	UPROPERTY()
+	double TimeSeconds = 0.0;
+};
+
+/** Client reaction request waiting for the server notify sweep to observe the same target. */
+USTRUCT()
+struct FPP_PendingServerReactionRequest
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FPP_ReactionPredictionContext Context;
+
+	UPROPERTY()
+	TWeakObjectPtr<AActor> TargetActor;
+
+	UPROPERTY()
+	FGameplayTag ReactionTag;
+
+	UPROPERTY()
+	double TimeSeconds = 0.0;
+};
+
+/** Collision-notify match waiting for a frame where it can start before target Character Movement. */
+struct FPP_DeferredServerReactionFromCollision
+{
+	FPP_ReactionPredictionContext Context;
+	TWeakObjectPtr<AActor> TargetActor;
+	TWeakObjectPtr<UCharacterMovementComponent> MovementComponent;
+	FGameplayTag ReactionTag;
+	FPP_ReactionTransformSettings TransformSettings;
+	FPP_ReactionDefenseSettings DefenseSettings;
+	FPP_ReactionDamageSettings DamageSettings;
+	uint64 EarliestFrameCounter = 0;
+};
+
+/** Short post-reaction window that lets normal owner movement replication settle before final reconciliation. */
+struct FPP_OwnerFinalReconciliationGraceState
+{
+	TWeakObjectPtr<AActor> TargetActor;
+	TWeakObjectPtr<UCharacterMovementComponent> MovementComponent;
+	FGameplayTag ReactionTag;
+	int32 PredictionId = INDEX_NONE;
+	bool bHoldMovementCorrections = false;
+};
+
+/** Guards a confirmed locally predicted proxy from server root-motion replay until its montage ends. */
+struct FPP_PredictedProxyRootMotionReconciliation
+{
+	TWeakObjectPtr<ACharacter> TargetCharacter;
+	TWeakObjectPtr<UAnimMontage> Montage;
+	double ExpireTimeSeconds = 0.0;
+};
+
 /**
  * Predicts target reactions immediately, then reconciles them with the server.
  * Prediction markers prevent duplicate playback and route the final correction.
@@ -136,6 +212,12 @@ public:
 	bool PlayPredictedReactionOnTargetProxy(AActor* TargetActor, FGameplayTag ReactionTag,
 		FPP_ReactionTransformSettings TransformSettings, FPP_ReactionDefenseSettings DefenseSettings,
 		FPP_ReactionDamageSettings DamageSettings);
+
+	/** Records a server notify hit and resolves a matching client request using server-authored settings. */
+	void RecordAuthoritativeCollision(AActor* TargetActor, FGameplayTag ReactionTag,
+		const FPP_ReactionTransformSettings& TransformSettings,
+		const FPP_ReactionDefenseSettings& DefenseSettings,
+		const FPP_ReactionDamageSettings& DamageSettings);
 
 	/** Confirms a reaction using transform settings stored in server Reaction Data. */
 	UFUNCTION(Server, Reliable)
@@ -156,16 +238,34 @@ public:
 
 protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType,
+		FActorComponentTickFunction* ThisTickFunction) override;
 
 private:
 	// Server validation rejects spam, distant targets, and unsafe transform requests.
 	bool ConsumeServerReactionRequestBudget();
 	bool ValidateServerReactionRequest(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction,
 		const FPP_ReactionTransformSettings& TransformSettings);
-	void ProcessServerConfirmedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+	bool ProcessServerConfirmedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, const FPP_ReactionTransformSettings& TransformSettings,
 		const FPP_ReactionDefenseSettings& DefenseSettings,
 		const FPP_ReactionDamageSettings& DamageSettings);
+	void DeferServerConfirmedReactionFromCollision(const FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor, FGameplayTag ReactionTag,
+		const FPP_ReactionTransformSettings& TransformSettings,
+		const FPP_ReactionDefenseSettings& DefenseSettings,
+		const FPP_ReactionDamageSettings& DamageSettings);
+	void ProcessDeferredServerReactionsFromCollision();
+	void ScheduleServerRootMotionStartAlignment(const FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor, FGameplayTag ReactionTag, UAnimMontage* Montage,
+		float StartPosition, const FVector& ServerStartLocation, int32 Attempt = 0);
+	void RemoveExpiredAuthoritativeCollisionState();
+	bool ConsumeAuthoritativeCollision(AActor* TargetActor, FGameplayTag ReactionTag,
+		FPP_ReactionTransformSettings& OutTransformSettings,
+		FPP_ReactionDefenseSettings& OutDefenseSettings,
+		FPP_ReactionDamageSettings& OutDamageSettings);
+	void QueuePendingServerReactionRequest(const FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor, FGameplayTag ReactionTag);
 	EPP_ReactionDefenseOutcome ResolveDefenseOutcome(AActor* TargetActor,
 		const FPP_ReactionDefenseSettings& DefenseSettings) const;
 	static bool ShouldApplyReactionTransform(EPP_ReactionDefenseOutcome Outcome,
@@ -224,9 +324,15 @@ private:
 		FGameplayTag ReactionTag, const FVector& ServerFinalLocation, const FRotator& ServerFinalRotation);
 	bool ConsumeOwnerPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, FVector& OutServerFinalLocation, FRotator& OutServerFinalRotation);
+	bool PeekOwnerPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+		FGameplayTag ReactionTag, FVector& OutServerFinalLocation, FRotator& OutServerFinalRotation);
 	bool ApplyOwnerPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, const TCHAR* Reason);
 	void RemoveExpiredOwnerPendingFinalReactionCorrections();
+	bool BeginOwnerFinalReconciliationGrace(const FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor, FGameplayTag ReactionTag);
+	bool IsOwnerFinalReconciliationGraceActive(const FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor, FGameplayTag ReactionTag) const;
 
 	// Predicting proxies apply only the final correction matching their marker.
 	void AddProxyPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
@@ -239,7 +345,10 @@ private:
 		AActor* TargetActor, const TCHAR* Reason);
 	bool HasNewerReactionMarkerForTarget(const FPP_ReactionPredictionContext& Context, AActor* TargetActor);
 	void RemoveExpiredProxyPendingFinalReactionCorrections();
-
+	void BeginPredictedProxyRootMotionReconciliation(const FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor, FGameplayTag ReactionTag);
+	void UpdatePredictedProxyRootMotionReconciliations();
+	void RemovePredictedProxyRootMotionReconciliation(int32 Index);
 	/** Plays owner feedback and starts the local correction-suppression window. */
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context, FGameplayTag ReactionTag,
@@ -254,6 +363,16 @@ private:
 	UFUNCTION(Client, Unreliable)
 	void ClientFinishPredictedProxyReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, FVector ServerFinalLocation, FRotator ServerFinalRotation);
+
+	/** Reliably rolls back a prediction when no matching authoritative server collision arrives. */
+	UFUNCTION(Client, Reliable)
+	void ClientRejectPredictedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
+		FGameplayTag ReactionTag, FVector ServerLocation, FRotator ServerRotation);
+
+	/** Reliably reconciles the predicting owner's proxy without making observer cosmetics reliable. */
+	UFUNCTION(Client, Reliable)
+	void ClientConfirmPredictedReactionStart(FPP_ReactionPredictionContext Context, AActor* TargetActor,
+		FGameplayTag ReactionTag, FVector ServerStartLocation, FRotator ServerStartRotation);
 
 	/** Reaction definitions used by predicted and confirmed playback. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="SyncPrediction|Reaction", meta=(AllowPrivateAccess="true"))
@@ -281,6 +400,8 @@ private:
 
 	static constexpr int32 MaxPredictionId = 32767;
 	static constexpr int32 MaxPendingPredictedReactions = 32;
+	static constexpr int32 MaxPendingServerReactionRequests = 32;
+	static constexpr int32 MaxAuthoritativeCollisionRecords = 64;
 
 	/** Local predictions waiting for server start confirmation. */
 	UPROPERTY(Transient)
@@ -298,9 +419,23 @@ private:
 	UPROPERTY(Transient)
 	TArray<FPP_OwnerPendingFinalReactionCorrection> ProxyPendingFinalReactionCorrections;
 
+	/** Server notify hits waiting for the corresponding reliable client request. */
+	UPROPERTY(Transient)
+	TArray<FPP_AuthoritativeCollisionRecord> AuthoritativeCollisionRecords;
+
+	/** Client requests that arrived before the server montage reached its collision window. */
+	UPROPERTY(Transient)
+	TArray<FPP_PendingServerReactionRequest> PendingServerReactionRequests;
+
+	/** Notify-time matches queued to start before the target movement tick on the following frame. */
+	TArray<FPP_DeferredServerReactionFromCollision> DeferredServerReactionsFromCollision;
+
 	/** Number of overlapping owner reactions suppressing montage-track correction. */
 	UPROPERTY(Transient)
 	int32 OwnerReactionCorrectionSuppressionCount = 0;
+
+	/** Owner reactions waiting briefly for ordinary Character Movement replication to settle. */
+	TArray<FPP_OwnerFinalReconciliationGraceState> OwnerFinalReconciliationGraceStates;
 
 	/** Active predicted reactions that temporarily ignore target capsule collision. */
 	UPROPERTY(Transient)
@@ -311,6 +446,9 @@ private:
 
 	/** Simulated proxy meshes currently offset from their authoritative capsules. */
 	TMap<TWeakObjectPtr<AActor>, FPP_ProxyReactionVisualInterpolation> ProxyReactionVisualInterpolations;
+
+	/** Confirmed proxy reactions suppressing intermediate server root-motion replay on the predicting client. */
+	TArray<FPP_PredictedProxyRootMotionReconciliation> PredictedProxyRootMotionReconciliations;
 
 	/** Maximum reaction requests accepted from one client each second. */
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation", meta=(ClampMin="1"))
@@ -327,6 +465,15 @@ private:
 	/** Maximum absolute sideways movement accepted from a notify transform request. */
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation", meta=(ClampMin="0.0", Units="Centimeters"))
 	float MaxServerReactionLateralOffset = 500.0f;
+
+	/** Require a matching server notify collision before accepting a predicted reaction request. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation")
+	bool bRequireAuthoritativeCollisionMatch = true;
+
+	/** Time allowed for the server hit and client request to arrive in either order. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation",
+		meta=(ClampMin="0.1", ClampMax="3.0", Units="Seconds"))
+	float AuthoritativeCollisionMatchTimeout = 1.0f;
 
 	/** Time an unconfirmed local prediction remains matchable. */
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Seconds"))
@@ -359,4 +506,33 @@ private:
 	/** Blend time used to move the local target to the server's final transform. */
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", ClampMax="0.5", Units="Seconds"))
 	float OwnerFinalCorrectionSmoothSeconds = 0.15f;
+
+	/**
+	 * An early final must exceed this gap before owner correction is smoothed while ordinary movement
+	 * corrections remain suppressed. Smaller gaps keep the existing replication-settle path.
+	 */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Centimeters"))
+	float OwnerFinalPreReleaseSmoothMinDistance = 8.0f;
+
+	/**
+	 * Ignore missing initial montage displacement below this distance. Small differences are normal
+	 * replication noise and correcting them would disturb starts that already look smooth.
+	 */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Centimeters"))
+	float ServerRootMotionStartAlignmentMinDistance = 8.0f;
+
+	/**
+	 * Maximum missing initial montage displacement repaired on the server. Larger differences are
+	 * treated as stale/invalid state rather than one skipped root-motion slice. Accepted repairs use
+	 * a collision sweep and therefore cannot move the target through blocking geometry.
+	 */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Centimeters"))
+	float ServerRootMotionStartAlignmentMaxDistance = 75.0f;
+
+	/**
+	 * Applied only when the owner reaction has just ended. It gives normal movement replication time to
+	 * consume its last updates before measuring the queued final transform. Finals arriving later bypass it.
+	 */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", ClampMax="0.25", Units="Seconds"))
+	float OwnerFinalReconciliationGraceSeconds = 0.075f;
 };

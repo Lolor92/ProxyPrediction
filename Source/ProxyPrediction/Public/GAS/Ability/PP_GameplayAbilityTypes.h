@@ -56,5 +56,13 @@ struct FPP_AbilityMotionMontageLockout
 
 	UPROPERTY(EditDefaultsOnly, Category="Montage Lockout")
 	bool bBypassMontageLockout = false;
+
+	/** How early the authoritative server may accept a remote client's interrupt request.
+	 *  The predicting client unlocks at the exact configured percentage; this small
+	 *  server-only tolerance absorbs client/server montage tick-boundary differences
+	 *  without adding input latency to the local player.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category="Montage Lockout", meta=(ClampMin="0.0", UIMin="0.0", Units="Seconds"))
+	float ServerInterruptEarlyAcceptanceTolerance = 0.05f;
 };
 

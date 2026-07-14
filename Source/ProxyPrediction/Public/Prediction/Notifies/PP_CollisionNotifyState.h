@@ -17,17 +17,29 @@ enum class EPP_CollisionShape : uint8
 	Capsule UMETA(ToolTip="Sweep an oriented capsule.")
 };
 
-/** Per-mesh state that keeps one notify window continuous and duplicate-free. */
+/** Identifies one active notify instance on one mesh. */
+struct FPP_NotifyRuntimeKey
+{
+	TWeakObjectPtr<USkeletalMeshComponent> MeshComp;
+	int32 NotifyInstanceId = INDEX_NONE;
+
+	friend bool operator==(const FPP_NotifyRuntimeKey& Left, const FPP_NotifyRuntimeKey& Right)
+	{
+		return Left.MeshComp == Right.MeshComp && Left.NotifyInstanceId == Right.NotifyInstanceId;
+	}
+
+	friend uint32 GetTypeHash(const FPP_NotifyRuntimeKey& Key)
+	{
+		return HashCombine(GetTypeHash(Key.MeshComp), GetTypeHash(Key.NotifyInstanceId));
+	}
+};
+
+/** Per-notify-instance state that keeps one collision window continuous and duplicate-free. */
 struct FPP_NotifyRuntimeWindow
 {
-	/** Unique identifier for this notify window. */
-	FGuid WindowId;
-
 	/** Actors already hit during this window. */
 	TSet<TWeakObjectPtr<AActor>> ProcessedTargets;
 
-	/** Whether a previous transform is available for a continuous sweep. */
-	bool bHasPreviousSweepTransform = false;
 	/** Transform where the preceding sweep ended. */
 	FTransform PreviousSweepTransform = FTransform::Identity;
 };
@@ -54,7 +66,7 @@ public:
 	/** Draws each predicted sweep for collision debugging. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Debug")
 	bool bDrawDebug = false;
-	
+
 	/** Reaction requested when the sweep finds a new target. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Predicted Reaction")
 	FGameplayTag PredictedReactionTag;
@@ -211,31 +223,40 @@ EPP_ReactionTeleportType::None;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Shape")
 	FRotator RelativeRotation = FRotator::ZeroRotator;
 
-	/** Maximum spacing between sub-sweeps; smaller values reduce tunnelling. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Collision")
-	float MaxSweepStepDistance = 35.f;
+	/** Maximum spacing between sub-sweeps. Sweeps are continuous; smaller values mainly improve rotation sampling. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Collision", meta=(ClampMin="1.0", Units="Centimeters"))
+	float MaxSweepStepDistance = 100.f;
 
-	/** Collision channel used by the predicted sweep. */
+	/** Hard ceiling on collision queries per socket and notify tick. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Collision", meta=(ClampMin="1", ClampMax="32"))
+	int32 MaxSweepSubsteps = 8;
+
+	/** Reject a single implausibly large socket jump instead of tracing across it. Zero disables the guard. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Collision", meta=(ClampMin="0.0", Units="Centimeters"))
+	float MaxSocketSweepDistance = 500.f;
+
+	/** Object type collected by the predicted sweep. Use Pawn for character combat collision. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Collision")
 	TEnumAsByte<ECollisionChannel> TraceChannel = ECC_Pawn;
 	
 private:
 	// Notify flow: validate owner -> build socket transform -> sweep -> predict hit.
 	bool ShouldRunPredictedCollision(const AActor* OwnerActor) const;
+	static FPP_NotifyRuntimeKey MakeRuntimeKey(USkeletalMeshComponent* MeshComp,
+		const FAnimNotifyEventReference& EventReference);
 	bool BuildTraceTransform(USkeletalMeshComponent* MeshComp, FTransform& OutTransform) const;
 	void SweepCollision(USkeletalMeshComponent* MeshComp, const FTransform& PreviousTransform,
-		const FTransform& CurrentTransform);
+		const FTransform& CurrentTransform, FPP_NotifyRuntimeWindow& Window);
 	FCollisionShape MakeCollisionShape() const;
-	bool HasAlreadyProcessedTarget(USkeletalMeshComponent* MeshComp, AActor* TargetActor) const;
-	void MarkTargetProcessed(USkeletalMeshComponent* MeshComp, AActor* TargetActor);
+	static bool HasAlreadyProcessedTarget(const FPP_NotifyRuntimeWindow& Window, AActor* TargetActor);
+	static void MarkTargetProcessed(FPP_NotifyRuntimeWindow& Window, AActor* TargetActor);
+	void BuildReactionSettings(FPP_ReactionTransformSettings& OutTransformSettings,
+		FPP_ReactionDefenseSettings& OutDefenseSettings, FPP_ReactionDamageSettings& OutDamageSettings) const;
+	void HandleCollisionTarget(AActor* AttackerActor, AActor* HitActor) const;
 	
 	void TryPlayPredictedReaction(AActor* AttackerActor, AActor* HitActor) const;
 	
-	/** Previous sweep transform retained for active meshes. */
-	UPROPERTY(Transient)
-	TMap<TObjectPtr<USkeletalMeshComponent>, FTransform> PreviousTransforms;
-	
-	/** Runtime hit state for each mesh with an active notify window. */
-	TMap<TWeakObjectPtr<USkeletalMeshComponent>, FPP_NotifyRuntimeWindow> ActiveWindowsByMesh;
+	/** Runtime hit state isolated by mesh and notify instance. */
+	TMap<FPP_NotifyRuntimeKey, FPP_NotifyRuntimeWindow> ActiveWindows;
 };
 
