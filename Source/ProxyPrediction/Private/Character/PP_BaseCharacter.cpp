@@ -4,11 +4,13 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "PlayerState/PP_PlayerState.h"
+#include "UI/PP_CombatTextComponent.h"
 
 
 APP_BaseCharacter::APP_BaseCharacter()
 {
 	bReplicates = true;
+	CombatTextComponent = CreateDefaultSubobject<UPP_CombatTextComponent>(TEXT("Combat Text"));
 
 	// Collision defaults.
 	GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);

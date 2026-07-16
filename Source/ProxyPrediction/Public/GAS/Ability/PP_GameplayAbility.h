@@ -29,6 +29,11 @@ public:
 		const FGameplayTagContainer* SourceTags = nullptr, const FGameplayTagContainer* TargetTags = nullptr,
 		FGameplayTagContainer* OptionalRelevantTags = nullptr) const override;
 
+	virtual void PreActivate(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayAbilityActivationInfo ActivationInfo,
+		FOnGameplayAbilityEnded::FDelegate* OnGameplayAbilityEndedDelegate,
+		const FGameplayEventData* TriggerEventData = nullptr) override;
+
 	virtual void ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo,
 		const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData) override;
 
@@ -49,6 +54,14 @@ public:
 	/** Active effects granting any of these tags are removed when the ability activates. */
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Effects")
 	FGameplayTagContainer RemoveGameplayEffectsWithTagsOnActivate;
+
+	/**
+	 * Local-predicted abilities already apply ActivationOwnedTags immediately on the owning client.
+	 * Replicate those tags to simulated proxies without echoing the delayed server count back to the
+	 * predicting owner. This prevents a quickly ended state from briefly reappearing on that owner.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Prediction")
+	bool bExcludePredictedActivationOwnedTagsFromOwnerReplication = true;
 
 	UPROPERTY(EditDefaultsOnly, Category="Ability|Combo")
 	TSubclassOf<UGameplayAbility> ComboAbilityClass = nullptr;
@@ -167,6 +180,8 @@ protected:
 	void CloseComboWindow();
 
 private:
+	bool ShouldUseSimulatedOnlyActivationOwnedTags() const;
+	void RemoveSimulatedOnlyActivationOwnedTags(const FGameplayAbilityActorInfo* ActorInfo);
 	void ResetComboWindow();
 	void InterruptOtherActiveAbilities() const;
 	FActiveGameplayEffectHandle ApplyOwnedEffect(TSubclassOf<UGameplayEffect> EffectClass, float EffectLevel) const;
@@ -187,6 +202,8 @@ private:
 
 	uint32 ActivationSequenceId = 0;
 	float ActivatedMontagePlayRate = 1.f;
+	FGameplayTagContainer SimulatedOnlyActivationOwnedTags;
+	bool bUsingSimulatedOnlyActivationOwnedTags = false;
 	TArray<FActiveGameplayEffectHandle> AbilityLifetimeEffectHandles;
 	TArray<FPP_AbilityMontageEffectWindowRuntime> MontageEffectWindowRuntime;
 };

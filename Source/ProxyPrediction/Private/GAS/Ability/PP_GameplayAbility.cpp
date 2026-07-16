@@ -1,6 +1,7 @@
 #include "GAS/Ability/PP_GameplayAbility.h"
 
 #include "AbilitySystemComponent.h"
+#include "AbilitySystemGlobals.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Camera/CameraComponent.h"
@@ -54,6 +55,7 @@ namespace
 			Camera->UpdateComponentToWorld();
 		}
 	}
+
 }
 
 UPP_GameplayAbility::UPP_GameplayAbility()
@@ -101,6 +103,38 @@ bool UPP_GameplayAbility::CanActivateAbility(const FGameplayAbilitySpecHandle Ha
 	}
 
 	return true;
+}
+
+void UPP_GameplayAbility::PreActivate(const FGameplayAbilitySpecHandle Handle,
+	const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo,
+	FOnGameplayAbilityEnded::FDelegate* OnGameplayAbilityEndedDelegate,
+	const FGameplayEventData* TriggerEventData)
+{
+	bUsingSimulatedOnlyActivationOwnedTags = ShouldUseSimulatedOnlyActivationOwnedTags();
+	if (!bUsingSimulatedOnlyActivationOwnedTags)
+	{
+		Super::PreActivate(
+			Handle, ActorInfo, ActivationInfo, OnGameplayAbilityEndedDelegate, TriggerEventData);
+		return;
+	}
+
+	// Base GAS replicates ActivationOwnedTags back to the predicting owner as an unkeyed tag count.
+	// Keep the authored tags out of that path, then add the same local count with the engine's
+	// simulated-proxy-only replication state. The autonomous owner continues using its predicted
+	// ability lifecycle, while authority and simulated proxies keep the exact same gameplay state.
+	SimulatedOnlyActivationOwnedTags = ActivationOwnedTags;
+	ActivationOwnedTags.Reset();
+
+	Super::PreActivate(
+		Handle, ActorInfo, ActivationInfo, OnGameplayAbilityEndedDelegate, TriggerEventData);
+
+	if (UAbilitySystemComponent* ASC = ActorInfo ? ActorInfo->AbilitySystemComponent.Get() : nullptr)
+	{
+		ASC->AddLooseGameplayTags(
+			SimulatedOnlyActivationOwnedTags,
+			1,
+			EGameplayTagReplicationState::SimulatedTagOnly);
+	}
 }
 
 bool UPP_GameplayAbility::CanActivateDuringCurrentMontage(const FGameplayAbilityActorInfo* ActorInfo) const
@@ -173,6 +207,37 @@ void UPP_GameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle,
 	ResetComboWindow();
 
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
+
+	// A scope lock can defer Super::EndAbility. Keep the custom tags installed until the actual
+	// end call completes, then restore the authored container for the next activation.
+	if (bUsingSimulatedOnlyActivationOwnedTags && !IsActive())
+	{
+		RemoveSimulatedOnlyActivationOwnedTags(ActorInfo);
+	}
+}
+
+bool UPP_GameplayAbility::ShouldUseSimulatedOnlyActivationOwnedTags() const
+{
+	return bExcludePredictedActivationOwnedTagsFromOwnerReplication &&
+		GetNetExecutionPolicy() == EGameplayAbilityNetExecutionPolicy::LocalPredicted &&
+		UAbilitySystemGlobals::Get().ShouldReplicateActivationOwnedTags() &&
+		!ActivationOwnedTags.IsEmpty();
+}
+
+void UPP_GameplayAbility::RemoveSimulatedOnlyActivationOwnedTags(
+	const FGameplayAbilityActorInfo* ActorInfo)
+{
+	if (UAbilitySystemComponent* ASC = ActorInfo ? ActorInfo->AbilitySystemComponent.Get() : nullptr)
+	{
+		ASC->RemoveLooseGameplayTags(
+			SimulatedOnlyActivationOwnedTags,
+			1,
+			EGameplayTagReplicationState::SimulatedTagOnly);
+	}
+
+	ActivationOwnedTags = MoveTemp(SimulatedOnlyActivationOwnedTags);
+	SimulatedOnlyActivationOwnedTags.Reset();
+	bUsingSimulatedOnlyActivationOwnedTags = false;
 }
 
 FActiveGameplayEffectHandle UPP_GameplayAbility::ApplyOwnedEffect(

@@ -311,9 +311,12 @@ private:
 	static bool ShouldApplyReactionTransform(EPP_ReactionDefenseOutcome Outcome,
 		const FPP_ReactionDefenseSettings& DefenseSettings);
 	void ApplyDefenseOutcomeEffects(AActor* TargetActor, EPP_ReactionDefenseOutcome Outcome) const;
+	void ShowDefenseOutcomeCombatTextToAttacker(AActor* TargetActor,
+		EPP_ReactionDefenseOutcome Outcome, const FHitResult& HitResult) const;
 	bool ShouldApplyDamage(AActor* TargetActor, EPP_ReactionDefenseOutcome Outcome,
 		const FPP_ReactionDamageSettings& DamageSettings) const;
-	void ApplyDamageEffects(AActor* TargetActor, const FPP_ReactionDamageSettings& DamageSettings) const;
+	void ApplyDamageEffects(AActor* TargetActor, const FPP_ReactionDamageSettings& DamageSettings,
+		const FHitResult& HitResult) const;
 	bool ExecuteGameplayCuesLocally(AActor* TargetActor,
 		const FPP_ReactionGameplayCueSettings& GameplayCueSettings, const FHitResult& HitResult,
 		EPP_ReactionGameplayCueTriggerTiming TriggerTiming,

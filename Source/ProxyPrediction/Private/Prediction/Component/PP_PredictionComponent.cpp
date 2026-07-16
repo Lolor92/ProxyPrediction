@@ -18,6 +18,8 @@
 #include "AbilityMotion/Movement/PP_CharacterMovementComponent.h"
 #include "AnimInstance/PP_AnimInstance.h"
 #include "Tag/PP_NativeTags.h"
+#include "UI/PP_CombatTextComponent.h"
+#include "UI/PP_CombatTextTypes.h"
 
 namespace
 {
@@ -762,6 +764,47 @@ void UPP_PredictionComponent::ApplyDefenseOutcomeEffects(
 	}
 }
 
+void UPP_PredictionComponent::ShowDefenseOutcomeCombatTextToAttacker(
+	AActor* TargetActor,
+	const EPP_ReactionDefenseOutcome Outcome,
+	const FHitResult& HitResult) const
+{
+	EPP_CombatTextType CombatTextType;
+	switch (Outcome)
+	{
+	case EPP_ReactionDefenseOutcome::Blocked:
+	case EPP_ReactionDefenseOutcome::Parried:
+		CombatTextType = EPP_CombatTextType::AttackBlocked;
+		break;
+	case EPP_ReactionDefenseOutcome::Dodged:
+		CombatTextType = EPP_CombatTextType::AttackDodged;
+		break;
+	case EPP_ReactionDefenseOutcome::SuperArmored:
+		CombatTextType = EPP_CombatTextType::AttackSuperArmored;
+		break;
+	default:
+		return;
+	}
+
+	AActor* AttackerActor = GetOwner();
+	UPP_CombatTextComponent* CombatText =
+		AttackerActor ? AttackerActor->FindComponentByClass<UPP_CombatTextComponent>() : nullptr;
+	if (!CombatText) return;
+
+	FVector WorldLocation = HitResult.ImpactPoint;
+	if (!HitResult.bBlockingHit || WorldLocation.ContainsNaN())
+	{
+		if (!TargetActor) return;
+
+		FVector Origin;
+		FVector Extent;
+		TargetActor->GetActorBounds(true, Origin, Extent);
+		WorldLocation = Origin + FVector(0.0f, 0.0f, Extent.Z);
+	}
+
+	CombatText->ShowCombatTextToOwner(0.0f, WorldLocation, CombatTextType);
+}
+
 bool UPP_PredictionComponent::ShouldApplyDamage(
 	AActor* TargetActor,
 	const EPP_ReactionDefenseOutcome Outcome,
@@ -780,7 +823,8 @@ bool UPP_PredictionComponent::ShouldApplyDamage(
 
 void UPP_PredictionComponent::ApplyDamageEffects(
 	AActor* TargetActor,
-	const FPP_ReactionDamageSettings& DamageSettings) const
+	const FPP_ReactionDamageSettings& DamageSettings,
+	const FHitResult& HitResult) const
 {
 	AActor* InstigatorActor = GetOwner();
 	UAbilitySystemComponent* SourceASC = GetAbilitySystemComponentFromActor(InstigatorActor);
@@ -794,11 +838,16 @@ void UPP_PredictionComponent::ApplyDamageEffects(
 		FGameplayEffectContextHandle Context = SourceASC->MakeEffectContext();
 		Context.AddInstigator(InstigatorActor, InstigatorActor);
 		Context.AddSourceObject(this);
+		Context.AddHitResult(HitResult, true);
 
 		const FGameplayEffectSpecHandle Spec = SourceASC->MakeOutgoingSpec(
 			DamageEffect.GameplayEffectClass, DamageEffect.EffectLevel, Context);
 		if (Spec.IsValid())
 		{
+			Spec.Data->SetSetByCallerMagnitude(
+				TAG_Damage_Type_Physical, DamageEffect.PhysicalAttackMultiplier);
+			Spec.Data->SetSetByCallerMagnitude(
+				TAG_Damage_Type_Magical, DamageEffect.MagicalAttackMultiplier);
 			SourceASC->ApplyGameplayEffectSpecToTarget(*Spec.Data.Get(), TargetASC);
 		}
 	}
@@ -1122,7 +1171,14 @@ bool UPP_PredictionComponent::ProcessServerConfirmedReaction(
 	}
 	for (const FPP_ReactionDamageEffect& DamageEffect : DamageSettings.DamageEffects)
 	{
-		if (!FMath::IsFinite(DamageEffect.EffectLevel) || DamageEffect.EffectLevel < 0.0f) return false;
+		if (!FMath::IsFinite(DamageEffect.EffectLevel) || DamageEffect.EffectLevel < 0.0f ||
+			!FMath::IsFinite(DamageEffect.PhysicalAttackMultiplier) ||
+			DamageEffect.PhysicalAttackMultiplier < 0.0f ||
+			!FMath::IsFinite(DamageEffect.MagicalAttackMultiplier) ||
+			DamageEffect.MagicalAttackMultiplier < 0.0f)
+		{
+			return false;
+		}
 	}
 	for (const FPP_ReactionGameplayCue& Cue : GameplayCueSettings.Cues)
 	{
@@ -1181,7 +1237,7 @@ bool UPP_PredictionComponent::ProcessServerConfirmedReaction(
 
 	if (ShouldApplyDamage(TargetActor, DefenseOutcome, DamageSettings))
 	{
-		ApplyDamageEffects(TargetActor, DamageSettings);
+		ApplyDamageEffects(TargetActor, DamageSettings, HitResult);
 	}
 
 
@@ -1200,6 +1256,7 @@ bool UPP_PredictionComponent::ProcessServerConfirmedReaction(
 	else
 	{
 		ApplyDefenseOutcomeEffects(TargetActor, DefenseOutcome);
+		ShowDefenseOutcomeCombatTextToAttacker(TargetActor, DefenseOutcome, HitResult);
 		MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag,
 			ServerStartLocation, ServerStartRotation, 0.0f, false,
 			GameplayCueSettings, HitResult);

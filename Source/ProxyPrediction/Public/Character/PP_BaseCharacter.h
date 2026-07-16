@@ -7,6 +7,7 @@
 
 class UAbilitySystemComponent;
 class UAttributeSet;
+class UPP_CombatTextComponent;
 
 UCLASS()
 class PROXYPREDICTION_API APP_BaseCharacter : public ACharacter, public IAbilitySystemInterface
@@ -19,6 +20,7 @@ public:
 	
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	UAttributeSet* GetAttributeSet() const;
+	UPP_CombatTextComponent* GetCombatTextComponent() const { return CombatTextComponent; }
 
 protected:
 	// GAS references. Player characters receive these from PlayerState.
@@ -27,5 +29,8 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<UAttributeSet> AttributeSet;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="UI")
+	TObjectPtr<UPP_CombatTextComponent> CombatTextComponent;
 };
 

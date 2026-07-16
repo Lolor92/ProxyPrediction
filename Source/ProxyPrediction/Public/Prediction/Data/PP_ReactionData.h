@@ -332,7 +332,7 @@ struct FPP_ReactionDefenseSettings
 	FPP_ReactionSuperArmorSettings SuperArmor;
 };
 
-/** One damage Gameplay Effect and the level used to create its spec. */
+/** One damage Gameplay Effect, its level, and attack-attribute scaling. */
 USTRUCT(BlueprintType)
 struct FPP_ReactionDamageEffect
 {
@@ -343,6 +343,14 @@ struct FPP_ReactionDamageEffect
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Damage", meta=(ClampMin="0.0"))
 	float EffectLevel = 1.0f;
+
+	/** PhysicalAttack multiplier sent to the damage execution. 1.0 means 100% of PhysicalAttack. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Damage", meta=(ClampMin="0.0"))
+	float PhysicalAttackMultiplier = 1.0f;
+
+	/** MagicalAttack multiplier sent to the damage execution. 1.0 means 100% of MagicalAttack. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction|Damage", meta=(ClampMin="0.0"))
+	float MagicalAttackMultiplier = 0.0f;
 };
 
 /** Damage effects and per-attack defensive exceptions. */
