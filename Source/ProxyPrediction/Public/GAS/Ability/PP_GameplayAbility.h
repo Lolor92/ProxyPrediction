@@ -95,7 +95,7 @@ public:
 		return FMath::Max(RootMotionCharacterCollisionProbeDistance, RootMotionCharacterCollisionFallbackProbeDistance);
 	}
 
-	/** Returns whether this ability asks client and server movement correction checks to be ignored while it is active. */
+	/** Returns whether this ability temporarily uses the autonomous client's predicted position. */
 	bool ShouldIgnoreMovementCorrectionsDuringAbility() const { return bIgnoreMovementCorrectionsDuringAbility; }
 	bool ShouldHoldRootMotionCollisionPauseUntilRelease() const { return bHoldRootMotionCollisionPauseUntilRelease; }
 	bool ShouldPauseRootMotionForCharacterCollision(const ACharacter* Character) const;
@@ -143,11 +143,13 @@ protected:
 		ToolTip="Fallback probe distance used briefly after a confirmed block, mainly to smooth lost overlap events under latency."))
 	float RootMotionCharacterCollisionFallbackProbeDistance = 100.f;
 
-	/** Temporarily asks movement correction checks to be ignored while this ability is active.
-	 *  Intended for fast predicted moves such as Rush where normal correction can cause visible hitching.
-	 *  Use sparingly.
+	/** Temporarily keeps the autonomous client's predicted position while this ability is active.
+	 *  The owner ignores incoming location corrections, and the server accepts the client's reported
+	 *  position instead of correcting a potentially different character-collision result. Intended
+	 *  for short, fast root-motion moves such as Rush. This trades strict server validation for visual
+	 *  continuity, so enable it only on abilities that require it.
 	 */
-	UPROPERTY(EditDefaultsOnly, Category="Ability|Root Motion", meta=(ToolTip="Temporarily ignore client movement correction checks while this ability is active. Intended for fast predicted moves such as Rush. Use sparingly."))
+	UPROPERTY(EditDefaultsOnly, Category="Ability|Root Motion", meta=(ToolTip="Temporarily keep the autonomous client's predicted position on both client and server. Intended only for short, fast moves such as Rush because it relaxes server movement validation."))
 	bool bIgnoreMovementCorrectionsDuringAbility = false;
 
 	/** If enabled, once collision pauses root motion, the pause is held until the montage release point.

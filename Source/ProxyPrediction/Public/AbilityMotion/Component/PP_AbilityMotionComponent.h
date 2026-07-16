@@ -119,11 +119,13 @@ private:
 	/** Time of the latest blocking result, used by the short grace window. */
 	float LastRootMotionCollisionBlockTimeSeconds = -1000.f;
 
-	/** Last correction-ignore value requested from the server. */
+	/** Last correction-override state requested by the autonomous client. */
 	bool bLastRequestedServerMovementCorrectionIgnore = false;
-	/** True while the server's original correction setting is saved. */
+	/** True while the server-side per-ability correction override is active. */
 	bool bHasSavedServerMovementCorrectionIgnore = false;
-	/** Original server correction setting restored when the ability ends. */
+	/** Original server error-check setting restored when the ability ends. */
 	bool bSavedServerIgnoreClientMovementErrorChecksAndCorrection = false;
+	/** Original server accept-client-position setting restored when the ability ends. */
+	bool bSavedServerAcceptClientAuthoritativePosition = false;
 };
 

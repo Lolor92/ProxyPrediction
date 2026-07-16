@@ -8,6 +8,73 @@
 class UAnimMontage;
 class UGameplayEffect;
 
+/** Location used when a reaction GameplayCue is executed. */
+UENUM(BlueprintType)
+enum class EPP_ReactionGameplayCueSpawnPoint : uint8
+{
+	InstigatorLocation UMETA(DisplayName="Instigator Location"),
+	HitImpactPoint UMETA(DisplayName="Hit Impact Point"),
+	HitLocation UMETA(DisplayName="Hit Location")
+};
+
+/** Ability System Component that receives a reaction GameplayCue event. */
+UENUM(BlueprintType)
+enum class EPP_ReactionGameplayCueRecipient : uint8
+{
+	Instigator UMETA(DisplayName="Instigator"),
+	Target UMETA(DisplayName="Target"),
+	Both UMETA(DisplayName="Both")
+};
+
+/** Point in the collision notify at which a GameplayCue is executed. */
+UENUM(BlueprintType)
+enum class EPP_ReactionGameplayCueTriggerTiming : uint8
+{
+	OnActivation UMETA(DisplayName="On Activation"),
+	OnHit UMETA(DisplayName="On Hit")
+};
+
+/** One cosmetic GameplayCue requested by a predicted collision notify. */
+USTRUCT(BlueprintType)
+struct FPP_ReactionGameplayCue
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay Cues",
+		meta=(Categories="GameplayCue", DisplayName="Gameplay Cue Tag"))
+	FGameplayTag CueTag;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay Cues")
+	EPP_ReactionGameplayCueSpawnPoint SpawnPoint = EPP_ReactionGameplayCueSpawnPoint::HitImpactPoint;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay Cues")
+	FVector LocationOffset = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay Cues")
+	EPP_ReactionGameplayCueTriggerTiming TriggerTiming = EPP_ReactionGameplayCueTriggerTiming::OnHit;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay Cues")
+	bool bAttachToTarget = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay Cues")
+	EPP_ReactionGameplayCueRecipient Recipient = EPP_ReactionGameplayCueRecipient::Target;
+
+	/** Executes this cue immediately for the locally predicting attacker. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay Cues",
+		meta=(EditCondition="TriggerTiming == EPP_ReactionGameplayCueTriggerTiming::OnHit", EditConditionHides))
+	bool bPredictLocally = true;
+};
+
+/** Cue configuration carried through local prediction and authoritative confirmation. */
+USTRUCT(BlueprintType)
+struct FPP_ReactionGameplayCueSettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FPP_ReactionGameplayCue> Cues;
+};
+
 /** How a reaction changes forward distance from its reference actor. */
 UENUM(BlueprintType)
 enum class EPP_ReactionMoveDirection : uint8
@@ -297,7 +364,7 @@ struct FPP_ReactionDamageSettings
 	bool bApplyDamageWhenDodged = false;
 };
 
-/** Montage, effects, and timing for one tagged predicted reaction. */
+/** Optional montage, effects, and timing for one tagged predicted reaction. */
 USTRUCT(BlueprintType, meta=(DisplayName="Predicted Reaction"))
 struct FPP_ReactionDataEntry
 {
@@ -308,7 +375,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction")
 	FGameplayTag ReactionTag;
 
-	/** Montage played on the reaction target. */
+	/** Optional montage played on the reaction target; effects and transforms work without one. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Reaction")
 	TObjectPtr<UAnimMontage> Montage = nullptr;
 

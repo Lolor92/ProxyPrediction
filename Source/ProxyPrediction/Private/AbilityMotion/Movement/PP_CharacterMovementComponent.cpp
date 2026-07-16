@@ -3,6 +3,7 @@
 #include "AnimInstance/PP_AnimInstance.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
+#include "Combat/Component/PP_CombatComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Character.h"
 
@@ -15,6 +16,72 @@ namespace PPAbilityMotionFlags
 
 namespace
 {
+	// Root-motion responses refer to an older saved move. When the server track already matches
+	// that move, applying its old timestamp to the currently advancing montage creates a visual
+	// rewind without resolving any montage disagreement.
+	constexpr float RootMotionTrackAgreementToleranceSeconds = 0.05f;
+
+	struct FAnimRootMotionCorrectionContext
+	{
+		TWeakObjectPtr<UAnimMontage> SavedMoveMontage;
+		TWeakObjectPtr<UAnimMontage> ActiveMontage;
+		float SavedMoveTrackPosition = 0.f;
+		bool bFoundSavedMove = false;
+	};
+
+	FAnimRootMotionCorrectionContext BuildAnimRootMotionCorrectionContext(
+		UPP_CharacterMovementComponent* MovementComponent, const float TimeStamp)
+	{
+		FAnimRootMotionCorrectionContext Context;
+		if (!MovementComponent)
+		{
+			return Context;
+		}
+
+		if (FNetworkPredictionData_Client_Character* ClientData =
+			MovementComponent->GetPredictionData_Client_Character())
+		{
+			const int32 MoveIndex = ClientData->GetSavedMoveIndex(TimeStamp);
+			if (ClientData->SavedMoves.IsValidIndex(MoveIndex) && ClientData->SavedMoves[MoveIndex].IsValid())
+			{
+				const FSavedMove_Character& SavedMove = *ClientData->SavedMoves[MoveIndex];
+				Context.bFoundSavedMove = true;
+				Context.SavedMoveMontage = SavedMove.RootMotionMontage;
+				Context.SavedMoveTrackPosition = SavedMove.RootMotionTrackPosition;
+			}
+		}
+
+		if (const ACharacter* Character = MovementComponent->GetCharacterOwner())
+		{
+			if (const FAnimMontageInstance* MontageInstance = Character->GetRootMotionAnimMontageInstance())
+			{
+				Context.ActiveMontage = MontageInstance->Montage;
+			}
+		}
+
+		return Context;
+	}
+
+	bool IsCorrectionForDifferentActiveMontage(const FAnimRootMotionCorrectionContext& Context)
+	{
+		return Context.bFoundSavedMove &&
+			Context.SavedMoveMontage.IsValid() &&
+			Context.ActiveMontage.IsValid() &&
+			Context.SavedMoveMontage != Context.ActiveMontage;
+	}
+
+	bool IsCorrectionTrackAlignedWithSavedMove(
+		const FAnimRootMotionCorrectionContext& Context,
+		const float ServerMontageTrackPosition)
+	{
+		return Context.bFoundSavedMove &&
+			Context.SavedMoveMontage.IsValid() &&
+			Context.ActiveMontage.IsValid() &&
+			Context.SavedMoveMontage == Context.ActiveMontage &&
+			FMath::Abs(ServerMontageTrackPosition - Context.SavedMoveTrackPosition) <=
+				RootMotionTrackAgreementToleranceSeconds;
+	}
+
 	class FScopedIgnoreMontageTrackCorrection
 	{
 	public:
@@ -39,6 +106,37 @@ namespace
 
 	private:
 		FAnimMontageInstance* MontageInstance = nullptr;
+	};
+
+	// This project engine's correction-ignore path still acknowledges the matching saved move.
+	// Use it briefly for a response from an older montage so the response cannot displace the
+	// current ability, while the acknowledgement continues to drain SavedMoves normally.
+	class FScopedIgnoreClientMovementCorrection
+	{
+	public:
+		FScopedIgnoreClientMovementCorrection(
+			UPP_CharacterMovementComponent* InMovementComponent,
+			const bool bEnabled)
+			: MovementComponent(bEnabled ? InMovementComponent : nullptr)
+		{
+			if (MovementComponent)
+			{
+				bSavedIgnore = MovementComponent->bClientIgnoreMovementCorrections;
+				MovementComponent->bClientIgnoreMovementCorrections = true;
+			}
+		}
+
+		~FScopedIgnoreClientMovementCorrection()
+		{
+			if (MovementComponent)
+			{
+				MovementComponent->bClientIgnoreMovementCorrections = bSavedIgnore;
+			}
+		}
+
+	private:
+		UPP_CharacterMovementComponent* MovementComponent = nullptr;
+		bool bSavedIgnore = false;
 	};
 }
 
@@ -215,6 +313,46 @@ void UPP_CharacterMovementComponent::TickComponent(float DeltaTime, enum ELevelT
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 }
 
+float UPP_CharacterMovementComponent::GetMaxSpeed() const
+{
+	const float MaxSpeed = Super::GetMaxSpeed();
+	if (MaxSpeed <= 0.f || !PawnOwner)
+	{
+		return MaxSpeed;
+	}
+
+	// Blocking is an explicit combat state and takes priority over directional speed.
+	// Query the local/predicted GAS-backed component so client prediction and server
+	// movement use the state each side owns for this move.
+	if (const UPP_CombatComponent* CombatComponent =
+		PawnOwner->FindComponentByClass<UPP_CombatComponent>())
+	{
+		if (CombatComponent->IsBlockingActive())
+		{
+			return MaxSpeed * BlockingSpeedMultiplier;
+		}
+	}
+
+	// Acceleration represents voluntary movement input on both the predicting client and
+	// server replay. Root motion and external movement therefore keep their normal speed.
+	const FVector MovementDirection = Acceleration.GetSafeNormal2D();
+	if (MovementDirection.IsNearlyZero())
+	{
+		return MaxSpeed;
+	}
+
+	const FVector FacingDirection = PawnOwner->GetActorForwardVector().GetSafeNormal2D();
+	if (FacingDirection.IsNearlyZero())
+	{
+		return MaxSpeed;
+	}
+
+	const float ForwardDot = FVector::DotProduct(FacingDirection, MovementDirection);
+	return ForwardDot <= BackwardDotThreshold
+		? MaxSpeed * BackwardSpeedMultiplier
+		: MaxSpeed;
+}
+
 void UPP_CharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
 {
 	Super::UpdateFromCompressedFlags(Flags);
@@ -283,11 +421,26 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionPosition_Implementati
 	bool bBaseRelativePosition,
 	uint8 ServerMovementMode)
 {
-	// Let Character Movement acknowledge the corrected move even while the local reaction
-	// owns the montage timeline. Temporarily disabling montage root motion prevents Super
-	// from jumping the montage track, without dropping the response or filling SavedMoves.
+	const FAnimRootMotionCorrectionContext CorrectionContext =
+		BuildAnimRootMotionCorrectionContext(this, TimeStamp);
+	const bool bCorrectionForDifferentMontage =
+		IsCorrectionForDifferentActiveMontage(CorrectionContext);
+	const bool bCorrectionTrackAlreadyAligned =
+		IsCorrectionTrackAlignedWithSavedMove(CorrectionContext, ServerMontageTrackPosition);
+
+	// Base Character Movement first reconciles/acknowledges the saved move, then applies the
+	// response's montage position. Suppress only that track write when a local reaction owns the
+	// timeline, the ability owns client prediction, the response belongs to a previous montage,
+	// or the response already agrees with its saved move.
 	FScopedIgnoreMontageTrackCorrection IgnoreMontageTrackCorrection(
-		CharacterOwner, bIgnoreServerRootMotionMontageTrackCorrection);
+		CharacterOwner, bIgnoreServerRootMotionMontageTrackCorrection ||
+		bClientIgnoreMovementCorrections || bCorrectionForDifferentMontage ||
+		bCorrectionTrackAlreadyAligned);
+
+	// A response produced for a previous montage cannot describe the current ability's capsule.
+	// The scoped ignore path acknowledges its saved move without applying that stale location.
+	FScopedIgnoreClientMovementCorrection IgnoreStaleMovementCorrection(
+		this, bCorrectionForDifferentMontage);
 	Super::ClientAdjustRootMotionPosition_Implementation(TimeStamp, ServerMontageTrackPosition, ServerLoc,
 		ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData, ServerBoneName, bHasBase,
 		bBaseRelativePosition, ServerMovementMode);
@@ -327,10 +480,22 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implem
 	bool bBaseRelativePosition,
 	uint8 ServerMovementMode)
 {
-	// Root-motion-source corrections may also carry an anim-montage correction. Preserve
-	// source reconciliation and the move acknowledgement while suppressing only that track jump.
+	const FAnimRootMotionCorrectionContext CorrectionContext = bHasAnimRootMotion
+		? BuildAnimRootMotionCorrectionContext(this, TimeStamp)
+		: FAnimRootMotionCorrectionContext();
+	const bool bCorrectionForDifferentMontage = bHasAnimRootMotion &&
+		IsCorrectionForDifferentActiveMontage(CorrectionContext);
+	const bool bCorrectionTrackAlreadyAligned = bHasAnimRootMotion &&
+		IsCorrectionTrackAlignedWithSavedMove(CorrectionContext, ServerMontageTrackPosition);
+
+	// A root-motion-source response can carry the same anim-montage correction. Apply the same
+	// timeline and stale-location protections without suppressing root-motion-source reconciliation.
 	FScopedIgnoreMontageTrackCorrection IgnoreMontageTrackCorrection(
-		CharacterOwner, bIgnoreServerRootMotionMontageTrackCorrection && bHasAnimRootMotion);
+		CharacterOwner, bHasAnimRootMotion &&
+		(bIgnoreServerRootMotionMontageTrackCorrection || bClientIgnoreMovementCorrections ||
+		bCorrectionForDifferentMontage || bCorrectionTrackAlreadyAligned));
+	FScopedIgnoreClientMovementCorrection IgnoreStaleMovementCorrection(
+		this, bCorrectionForDifferentMontage);
 	Super::ClientAdjustRootMotionSourcePosition_Implementation(TimeStamp, ServerRootMotion, bHasAnimRootMotion,
 		ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData,
 		ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);

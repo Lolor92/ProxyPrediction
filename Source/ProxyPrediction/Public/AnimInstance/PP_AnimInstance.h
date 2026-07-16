@@ -20,7 +20,7 @@ UCLASS()
 class PROXYPREDICTION_API UPP_AnimInstance : public UAnimInstance
 {
 	GENERATED_BODY()
-	
+
 public:
 	// Anim instance lifecycle.
 	virtual void NativeInitializeAnimation() override;
@@ -33,6 +33,9 @@ public:
 	/** True when locomotion should drive the lower body under the montage. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement")
 	bool bShouldBlendLowerBody = false;
+
+	/** Suppresses lower-body locomotion while a locally predicted proxy reaction reconciles. */
+	void SetPredictedProxyReconciliationActive(bool bActive);
 
 	/** True when the active montage may move the character with root motion. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|Movement")
@@ -74,10 +77,10 @@ protected:
 	/** Cached ability motion component accessor used by the anim instance update path. */
 	UPP_AbilityMotionComponent* GetMotionComponentSafe();
 
-	/** Applies local correction-ignore flags for abilities that need extra prediction smoothing. */
+	/** Applies the owning-client half of an ability's explicit client-position override. */
 	void ApplyAbilityMovementCorrectionOverride(const UPP_GameplayAbility* Ability);
 
-	/** Restores local movement correction flags after the ability ends or changes. */
+	/** Restores the owning client's previous correction policy after the ability ends or changes. */
 	void RestoreAbilityMovementCorrectionOverride();
 
 	/** Character currently using this Animation Instance. */
@@ -115,8 +118,13 @@ protected:
 	/** Per-montage latch used by fast abilities that should not resume root motion until their release point after a collision pause. */
 	bool bRootMotionCollisionPauseHeldUntilRelease = false;
 
+	/** True while local proxy reconciliation must keep the predicted reaction full-body. */
+	bool bPredictedProxyReconciliationActive = false;
+
+	/** True while the owning client's previous correction policy is saved. */
 	bool bHasSavedMovementCorrectionFlags = false;
-	bool bSavedIgnoreClientMovementErrorChecksAndCorrection = false;
+	/** Original client correction-ignore value restored when the opted-in ability ends. */
+	bool bSavedClientIgnoreMovementCorrections = false;
 	
 	/** Horizontal character speed used by locomotion blends. */
 	UPROPERTY(BlueprintReadOnly, Category="Anim|Movement", meta=(AllowPrivateAccess="true"))
@@ -146,6 +154,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State")
 	bool bIsBlocking = false;
 
+	/** True when the character blocks an attack. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State")
+	bool bIsBlockedSuccess = false;
+
 	/** True while the character is knocked down. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State")
 	bool bIsKnockdown = false;
@@ -162,4 +174,3 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Anim|State")
 	bool bIsStunned = false;
 };
-

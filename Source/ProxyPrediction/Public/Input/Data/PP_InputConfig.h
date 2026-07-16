@@ -4,6 +4,7 @@
 #include "Engine/DataAsset.h"
 #include "GameplayTagContainer.h"
 #include "InputAction.h"
+#include "InputTriggers.h"
 #include "PP_InputConfig.generated.h"
 
 class UInputMappingContext;
@@ -36,6 +37,10 @@ struct FPP_InputAction
 	/** Tag used to route the action to movement, look, or a gameplay ability. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="PPInput", meta=(Categories="SyncInput"))
 	FGameplayTag InputTag;
+
+	/** Event that routes this action to GAS. Use Triggered for delayed triggers such as Repeated Tap. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="PPInput")
+	ETriggerEvent AbilityActivationEvent = ETriggerEvent::Started;
 };
 
 /** Data asset that defines mapping contexts and tag-based input actions. */

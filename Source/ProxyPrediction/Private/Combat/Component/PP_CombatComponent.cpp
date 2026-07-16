@@ -263,8 +263,40 @@ void UPP_CombatComponent::TryInitializeAbilitySystem()
 	AbilitySystemRetryCount = 0;
 
 	InitializeAbilityActorInfoIfNeeded();
+	ApplyStartupGameplayEffects();
 	GrantAbilities();
 	RegisterTagListeners();
+}
+
+void UPP_CombatComponent::ApplyStartupGameplayEffects()
+{
+	AActor* OwnerActor = GetOwner();
+	if (!OwnerActor || !OwnerActor->HasAuthority() || bStartupGameplayEffectsApplied ||
+		!AbilitySystemComponent)
+	{
+		return;
+	}
+
+	// Mark first so an effect-triggered callback cannot re-enter and apply the array twice.
+	bStartupGameplayEffectsApplied = true;
+
+	for (const TSubclassOf<UGameplayEffect>& EffectClass : StartupGameplayEffects)
+	{
+		if (!EffectClass)
+		{
+			continue;
+		}
+
+		FGameplayEffectContextHandle Context = AbilitySystemComponent->MakeEffectContext();
+		Context.AddSourceObject(OwnerActor);
+
+		const FGameplayEffectSpecHandle Spec =
+			AbilitySystemComponent->MakeOutgoingSpec(EffectClass, 1.f, Context);
+		if (Spec.IsValid())
+		{
+			AbilitySystemComponent->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+		}
+	}
 }
 
 void UPP_CombatComponent::ScheduleAbilitySystemRetry()
@@ -303,6 +335,11 @@ void UPP_CombatComponent::ClearReactionTimers()
 {
 	if (UWorld* World = GetWorld())
 	{
+		for (TPair<int32, FPP_PredictedProxyAnimTags>& Entry : PredictedProxyAnimTags)
+		{
+			World->GetTimerManager().ClearTimer(Entry.Value.ExpireTimer);
+		}
+
 		for (TPair<FGameplayTag, FTimerHandle>& Entry : AbilityTimers)
 		{
 			World->GetTimerManager().ClearTimer(Entry.Value);
@@ -323,6 +360,7 @@ void UPP_CombatComponent::ClearReactionTimers()
 	RemoveEffectTimers.Reset();
 	ApplyEffectTimers.Reset();
 	AppliedEffectHandles.Reset();
+	PredictedProxyAnimTags.Reset();
 }
 
 void UPP_CombatComponent::GrantAbilities()
@@ -453,6 +491,9 @@ void UPP_CombatComponent::OnTagChanged(FGameplayTag Tag, int32 NewCount)
 	}
 
 	const bool bAdded = NewCount > 0;
+	// Once GAS changes a predicted tag, authoritative state owns the corresponding anim bool.
+	ConfirmPredictedProxyAnimTag(Tag);
+
 	if (CrowdControlTag.IsValid() && Tag.MatchesTag(CrowdControlTag))
 	{
 		ApplyCrowdControlState(bAdded);
@@ -501,7 +542,131 @@ void UPP_CombatComponent::SetAnimBool(const FPP_CombatAnimBoolBinding& Binding, 
 
 bool UPP_CombatComponent::IsAnimBoolActive(const FPP_CombatAnimBoolBinding& Binding) const
 {
-	return AbilitySystemComponent && AbilitySystemComponent->HasAnyMatchingGameplayTags(Binding.Tags);
+	if (AbilitySystemComponent && AbilitySystemComponent->HasAnyMatchingGameplayTags(Binding.Tags))
+	{
+		return true;
+	}
+
+	for (const TPair<int32, FPP_PredictedProxyAnimTags>& Entry : PredictedProxyAnimTags)
+	{
+		if (Entry.Value.Tags.HasAny(Binding.Tags))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+int32 UPP_CombatComponent::BeginPredictedProxyAnimTags(
+	const FGameplayTagContainer& Tags, const float TimeoutSeconds)
+{
+	UWorld* World = GetWorld();
+	if (!World || Tags.IsEmpty())
+	{
+		return INDEX_NONE;
+	}
+
+	FGameplayTagContainer PendingTags;
+	for (const FGameplayTag& Tag : Tags)
+	{
+		// An authoritative tag that is already present needs no cosmetic overlay.
+		if (Tag.IsValid() && (!AbilitySystemComponent || !AbilitySystemComponent->HasMatchingGameplayTag(Tag)))
+		{
+			PendingTags.AddTag(Tag);
+		}
+	}
+	if (PendingTags.IsEmpty())
+	{
+		return INDEX_NONE;
+	}
+
+	int32 Handle = NextPredictedProxyAnimTagHandle++;
+	if (NextPredictedProxyAnimTagHandle == INDEX_NONE)
+	{
+		NextPredictedProxyAnimTagHandle = 0;
+	}
+	while (Handle == INDEX_NONE || PredictedProxyAnimTags.Contains(Handle))
+	{
+		Handle = NextPredictedProxyAnimTagHandle++;
+	}
+
+	FPP_PredictedProxyAnimTags& State = PredictedProxyAnimTags.Add(Handle);
+	State.Tags = MoveTemp(PendingTags);
+
+	FTimerDelegate ExpireDelegate = FTimerDelegate::CreateWeakLambda(this, [this, Handle]()
+	{
+		EndPredictedProxyAnimTags(Handle);
+	});
+	World->GetTimerManager().SetTimer(
+		State.ExpireTimer, ExpireDelegate, FMath::Max(0.05f, TimeoutSeconds), false);
+
+	RefreshAnimBoolBindings();
+	return Handle;
+}
+
+void UPP_CombatComponent::EndPredictedProxyAnimTags(const int32 PredictionHandle)
+{
+	FPP_PredictedProxyAnimTags* State = PredictedProxyAnimTags.Find(PredictionHandle);
+	if (!State)
+	{
+		return;
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(State->ExpireTimer);
+	}
+	PredictedProxyAnimTags.Remove(PredictionHandle);
+	RefreshAnimBoolBindings();
+}
+
+void UPP_CombatComponent::ConfirmPredictedProxyAnimTag(const FGameplayTag Tag)
+{
+	if (!Tag.IsValid() || PredictedProxyAnimTags.IsEmpty())
+	{
+		return;
+	}
+
+	bool bChanged = false;
+	UWorld* World = GetWorld();
+	for (auto It = PredictedProxyAnimTags.CreateIterator(); It; ++It)
+	{
+		FPP_PredictedProxyAnimTags& State = It.Value();
+		if (!State.Tags.HasTagExact(Tag))
+		{
+			continue;
+		}
+
+		State.Tags.RemoveTag(Tag);
+		bChanged = true;
+		if (State.Tags.IsEmpty())
+		{
+			if (World)
+			{
+				World->GetTimerManager().ClearTimer(State.ExpireTimer);
+			}
+			It.RemoveCurrent();
+		}
+	}
+
+	if (bChanged)
+	{
+		RefreshAnimBoolBindings();
+	}
+}
+
+void UPP_CombatComponent::RefreshAnimBoolBindings()
+{
+	if (!AnimInstance)
+	{
+		RefreshAnimInstance();
+	}
+
+	for (const FPP_CombatAnimBoolBinding& Binding : AnimBoolBindings)
+	{
+		SetAnimBool(Binding, IsAnimBoolActive(Binding));
+	}
 }
 
 bool UPP_CombatComponent::HasAbility(const TSubclassOf<UGameplayAbility>& AbilityClass) const

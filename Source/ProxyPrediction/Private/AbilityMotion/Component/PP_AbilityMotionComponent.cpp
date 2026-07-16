@@ -198,10 +198,16 @@ void UPP_AbilityMotionComponent::ApplyServerMovementCorrectionIgnoreForAbility(b
 		{
 			bSavedServerIgnoreClientMovementErrorChecksAndCorrection =
 				MoveComp->bIgnoreClientMovementErrorChecksAndCorrection;
+			bSavedServerAcceptClientAuthoritativePosition =
+				MoveComp->bServerAcceptClientAuthoritativePosition;
 			bHasSavedServerMovementCorrectionIgnore = true;
 		}
 
+		// Server half of the explicit per-ability opt-in: skip normal error correction and copy
+		// the autonomous client's reported position. Both flags are required; suppressing errors
+		// alone would leave the server on a potentially different character-collision result.
 		MoveComp->bIgnoreClientMovementErrorChecksAndCorrection = true;
+		MoveComp->bServerAcceptClientAuthoritativePosition = true;
 		return;
 	}
 
@@ -212,6 +218,8 @@ void UPP_AbilityMotionComponent::ApplyServerMovementCorrectionIgnoreForAbility(b
 
 	MoveComp->bIgnoreClientMovementErrorChecksAndCorrection =
 		bSavedServerIgnoreClientMovementErrorChecksAndCorrection;
+	MoveComp->bServerAcceptClientAuthoritativePosition =
+		bSavedServerAcceptClientAuthoritativePosition;
 	bHasSavedServerMovementCorrectionIgnore = false;
 }
 

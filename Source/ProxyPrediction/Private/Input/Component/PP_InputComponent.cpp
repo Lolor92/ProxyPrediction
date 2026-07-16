@@ -185,11 +185,18 @@ void UPP_InputComponent::BindActionsFromConfig()
 		}
 
 		InjectedEnhancedInputComponent->BindAction(
-			Row.InputAction, ETriggerEvent::Started,
+			Row.InputAction, Row.AbilityActivationEvent,
 			this, &UPP_InputComponent::HandleActionPressed, Row.InputTag);
 
 		InjectedEnhancedInputComponent->BindAction(
 			Row.InputAction, ETriggerEvent::Completed,
+			this, &UPP_InputComponent::HandleActionReleased, Row.InputTag);
+
+		// Chorded actions can transition from Started/Triggered to Canceled when the modifier
+		// is released while the direction key remains down. Treat that as a physical release too,
+		// otherwise the held-activation retry timer can keep firing after the chord has ended.
+		InjectedEnhancedInputComponent->BindAction(
+			Row.InputAction, ETriggerEvent::Canceled,
 			this, &UPP_InputComponent::HandleActionReleased, Row.InputTag);
 	}
 }

@@ -84,6 +84,11 @@ UE_DEFINE_GAMEPLAY_TAG(TAG_SyncInput_LeftShiftA, "SyncInput.LeftShiftA");
 UE_DEFINE_GAMEPLAY_TAG(TAG_SyncInput_LeftShiftS, "SyncInput.LeftShiftS");
 UE_DEFINE_GAMEPLAY_TAG(TAG_SyncInput_LeftShiftD, "SyncInput.LeftShiftD");
 
+UE_DEFINE_GAMEPLAY_TAG(TAG_SyncInput_Dodge_Forward, "SyncInput.Dodge.Forward");
+UE_DEFINE_GAMEPLAY_TAG(TAG_SyncInput_Dodge_Backward, "SyncInput.Dodge.Backward");
+UE_DEFINE_GAMEPLAY_TAG(TAG_SyncInput_Dodge_Left, "SyncInput.Dodge.Left");
+UE_DEFINE_GAMEPLAY_TAG(TAG_SyncInput_Dodge_Right, "SyncInput.Dodge.Right");
+
 UE_DEFINE_GAMEPLAY_TAG(TAG_SyncInput_SpaceBar, "SyncInput.SpaceBar");
 UE_DEFINE_GAMEPLAY_TAG(TAG_SyncInput_Enter, "SyncInput.Enter");
 UE_DEFINE_GAMEPLAY_TAG(TAG_SyncInput_Escape, "SyncInput.Escape");

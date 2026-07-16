@@ -104,6 +104,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Damage Settings")
 	bool bApplyDamageWhenDodged = false;
 
+	/** Cosmetic cues executed when this collision window activates or lands a hit. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Gameplay Cues", meta=(TitleProperty="CueTag"))
+	TArray<FPP_ReactionGameplayCue> GameplayCuesToExecute;
+
 	/** How forward distance changes relative to the reference actor. */
 UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement Settings")
 EPP_ReactionMoveDirection MoveDirection = EPP_ReactionMoveDirection::None;
@@ -251,10 +255,11 @@ private:
 	static bool HasAlreadyProcessedTarget(const FPP_NotifyRuntimeWindow& Window, AActor* TargetActor);
 	static void MarkTargetProcessed(FPP_NotifyRuntimeWindow& Window, AActor* TargetActor);
 	void BuildReactionSettings(FPP_ReactionTransformSettings& OutTransformSettings,
-		FPP_ReactionDefenseSettings& OutDefenseSettings, FPP_ReactionDamageSettings& OutDamageSettings) const;
-	void HandleCollisionTarget(AActor* AttackerActor, AActor* HitActor) const;
+		FPP_ReactionDefenseSettings& OutDefenseSettings, FPP_ReactionDamageSettings& OutDamageSettings,
+		FPP_ReactionGameplayCueSettings& OutGameplayCueSettings) const;
+	void HandleCollisionTarget(AActor* AttackerActor, AActor* HitActor, const FHitResult& HitResult) const;
 	
-	void TryPlayPredictedReaction(AActor* AttackerActor, AActor* HitActor) const;
+	void TryPlayPredictedReaction(AActor* AttackerActor, AActor* HitActor, const FHitResult& HitResult) const;
 	
 	/** Runtime hit state isolated by mesh and notify instance. */
 	TMap<FPP_NotifyRuntimeKey, FPP_NotifyRuntimeWindow> ActiveWindows;

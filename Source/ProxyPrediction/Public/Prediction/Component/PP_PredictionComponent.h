@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
 #include "Components/ActorComponent.h"
+#include "Engine/EngineTypes.h"
 #include "Prediction/Data/PP_ReactionData.h"
 #include "TimerManager.h"
 #include "PP_PredictionComponent.generated.h"
@@ -13,6 +14,7 @@ class UAbilitySystemComponent;
 class UAnimMontage;
 class UCharacterMovementComponent;
 class USkeletalMeshComponent;
+class USceneComponent;
 
 /** Identifier carried through the predicted and confirmed reaction flow. */
 USTRUCT(BlueprintType)
@@ -52,9 +54,17 @@ struct FPP_PendingPredictedReaction
 	UPROPERTY()
 	double TimeSeconds = 0.0;
 
-	/** Whether this client actually played the clean reaction montage. */
+	/** Whether this client started clean-hit visual feedback locally. */
 	UPROPERTY()
 	bool bPlayedLocally = false;
+
+	/** Whether predictable GameplayCues were executed immediately on this client. */
+	UPROPERTY()
+	bool bPlayedGameplayCuesLocally = false;
+
+	/** Handle for cosmetic target-effect tags predicted on this remote proxy. */
+	UPROPERTY()
+	int32 PredictedProxyAnimTagHandle = INDEX_NONE;
 };
 
 /** Confirmed prediction waiting for its authoritative final transform. */
@@ -142,6 +152,12 @@ struct FPP_AuthoritativeCollisionRecord
 	FPP_ReactionDamageSettings DamageSettings;
 
 	UPROPERTY()
+	FPP_ReactionGameplayCueSettings GameplayCueSettings;
+
+	UPROPERTY()
+	FHitResult HitResult;
+
+	UPROPERTY()
 	double TimeSeconds = 0.0;
 };
 
@@ -174,7 +190,17 @@ struct FPP_DeferredServerReactionFromCollision
 	FPP_ReactionTransformSettings TransformSettings;
 	FPP_ReactionDefenseSettings DefenseSettings;
 	FPP_ReactionDamageSettings DamageSettings;
+	FPP_ReactionGameplayCueSettings GameplayCueSettings;
+	FHitResult HitResult;
 	uint64 EarliestFrameCounter = 0;
+};
+
+/** Selects which locally executed cues participate in prediction or confirmation. */
+enum class EPP_GameplayCueExecutionFilter : uint8
+{
+	All,
+	PredictableOnly,
+	ConfirmationOnly
 };
 
 /** Short post-reaction window that lets normal owner movement replication settle before final reconciliation. */
@@ -207,23 +233,30 @@ class PROXYPREDICTION_API UPP_PredictionComponent : public UActorComponent
 public:
 	UPP_PredictionComponent();
 
-	/** Predicts the target transform and montage, then asks the server to confirm them. */
+	/** Executes activation-timed cues locally when this montage notify begins. */
+	void ExecuteActivationGameplayCues(const FPP_ReactionGameplayCueSettings& GameplayCueSettings) const;
+
+	/** Predicts target transform and visual feedback, then asks the server to confirm the reaction. */
 	UFUNCTION(BlueprintCallable, Category="SyncPrediction|Reaction")
 	bool PlayPredictedReactionOnTargetProxy(AActor* TargetActor, FGameplayTag ReactionTag,
 		FPP_ReactionTransformSettings TransformSettings, FPP_ReactionDefenseSettings DefenseSettings,
-		FPP_ReactionDamageSettings DamageSettings);
+		FPP_ReactionDamageSettings DamageSettings, FPP_ReactionGameplayCueSettings GameplayCueSettings,
+		FHitResult HitResult);
 
 	/** Records a server notify hit and resolves a matching client request using server-authored settings. */
 	void RecordAuthoritativeCollision(AActor* TargetActor, FGameplayTag ReactionTag,
 		const FPP_ReactionTransformSettings& TransformSettings,
 		const FPP_ReactionDefenseSettings& DefenseSettings,
-		const FPP_ReactionDamageSettings& DamageSettings);
+		const FPP_ReactionDamageSettings& DamageSettings,
+		const FPP_ReactionGameplayCueSettings& GameplayCueSettings,
+		const FHitResult& HitResult);
 
 	/** Confirms a reaction using transform settings stored in server Reaction Data. */
 	UFUNCTION(Server, Reliable)
 	void ServerConfirmPredictedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings,
-		FPP_ReactionDefenseSettings DefenseSettings, FPP_ReactionDamageSettings DamageSettings);
+		FPP_ReactionDefenseSettings DefenseSettings, FPP_ReactionDamageSettings DamageSettings,
+		FPP_ReactionGameplayCueSettings GameplayCueSettings, FHitResult HitResult);
 
 	/** Override for server-only ability, team, line-of-sight, or combat-rule validation. */
 	UFUNCTION(BlueprintNativeEvent, Category="SyncPrediction|Server Validation")
@@ -234,7 +267,8 @@ public:
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastPlayConfirmedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, FVector ServerStartLocation, FRotator ServerStartRotation,
-		float ClientInterpolationSpeed, bool bPlayReaction);
+		float ClientInterpolationSpeed, bool bPlayReaction,
+		FPP_ReactionGameplayCueSettings GameplayCueSettings, FHitResult HitResult);
 
 protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -249,12 +283,16 @@ private:
 	bool ProcessServerConfirmedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, const FPP_ReactionTransformSettings& TransformSettings,
 		const FPP_ReactionDefenseSettings& DefenseSettings,
-		const FPP_ReactionDamageSettings& DamageSettings);
+		const FPP_ReactionDamageSettings& DamageSettings,
+		const FPP_ReactionGameplayCueSettings& GameplayCueSettings,
+		const FHitResult& HitResult);
 	void DeferServerConfirmedReactionFromCollision(const FPP_ReactionPredictionContext& Context,
 		AActor* TargetActor, FGameplayTag ReactionTag,
 		const FPP_ReactionTransformSettings& TransformSettings,
 		const FPP_ReactionDefenseSettings& DefenseSettings,
-		const FPP_ReactionDamageSettings& DamageSettings);
+		const FPP_ReactionDamageSettings& DamageSettings,
+		const FPP_ReactionGameplayCueSettings& GameplayCueSettings,
+		const FHitResult& HitResult);
 	void ProcessDeferredServerReactionsFromCollision();
 	void ScheduleServerRootMotionStartAlignment(const FPP_ReactionPredictionContext& Context,
 		AActor* TargetActor, FGameplayTag ReactionTag, UAnimMontage* Montage,
@@ -263,7 +301,9 @@ private:
 	bool ConsumeAuthoritativeCollision(AActor* TargetActor, FGameplayTag ReactionTag,
 		FPP_ReactionTransformSettings& OutTransformSettings,
 		FPP_ReactionDefenseSettings& OutDefenseSettings,
-		FPP_ReactionDamageSettings& OutDamageSettings);
+		FPP_ReactionDamageSettings& OutDamageSettings,
+		FPP_ReactionGameplayCueSettings& OutGameplayCueSettings,
+		FHitResult& OutHitResult);
 	void QueuePendingServerReactionRequest(const FPP_ReactionPredictionContext& Context,
 		AActor* TargetActor, FGameplayTag ReactionTag);
 	EPP_ReactionDefenseOutcome ResolveDefenseOutcome(AActor* TargetActor,
@@ -274,17 +314,32 @@ private:
 	bool ShouldApplyDamage(AActor* TargetActor, EPP_ReactionDefenseOutcome Outcome,
 		const FPP_ReactionDamageSettings& DamageSettings) const;
 	void ApplyDamageEffects(AActor* TargetActor, const FPP_ReactionDamageSettings& DamageSettings) const;
+	bool ExecuteGameplayCuesLocally(AActor* TargetActor,
+		const FPP_ReactionGameplayCueSettings& GameplayCueSettings, const FHitResult& HitResult,
+		EPP_ReactionGameplayCueTriggerTiming TriggerTiming,
+		EPP_GameplayCueExecutionFilter ExecutionFilter) const;
+	void ExecuteGameplayCueOnASC(UAbilitySystemComponent* ASC, UAbilitySystemComponent* TargetASC,
+		AActor* TargetActor, const FPP_ReactionGameplayCue& Cue, const FHitResult& HitResult) const;
+	FVector GetGameplayCueSpawnLocation(const FPP_ReactionGameplayCue& Cue,
+		const FHitResult& HitResult) const;
+	USceneComponent* GetGameplayCueAttachComponent(UAbilitySystemComponent* ASC,
+		UAbilitySystemComponent* TargetASC, AActor* TargetActor,
+		const FPP_ReactionGameplayCue& Cue, const FHitResult& HitResult) const;
 
-	// Prediction start: validate -> create marker -> transform -> montage -> server RPC.
+	// Prediction start: validate -> transform/cosmetics -> create marker -> server RPC.
 	bool CanPlayPredictedReactionOnTargetProxy(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction) const;
 	FPP_ReactionPredictionContext MakeReactionPredictionContext();
 	void AddPendingPredictedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
-		FGameplayTag ReactionTag, bool bPlayedLocally);
+		FGameplayTag ReactionTag, bool bPlayedLocally, bool bPlayedGameplayCuesLocally,
+		int32 PredictedProxyAnimTagHandle);
 	void RemoveExpiredPendingPredictedReactions();
+	int32 BeginPredictedProxyTargetEffectFeedback(AActor* TargetActor,
+		const FPP_ReactionDataEntry& Reaction) const;
+	static void EndPredictedProxyTargetEffectFeedback(AActor* TargetActor, int32 PredictionHandle);
 
 	float GetReactionStartPosition(const FPP_ReactionDataEntry& Reaction) const;
-	void PrepareOwnerReactionRootMotionState(ACharacter* TargetCharacter, const FPP_ReactionPredictionContext& Context,
-		FGameplayTag ReactionTag) const;
+	/** Keeps a locally predicted proxy reaction full-body only while proxy root-motion reconciliation is active. */
+	void RefreshPredictedProxyReconciliationAnimationState(ACharacter* TargetCharacter) const;
 
 	// Shared montage, effect, and GAS helpers.
 	bool PlayReactionMontageOnActor(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction, float StartPosition,
@@ -312,7 +367,9 @@ private:
 
 	// Start-confirmation markers suppress duplicate montage playback.
 	bool ConsumePendingPredictedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
-		FGameplayTag* OutPredictedReactionTag = nullptr, bool* bOutPlayedLocally = nullptr);
+		FGameplayTag* OutPredictedReactionTag = nullptr, bool* bOutPlayedLocally = nullptr,
+		bool* bOutPlayedGameplayCuesLocally = nullptr,
+		int32* OutPredictedProxyAnimTagHandle = nullptr);
 	void AddDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag);
 	bool ConsumeDeferredPredictedReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
@@ -406,6 +463,10 @@ private:
 	/** Local predictions waiting for server start confirmation. */
 	UPROPERTY(Transient)
 	TArray<FPP_PendingPredictedReaction> PendingPredictedReactions;
+
+	/** Maximum time cosmetic target-effect tags wait for authoritative GAS state or rejection. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.05", Units="Seconds"))
+	float PredictedProxyAnimTagTimeout = 1.0f;
 
 	/** Confirmed predictions waiting for server final transforms. */
 	UPROPERTY(Transient)

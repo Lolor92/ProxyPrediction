@@ -15,8 +15,9 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
 #include "GameplayEffect.h"
-#include "AbilityMotion/Component/PP_AbilityMotionComponent.h"
 #include "AbilityMotion/Movement/PP_CharacterMovementComponent.h"
+#include "AnimInstance/PP_AnimInstance.h"
+#include "Tag/PP_NativeTags.h"
 
 namespace
 {
@@ -37,8 +38,7 @@ namespace
 		return Enum && Enum->IsValidEnumValue(static_cast<int64>(Value));
 	}
 
-	static void PP_SetOwnerMontageTrackCorrectionSuppressed
-	(UCharacterMovementComponent* MovementComponent,
+	static void PP_SetOwnerMontageTrackCorrectionSuppressed(UCharacterMovementComponent* MovementComponent,
 	 bool bSuppressed)
 	{
 		UPP_CharacterMovementComponent* SyncMoveComponent =
@@ -61,6 +61,12 @@ UPP_PredictionComponent::UPP_PredictionComponent()
 void UPP_PredictionComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	StopAllClientReactionMovementInterpolations();
+	for (const FPP_PendingPredictedReaction& Pending : PendingPredictedReactions)
+	{
+		EndPredictedProxyTargetEffectFeedback(
+			Pending.TargetActor.Get(), Pending.PredictedProxyAnimTagHandle);
+	}
+	PendingPredictedReactions.Reset();
 	AuthoritativeCollisionRecords.Reset();
 	PendingServerReactionRequests.Reset();
 	for (const FPP_DeferredServerReactionFromCollision& State : DeferredServerReactionsFromCollision)
@@ -91,8 +97,8 @@ void UPP_PredictionComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
-void UPP_PredictionComponent::TickComponent(
-	float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+void UPP_PredictionComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
+	FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	ProcessDeferredServerReactionsFromCollision();
@@ -105,10 +111,8 @@ void UPP_PredictionComponent::TickComponent(
 	}
 }
 
-void UPP_PredictionComponent::BeginPredictedProxyRootMotionReconciliation(
-	const FPP_ReactionPredictionContext& Context,
-	AActor* TargetActor,
-	FGameplayTag ReactionTag)
+void UPP_PredictionComponent::BeginPredictedProxyRootMotionReconciliation(const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor, FGameplayTag ReactionTag)
 {
 	ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
 	UWorld* World = GetWorld();
@@ -133,6 +137,7 @@ void UPP_PredictionComponent::BeginPredictedProxyRootMotionReconciliation(
 		PredictedProxyRootMotionReconciliations.AddDefaulted_GetRef();
 	State.TargetCharacter = TargetCharacter;
 	State.Montage = Reaction.Montage;
+	RefreshPredictedProxyReconciliationAnimationState(TargetCharacter);
 	const USkeletalMeshComponent* TargetMesh = TargetCharacter->GetMesh();
 	const UAnimInstance* AnimInstance = TargetMesh ? TargetMesh->GetAnimInstance() : nullptr;
 	const float CurrentMontagePosition = AnimInstance
@@ -211,7 +216,8 @@ void UPP_PredictionComponent::RemovePredictedProxyRootMotionReconciliation(int32
 {
 	if (!PredictedProxyRootMotionReconciliations.IsValidIndex(Index)) return;
 
-	if (ACharacter* TargetCharacter = PredictedProxyRootMotionReconciliations[Index].TargetCharacter.Get())
+	ACharacter* TargetCharacter = PredictedProxyRootMotionReconciliations[Index].TargetCharacter.Get();
+	if (TargetCharacter)
 	{
 		if (UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement())
 		{
@@ -220,14 +226,13 @@ void UPP_PredictionComponent::RemovePredictedProxyRootMotionReconciliation(int32
 	}
 
 	PredictedProxyRootMotionReconciliations.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+	RefreshPredictedProxyReconciliationAnimationState(TargetCharacter);
 }
 
-void UPP_PredictionComponent::RecordAuthoritativeCollision(
-	AActor* TargetActor,
-	FGameplayTag ReactionTag,
-	const FPP_ReactionTransformSettings& TransformSettings,
-	const FPP_ReactionDefenseSettings& DefenseSettings,
-	const FPP_ReactionDamageSettings& DamageSettings)
+void UPP_PredictionComponent::RecordAuthoritativeCollision(AActor* TargetActor, FGameplayTag ReactionTag,
+	const FPP_ReactionTransformSettings& TransformSettings, const FPP_ReactionDefenseSettings& DefenseSettings, 
+	const FPP_ReactionDamageSettings& DamageSettings, const FPP_ReactionGameplayCueSettings& GameplayCueSettings,
+	const FHitResult& HitResult)
 {
 	AActor* OwnerActor = GetOwner();
 	UWorld* World = GetWorld();
@@ -237,13 +242,16 @@ void UPP_PredictionComponent::RecordAuthoritativeCollision(
 		return;
 	}
 
-	// A listen-server or standalone owner has no remote predicting client request to match.
+	// A listen-server, standalone owner, NPC, or non-pawn attacker has no remote predicting
+	// client request to match. Only a remote player-controlled pawn waits for the client RPC.
 	const APawn* OwnerPawn = Cast<APawn>(OwnerActor);
-	if (OwnerPawn && OwnerPawn->IsLocallyControlled())
+	const bool bHasRemotePredictingOwner = OwnerPawn &&
+		OwnerPawn->IsPlayerControlled() && !OwnerPawn->IsLocallyControlled();
+	if (!bHasRemotePredictingOwner)
 	{
 		const FPP_ReactionPredictionContext Context = MakeReactionPredictionContext();
 		DeferServerConfirmedReactionFromCollision(Context, TargetActor, ReactionTag,
-			TransformSettings, DefenseSettings, DamageSettings);
+			TransformSettings, DefenseSettings, DamageSettings, GameplayCueSettings, HitResult);
 		return;
 	}
 
@@ -257,7 +265,7 @@ void UPP_PredictionComponent::RecordAuthoritativeCollision(
 		const FPP_ReactionPredictionContext Context = Request.Context;
 		PendingServerReactionRequests.RemoveAt(Index, 1, EAllowShrinking::No);
 		DeferServerConfirmedReactionFromCollision(Context, TargetActor, ReactionTag,
-			TransformSettings, DefenseSettings, DamageSettings);
+			TransformSettings, DefenseSettings, DamageSettings, GameplayCueSettings, HitResult);
 		return;
 	}
 
@@ -268,6 +276,8 @@ void UPP_PredictionComponent::RecordAuthoritativeCollision(
 		ExistingRecord.TransformSettings = TransformSettings;
 		ExistingRecord.DefenseSettings = DefenseSettings;
 		ExistingRecord.DamageSettings = DamageSettings;
+		ExistingRecord.GameplayCueSettings = GameplayCueSettings;
+		ExistingRecord.HitResult = HitResult;
 		ExistingRecord.TimeSeconds = World->GetTimeSeconds();
 		return;
 	}
@@ -283,6 +293,8 @@ void UPP_PredictionComponent::RecordAuthoritativeCollision(
 	Record.TransformSettings = TransformSettings;
 	Record.DefenseSettings = DefenseSettings;
 	Record.DamageSettings = DamageSettings;
+	Record.GameplayCueSettings = GameplayCueSettings;
+	Record.HitResult = HitResult;
 	Record.TimeSeconds = World->GetTimeSeconds();
 }
 
@@ -292,7 +304,9 @@ void UPP_PredictionComponent::DeferServerConfirmedReactionFromCollision(
 	FGameplayTag ReactionTag,
 	const FPP_ReactionTransformSettings& TransformSettings,
 	const FPP_ReactionDefenseSettings& DefenseSettings,
-	const FPP_ReactionDamageSettings& DamageSettings)
+	const FPP_ReactionDamageSettings& DamageSettings,
+	const FPP_ReactionGameplayCueSettings& GameplayCueSettings,
+	const FHitResult& HitResult)
 {
 	UWorld* World = GetWorld();
 	if (!World || !Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return;
@@ -311,17 +325,20 @@ void UPP_PredictionComponent::DeferServerConfirmedReactionFromCollision(
 		Existing.TransformSettings = TransformSettings;
 		Existing.DefenseSettings = DefenseSettings;
 		Existing.DamageSettings = DamageSettings;
+		Existing.GameplayCueSettings = GameplayCueSettings;
+		Existing.HitResult = HitResult;
 		return;
 	}
 
-	FPP_DeferredServerReactionFromCollision& State =
-		DeferredServerReactionsFromCollision.AddDefaulted_GetRef();
+	FPP_DeferredServerReactionFromCollision& State = DeferredServerReactionsFromCollision.AddDefaulted_GetRef();
 	State.Context = Context;
 	State.TargetActor = TargetActor;
 	State.ReactionTag = ReactionTag;
 	State.TransformSettings = TransformSettings;
 	State.DefenseSettings = DefenseSettings;
 	State.DamageSettings = DamageSettings;
+	State.GameplayCueSettings = GameplayCueSettings;
+	State.HitResult = HitResult;
 	State.EarliestFrameCounter = GFrameCounter + 1;
 
 	if (ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor))
@@ -363,7 +380,8 @@ void UPP_PredictionComponent::ProcessDeferredServerReactionsFromCollision()
 
 		if (!ProcessServerConfirmedReaction(
 			State.Context, TargetActor, State.ReactionTag,
-			State.TransformSettings, State.DefenseSettings, State.DamageSettings))
+			State.TransformSettings, State.DefenseSettings, State.DamageSettings,
+			State.GameplayCueSettings, State.HitResult))
 		{
 			ClientRejectPredictedReaction(
 				State.Context, TargetActor, State.ReactionTag,
@@ -372,14 +390,9 @@ void UPP_PredictionComponent::ProcessDeferredServerReactionsFromCollision()
 	}
 }
 
-void UPP_PredictionComponent::ScheduleServerRootMotionStartAlignment(
-	const FPP_ReactionPredictionContext& Context,
-	AActor* TargetActor,
-	FGameplayTag ReactionTag,
-	UAnimMontage* Montage,
-	float StartPosition,
-	const FVector& ServerStartLocation,
-	int32 Attempt)
+void UPP_PredictionComponent::ScheduleServerRootMotionStartAlignment(const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor, FGameplayTag ReactionTag, UAnimMontage* Montage, float StartPosition,
+	const FVector& ServerStartLocation, int32 Attempt)
 {
 	UWorld* World = GetWorld();
 	if (!World || !GetOwner() || !GetOwner()->HasAuthority() || !Context.IsValid() ||
@@ -492,7 +505,9 @@ bool UPP_PredictionComponent::ConsumeAuthoritativeCollision(
 	FGameplayTag ReactionTag,
 	FPP_ReactionTransformSettings& OutTransformSettings,
 	FPP_ReactionDefenseSettings& OutDefenseSettings,
-	FPP_ReactionDamageSettings& OutDamageSettings)
+	FPP_ReactionDamageSettings& OutDamageSettings,
+	FPP_ReactionGameplayCueSettings& OutGameplayCueSettings,
+	FHitResult& OutHitResult)
 {
 	RemoveExpiredAuthoritativeCollisionState();
 
@@ -504,6 +519,8 @@ bool UPP_PredictionComponent::ConsumeAuthoritativeCollision(
 		OutTransformSettings = Record.TransformSettings;
 		OutDefenseSettings = Record.DefenseSettings;
 		OutDamageSettings = Record.DamageSettings;
+		OutGameplayCueSettings = Record.GameplayCueSettings;
+		OutHitResult = Record.HitResult;
 		AuthoritativeCollisionRecords.RemoveAt(Index, 1, EAllowShrinking::No);
 		return true;
 	}
@@ -619,7 +636,7 @@ bool UPP_PredictionComponent::ValidateServerReactionRequest(
 	UWorld* World = GetWorld();
 	if (!OwnerActor || !TargetActor || TargetActor == OwnerActor || !World ||
 		TargetActor->GetWorld() != World || TargetActor->IsActorBeingDestroyed() ||
-		!Reaction.Montage || !Cast<ACharacter>(TargetActor))
+		!Cast<ACharacter>(TargetActor))
 	{
 		return false;
 	}
@@ -787,11 +804,161 @@ void UPP_PredictionComponent::ApplyDamageEffects(
 	}
 }
 
+void UPP_PredictionComponent::ExecuteActivationGameplayCues(
+	const FPP_ReactionGameplayCueSettings& GameplayCueSettings) const
+{
+	ExecuteGameplayCuesLocally(
+		nullptr, GameplayCueSettings, FHitResult(),
+		EPP_ReactionGameplayCueTriggerTiming::OnActivation,
+		EPP_GameplayCueExecutionFilter::All);
+}
+
+bool UPP_PredictionComponent::ExecuteGameplayCuesLocally(
+	AActor* TargetActor,
+	const FPP_ReactionGameplayCueSettings& GameplayCueSettings,
+	const FHitResult& HitResult,
+	const EPP_ReactionGameplayCueTriggerTiming TriggerTiming,
+	const EPP_GameplayCueExecutionFilter ExecutionFilter) const
+{
+	if (GetNetMode() == NM_DedicatedServer || GameplayCueSettings.Cues.IsEmpty()) return false;
+
+	AActor* InstigatorActor = GetOwner();
+	UAbilitySystemComponent* InstigatorASC = GetAbilitySystemComponentFromActor(InstigatorActor);
+	UAbilitySystemComponent* TargetASC = GetAbilitySystemComponentFromActor(TargetActor);
+	if (!InstigatorActor || !InstigatorASC) return false;
+
+	bool bExecutedAnyCue = false;
+	for (const FPP_ReactionGameplayCue& Cue : GameplayCueSettings.Cues)
+	{
+		if (!Cue.CueTag.IsValid() || Cue.TriggerTiming != TriggerTiming) continue;
+		if (ExecutionFilter == EPP_GameplayCueExecutionFilter::PredictableOnly && !Cue.bPredictLocally) continue;
+		if (ExecutionFilter == EPP_GameplayCueExecutionFilter::ConfirmationOnly && Cue.bPredictLocally) continue;
+
+		// Camera shake cues belong only to the locally controlled attacker. Invoking the parent cue
+		// through the instigator ASC also preserves the behavior of the ProjectLogos hit-window code.
+		if (Cue.CueTag.MatchesTag(TAG_GameplayCue_Hit_CameraShake))
+		{
+			const APawn* InstigatorPawn = Cast<APawn>(InstigatorActor);
+			if (!InstigatorPawn || !InstigatorPawn->IsLocallyControlled()) continue;
+
+			ExecuteGameplayCueOnASC(InstigatorASC, TargetASC, TargetActor, Cue, HitResult);
+			bExecutedAnyCue = true;
+			continue;
+		}
+
+		switch (Cue.Recipient)
+		{
+		case EPP_ReactionGameplayCueRecipient::Instigator:
+			ExecuteGameplayCueOnASC(InstigatorASC, TargetASC, TargetActor, Cue, HitResult);
+			bExecutedAnyCue = true;
+			break;
+
+		case EPP_ReactionGameplayCueRecipient::Target:
+			if (TargetASC)
+			{
+				ExecuteGameplayCueOnASC(TargetASC, TargetASC, TargetActor, Cue, HitResult);
+				bExecutedAnyCue = true;
+			}
+			break;
+
+		case EPP_ReactionGameplayCueRecipient::Both:
+			ExecuteGameplayCueOnASC(InstigatorASC, TargetASC, TargetActor, Cue, HitResult);
+			bExecutedAnyCue = true;
+			if (TargetASC && TargetASC != InstigatorASC)
+			{
+				ExecuteGameplayCueOnASC(TargetASC, TargetASC, TargetActor, Cue, HitResult);
+			}
+			break;
+
+		default:
+			break;
+		}
+	}
+
+	return bExecutedAnyCue;
+}
+
+void UPP_PredictionComponent::ExecuteGameplayCueOnASC(
+	UAbilitySystemComponent* ASC,
+	UAbilitySystemComponent* TargetASC,
+	AActor* TargetActor,
+	const FPP_ReactionGameplayCue& Cue,
+	const FHitResult& HitResult) const
+{
+	if (!ASC || !Cue.CueTag.IsValid()) return;
+
+	AActor* InstigatorActor = GetOwner();
+	FGameplayCueParameters Params;
+	Params.Instigator = InstigatorActor;
+	Params.EffectCauser = InstigatorActor;
+	Params.SourceObject = const_cast<UPP_PredictionComponent*>(this);
+	Params.Location = GetGameplayCueSpawnLocation(Cue, HitResult);
+	Params.Normal = HitResult.GetActor()
+		? FVector(HitResult.ImpactNormal)
+		: (InstigatorActor ? InstigatorActor->GetActorForwardVector() : FVector::ForwardVector);
+	Params.TargetAttachComponent = GetGameplayCueAttachComponent(
+		ASC, TargetASC, TargetActor, Cue, HitResult);
+
+	// This function is called on each intended machine. Avoid ASC network dispatch here so the
+	// custom reaction PredictionId remains the single source of duplicate suppression.
+	ASC->InvokeGameplayCueEvent(Cue.CueTag, EGameplayCueEvent::Executed, Params);
+}
+
+FVector UPP_PredictionComponent::GetGameplayCueSpawnLocation(
+	const FPP_ReactionGameplayCue& Cue,
+	const FHitResult& HitResult) const
+{
+	AActor* InstigatorActor = GetOwner();
+	FVector SpawnLocation = InstigatorActor
+		? InstigatorActor->GetActorLocation()
+		: FVector::ZeroVector;
+
+	if (HitResult.GetActor())
+	{
+		switch (Cue.SpawnPoint)
+		{
+		case EPP_ReactionGameplayCueSpawnPoint::InstigatorLocation:
+			break;
+		case EPP_ReactionGameplayCueSpawnPoint::HitImpactPoint:
+			SpawnLocation = HitResult.ImpactPoint;
+			break;
+		case EPP_ReactionGameplayCueSpawnPoint::HitLocation:
+			SpawnLocation = HitResult.Location;
+			break;
+		default:
+			break;
+		}
+	}
+
+	return SpawnLocation + Cue.LocationOffset;
+}
+
+USceneComponent* UPP_PredictionComponent::GetGameplayCueAttachComponent(
+	UAbilitySystemComponent* ASC,
+	UAbilitySystemComponent* TargetASC,
+	AActor* TargetActor,
+	const FPP_ReactionGameplayCue& Cue,
+	const FHitResult& HitResult) const
+{
+	if (!Cue.bAttachToTarget) return nullptr;
+
+	if (ASC == TargetASC && TargetActor)
+	{
+		return HitResult.GetComponent()
+			? HitResult.GetComponent()
+			: TargetActor->GetRootComponent();
+	}
+
+	AActor* InstigatorActor = GetOwner();
+	return InstigatorActor ? InstigatorActor->GetRootComponent() : nullptr;
+}
+
 bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy
 (AActor* TargetActor, FGameplayTag ReactionTag, FPP_ReactionTransformSettings TransformSettings,
- FPP_ReactionDefenseSettings DefenseSettings, FPP_ReactionDamageSettings DamageSettings)
+ FPP_ReactionDefenseSettings DefenseSettings, FPP_ReactionDamageSettings DamageSettings,
+ FPP_ReactionGameplayCueSettings GameplayCueSettings, FHitResult HitResult)
 {
-	// Local prediction: validate -> mark -> transform -> montage -> server RPC.
+	// Local prediction: validate -> transform/cosmetics -> mark -> server RPC.
 	if (!ReactionData || !ReactionTag.IsValid()) return false;
 
 	const FPP_ReactionTransformSettings RequestedTransformSettings = TransformSettings;
@@ -818,10 +985,9 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy
 
 	const FPP_ReactionPredictionContext Context = MakeReactionPredictionContext();
 	const bool bPredictCleanReaction = PredictedDefenseOutcome == EPP_ReactionDefenseOutcome::None;
-
-	AddPendingPredictedReaction(Context, TargetActor, ReactionTag, bPredictCleanReaction);
-
 	const float StartPosition = GetReactionStartPosition(Reaction);
+	int32 PredictedProxyAnimTagHandle = INDEX_NONE;
+	bool bPlayedGameplayCuesLocally = false;
 
 	if (const APawn* OwnerPawn = Cast<APawn>(GetOwner()))
 	{
@@ -835,12 +1001,29 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy
 		ApplyLatestOlderProxyPendingFinalReactionCorrection(Context, TargetActor, TEXT("PredictedPreflight"));
 		ApplyReactionTransform(GetOwner(), TargetActor, TransformSettings);
 
-		if (!PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true))
+		if (Reaction.Montage &&
+			!PlayReactionMontageOnActor(TargetActor, Reaction, StartPosition, true))
 		{
-			ConsumePendingPredictedReaction(Context, TargetActor);
 			return false;
 		}
+
+		// Montage reactions already provide immediate feedback. A montage-less reaction instead
+		// predicts only the animation-facing tags granted by its target effects.
+		if (!Reaction.Montage)
+		{
+			PredictedProxyAnimTagHandle =
+				BeginPredictedProxyTargetEffectFeedback(TargetActor, Reaction);
+		}
+
+		bPlayedGameplayCuesLocally = ExecuteGameplayCuesLocally(
+			TargetActor, GameplayCueSettings, HitResult,
+			EPP_ReactionGameplayCueTriggerTiming::OnHit,
+			EPP_GameplayCueExecutionFilter::PredictableOnly);
 	}
+
+	AddPendingPredictedReaction(
+		Context, TargetActor, ReactionTag, bPredictCleanReaction,
+		bPlayedGameplayCuesLocally, PredictedProxyAnimTagHandle);
 
 	if (const UWorld* World = GetWorld())
 	{
@@ -849,7 +1032,7 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy
 
 	// Send the clean-hit request; the server independently selects the defensive outcome.
 	ServerConfirmPredictedReaction(Context, TargetActor, ReactionTag, RequestedTransformSettings,
-		DefenseSettings, DamageSettings);
+		DefenseSettings, DamageSettings, GameplayCueSettings, HitResult);
 
 	return true;
 }
@@ -860,7 +1043,9 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation
  FGameplayTag ReactionTag,
  FPP_ReactionTransformSettings TransformSettings,
  FPP_ReactionDefenseSettings DefenseSettings,
- FPP_ReactionDamageSettings DamageSettings)
+ FPP_ReactionDamageSettings DamageSettings,
+ FPP_ReactionGameplayCueSettings GameplayCueSettings,
+ FHitResult HitResult)
 {
 	if (bRequireAuthoritativeCollisionMatch)
 	{
@@ -877,11 +1062,15 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation
 		FPP_ReactionTransformSettings AuthoritativeTransformSettings;
 		FPP_ReactionDefenseSettings AuthoritativeDefenseSettings;
 		FPP_ReactionDamageSettings AuthoritativeDamageSettings;
+		FPP_ReactionGameplayCueSettings AuthoritativeGameplayCueSettings;
+		FHitResult AuthoritativeHitResult;
 		if (ConsumeAuthoritativeCollision(TargetActor, ReactionTag,
-			AuthoritativeTransformSettings, AuthoritativeDefenseSettings, AuthoritativeDamageSettings))
+			AuthoritativeTransformSettings, AuthoritativeDefenseSettings, AuthoritativeDamageSettings,
+			AuthoritativeGameplayCueSettings, AuthoritativeHitResult))
 		{
 			if (!ProcessServerConfirmedReaction(Context, TargetActor, ReactionTag,
-				AuthoritativeTransformSettings, AuthoritativeDefenseSettings, AuthoritativeDamageSettings))
+				AuthoritativeTransformSettings, AuthoritativeDefenseSettings, AuthoritativeDamageSettings,
+				AuthoritativeGameplayCueSettings, AuthoritativeHitResult))
 			{
 				ClientRejectPredictedReaction(
 					Context, TargetActor, ReactionTag, TargetActor->GetActorLocation(), TargetActor->GetActorRotation());
@@ -895,7 +1084,7 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation
 	}
 
 	if (!ProcessServerConfirmedReaction(Context, TargetActor, ReactionTag, TransformSettings,
-		DefenseSettings, DamageSettings))
+		DefenseSettings, DamageSettings, GameplayCueSettings, HitResult))
 	{
 		ClientRejectPredictedReaction(
 			Context, TargetActor, ReactionTag, TargetActor->GetActorLocation(), TargetActor->GetActorRotation());
@@ -908,7 +1097,9 @@ bool UPP_PredictionComponent::ProcessServerConfirmedReaction(
 	FGameplayTag ReactionTag,
 	const FPP_ReactionTransformSettings& TransformSettings,
 	const FPP_ReactionDefenseSettings& DefenseSettings,
-	const FPP_ReactionDamageSettings& DamageSettings)
+	const FPP_ReactionDamageSettings& DamageSettings,
+	const FPP_ReactionGameplayCueSettings& GameplayCueSettings,
+	const FHitResult& HitResult)
 {
 	// Authority repeats the transform, applies effects, then publishes start and finish.
 	AActor* OwnerActor = GetOwner();
@@ -918,16 +1109,31 @@ bool UPP_PredictionComponent::ProcessServerConfirmedReaction(
 
 	if (!Context.IsValid() || !TargetActor || !ReactionData || !ReactionTag.IsValid()) return false;
 	if (!ConsumeServerReactionRequestBudget()) return false;
+	const FGameplayTag GameplayCueRootTag =
+		FGameplayTag::RequestGameplayTag(FName(TEXT("GameplayCue")), false);
 	if (!PP_IsValidReactionEnumValue(DefenseSettings.SuperArmor.RequiredSuperArmor) ||
 		!FMath::IsFinite(DefenseSettings.Block.BlockAngleDegrees) ||
 		DefenseSettings.Block.BlockAngleDegrees < 0.0f || DefenseSettings.Block.BlockAngleDegrees > 180.0f ||
-		DamageSettings.DamageEffects.Num() > 16)
+		DamageSettings.DamageEffects.Num() > 16 || GameplayCueSettings.Cues.Num() > 16 ||
+		HitResult.Location.ContainsNaN() || HitResult.ImpactPoint.ContainsNaN() ||
+		HitResult.ImpactNormal.ContainsNaN())
 	{
 		return false;
 	}
 	for (const FPP_ReactionDamageEffect& DamageEffect : DamageSettings.DamageEffects)
 	{
 		if (!FMath::IsFinite(DamageEffect.EffectLevel) || DamageEffect.EffectLevel < 0.0f) return false;
+	}
+	for (const FPP_ReactionGameplayCue& Cue : GameplayCueSettings.Cues)
+	{
+		if (!Cue.CueTag.IsValid() || !GameplayCueRootTag.IsValid() ||
+			!Cue.CueTag.MatchesTag(GameplayCueRootTag) || Cue.LocationOffset.ContainsNaN() ||
+			!PP_IsValidReactionEnumValue(Cue.SpawnPoint) ||
+			!PP_IsValidReactionEnumValue(Cue.TriggerTiming) ||
+			!PP_IsValidReactionEnumValue(Cue.Recipient))
+		{
+			return false;
+		}
 	}
 
 	// Resolve defense from authoritative target tags and transforms.
@@ -995,7 +1201,8 @@ bool UPP_PredictionComponent::ProcessServerConfirmedReaction(
 	{
 		ApplyDefenseOutcomeEffects(TargetActor, DefenseOutcome);
 		MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag,
-			ServerStartLocation, ServerStartRotation, 0.0f, false);
+			ServerStartLocation, ServerStartRotation, 0.0f, false,
+			GameplayCueSettings, HitResult);
 		return true;
 	}
 
@@ -1048,7 +1255,8 @@ bool UPP_PredictionComponent::ProcessServerConfirmedReaction(
 		Context, TargetActor, ReactionTag, ServerStartLocation, ServerStartRotation);
 	MulticastPlayConfirmedReaction(Context, TargetActor, ReactionTag,
 	                               ServerStartLocation, ServerStartRotation,
-	                               ResolvedTransformSettings.MovementSettings.ClientInterpolationSpeed, true);
+	                               ResolvedTransformSettings.MovementSettings.ClientInterpolationSpeed, true,
+	                               GameplayCueSettings, HitResult);
 	return true;
 }
 
@@ -1059,24 +1267,42 @@ void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation
  FVector ServerStartLocation,
  FRotator ServerStartRotation,
  float ClientInterpolationSpeed,
- bool bPlayReaction)
+ bool bPlayReaction,
+ FPP_ReactionGameplayCueSettings GameplayCueSettings,
+ FHitResult HitResult)
 {
 	// The predicting client consumes its marker; other proxies start from server state.
 	AActor* OwnerActor = GetOwner();
 
-	if (!OwnerActor || OwnerActor->HasAuthority()) return;
+	if (!OwnerActor || !TargetActor || !ReactionData || !ReactionTag.IsValid()) return;
 
-	if (!TargetActor || !ReactionData || !ReactionTag.IsValid()) return;
+	// The server already played authoritative reaction state, but a listen server still needs cosmetics.
+	if (OwnerActor->HasAuthority())
+	{
+		if (bPlayReaction)
+		{
+			ExecuteGameplayCuesLocally(
+				TargetActor, GameplayCueSettings, HitResult,
+				EPP_ReactionGameplayCueTriggerTiming::OnHit,
+				EPP_GameplayCueExecutionFilter::All);
+		}
+		return;
+	}
 
 	const APawn* TargetPawn = Cast<APawn>(TargetActor);
 	const bool bTargetLocallyControlled = TargetPawn && TargetPawn->IsLocallyControlled();
 
 	FGameplayTag PredictedReactionTag;
 	bool bPlayedLocally = false;
+	bool bPlayedGameplayCuesLocally = false;
+	int32 PredictedProxyAnimTagHandle = INDEX_NONE;
 	const bool bConsumedPendingPrediction =
-		ConsumePendingPredictedReaction(Context, TargetActor, &PredictedReactionTag, &bPlayedLocally);
+		ConsumePendingPredictedReaction(Context, TargetActor, &PredictedReactionTag, &bPlayedLocally,
+			&bPlayedGameplayCuesLocally, &PredictedProxyAnimTagHandle);
 	if (!bPlayReaction)
 	{
+		EndPredictedProxyTargetEffectFeedback(TargetActor, PredictedProxyAnimTagHandle);
+
 		if (bConsumedPendingPrediction && bPlayedLocally)
 		{
 			// Local proxy state was stale: cancel the clean montage and restore server state.
@@ -1097,9 +1323,23 @@ void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation
 		}
 		return;
 	}
+
+	const bool bMatchingLocalCuePrediction = bConsumedPendingPrediction &&
+		bPlayedGameplayCuesLocally && PredictedReactionTag == ReactionTag;
+	ExecuteGameplayCuesLocally(
+		TargetActor, GameplayCueSettings, HitResult,
+		EPP_ReactionGameplayCueTriggerTiming::OnHit,
+		bMatchingLocalCuePrediction
+			? EPP_GameplayCueExecutionFilter::ConfirmationOnly
+			: EPP_GameplayCueExecutionFilter::All);
+
 	if (bConsumedPendingPrediction)
 	{
 		AddDeferredPredictedReactionCorrection(Context, TargetActor, ReactionTag);
+		if (PredictedReactionTag != ReactionTag)
+		{
+			EndPredictedProxyTargetEffectFeedback(TargetActor, PredictedProxyAnimTagHandle);
+		}
 
 		// Matching outcomes already played locally. A mismatch must replace the predicted montage.
 		if (bPlayedLocally && PredictedReactionTag == ReactionTag)
@@ -1138,7 +1378,8 @@ void UPP_PredictionComponent::ClientRejectPredictedReaction_Implementation(
 {
 	// Reuse the established rejection path, but deliver it reliably only to the predicting owner.
 	MulticastPlayConfirmedReaction_Implementation(
-		Context, TargetActor, ReactionTag, ServerLocation, ServerRotation, 0.f, false);
+		Context, TargetActor, ReactionTag, ServerLocation, ServerRotation, 0.f, false,
+		FPP_ReactionGameplayCueSettings(), FHitResult());
 }
 
 void UPP_PredictionComponent::ClientConfirmPredictedReactionStart_Implementation(
@@ -1173,7 +1414,9 @@ void UPP_PredictionComponent::ClientConfirmPredictedReactionStart_Implementation
 
 bool UPP_PredictionComponent::ConsumePendingPredictedReaction
 (const FPP_ReactionPredictionContext& Context,
- AActor* TargetActor, FGameplayTag* OutPredictedReactionTag, bool* bOutPlayedLocally)
+ AActor* TargetActor, FGameplayTag* OutPredictedReactionTag, bool* bOutPlayedLocally,
+ bool* bOutPlayedGameplayCuesLocally,
+ int32* OutPredictedProxyAnimTagHandle)
 {
 	if (!Context.IsValid() || !TargetActor) return false;
 
@@ -1187,6 +1430,14 @@ bool UPP_PredictionComponent::ConsumePendingPredictedReaction
 		{
 			if (OutPredictedReactionTag) *OutPredictedReactionTag = Entry.ReactionTag;
 			if (bOutPlayedLocally) *bOutPlayedLocally = Entry.bPlayedLocally;
+			if (bOutPlayedGameplayCuesLocally)
+			{
+				*bOutPlayedGameplayCuesLocally = Entry.bPlayedGameplayCuesLocally;
+			}
+			if (OutPredictedProxyAnimTagHandle)
+			{
+				*OutPredictedProxyAnimTagHandle = Entry.PredictedProxyAnimTagHandle;
+			}
 			PendingPredictedReactions.RemoveAtSwap(Index);
 			return true;
 		}
@@ -1228,6 +1479,17 @@ void UPP_PredictionComponent::ClientPlayOwnerConfirmedReaction_Implementation
 
 	ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
 	if (!TargetCharacter) return;
+
+	if (!Reaction.Montage)
+	{
+		// GAS drives montage-less owner animation. Only align its authoritative start transform;
+		// montage/root-motion correction suppression is unnecessary for this reaction type.
+		TargetActor->SetActorRotation(ServerStartRotation, ETeleportType::TeleportPhysics);
+		FPP_ReactionMovementSettings OwnerMovementSettings;
+		OwnerMovementSettings.ClientInterpolationSpeed = FMath::Max(0.0f, ClientInterpolationSpeed);
+		SetReactionActorLocation(TargetActor, ServerStartLocation, OwnerMovementSettings, true);
+		return;
+	}
 
 	UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement();
 	UPP_CharacterMovementComponent* SyncMovementComponent =
@@ -2195,7 +2457,7 @@ bool UPP_PredictionComponent::CanPlayPredictedReactionOnTargetProxy
 (AActor* TargetActor,
  const FPP_ReactionDataEntry& Reaction) const
 {
-	if (!TargetActor || !Reaction.Montage) return false;
+	if (!TargetActor) return false;
 
 	const UWorld* World = GetWorld();
 	if (!World) return false;
@@ -2246,7 +2508,9 @@ FPP_ReactionPredictionContext UPP_PredictionComponent::MakeReactionPredictionCon
 
 void UPP_PredictionComponent::AddPendingPredictedReaction
 (const FPP_ReactionPredictionContext& Context,
- AActor* TargetActor, FGameplayTag ReactionTag, const bool bPlayedLocally)
+ AActor* TargetActor, FGameplayTag ReactionTag, const bool bPlayedLocally,
+ const bool bPlayedGameplayCuesLocally,
+ const int32 PredictedProxyAnimTagHandle)
 {
 	if (!Context.IsValid() || !TargetActor || !ReactionTag.IsValid()) return;
 
@@ -2262,12 +2526,59 @@ void UPP_PredictionComponent::AddPendingPredictedReaction
 	Entry.PredictionId = Context.PredictionId;
 	Entry.TimeSeconds = World->GetTimeSeconds();
 	Entry.bPlayedLocally = bPlayedLocally;
+	Entry.bPlayedGameplayCuesLocally = bPlayedGameplayCuesLocally;
+	Entry.PredictedProxyAnimTagHandle = PredictedProxyAnimTagHandle;
 
 
 	if (PendingPredictedReactions.Num() > MaxPendingPredictedReactions)
 	{
 		const int32 NumToRemove = PendingPredictedReactions.Num() - MaxPendingPredictedReactions;
+		for (int32 Index = 0; Index < NumToRemove; ++Index)
+		{
+			const FPP_PendingPredictedReaction& Removed = PendingPredictedReactions[Index];
+			EndPredictedProxyTargetEffectFeedback(
+				Removed.TargetActor.Get(), Removed.PredictedProxyAnimTagHandle);
+		}
 		PendingPredictedReactions.RemoveAt(0, NumToRemove, EAllowShrinking::No);
+	}
+}
+
+int32 UPP_PredictionComponent::BeginPredictedProxyTargetEffectFeedback(
+	AActor* TargetActor, const FPP_ReactionDataEntry& Reaction) const
+{
+	UPP_CombatComponent* TargetCombat =
+		TargetActor ? TargetActor->FindComponentByClass<UPP_CombatComponent>() : nullptr;
+	if (!TargetCombat)
+	{
+		return INDEX_NONE;
+	}
+
+	FGameplayTagContainer PredictedTags;
+	for (const TSubclassOf<UGameplayEffect>& EffectClass : Reaction.TargetEffects)
+	{
+		const UGameplayEffect* Effect = EffectClass ? EffectClass.GetDefaultObject() : nullptr;
+		if (Effect)
+		{
+			PredictedTags.AppendTags(Effect->GetGrantedTags());
+		}
+	}
+
+	return TargetCombat->BeginPredictedProxyAnimTags(
+		PredictedTags, PredictedProxyAnimTagTimeout);
+}
+
+void UPP_PredictionComponent::EndPredictedProxyTargetEffectFeedback(
+	AActor* TargetActor, const int32 PredictionHandle)
+{
+	if (PredictionHandle == INDEX_NONE || !TargetActor)
+	{
+		return;
+	}
+
+	if (UPP_CombatComponent* TargetCombat =
+		TargetActor->FindComponentByClass<UPP_CombatComponent>())
+	{
+		TargetCombat->EndPredictedProxyAnimTags(PredictionHandle);
 	}
 }
 
@@ -2276,6 +2587,11 @@ void UPP_PredictionComponent::RemoveExpiredPendingPredictedReactions()
 	const UWorld* World = GetWorld();
 	if (!World)
 	{
+		for (const FPP_PendingPredictedReaction& Pending : PendingPredictedReactions)
+		{
+			EndPredictedProxyTargetEffectFeedback(
+				Pending.TargetActor.Get(), Pending.PredictedProxyAnimTagHandle);
+		}
 		PendingPredictedReactions.Reset();
 		return;
 	}
@@ -2294,6 +2610,8 @@ void UPP_PredictionComponent::RemoveExpiredPendingPredictedReactions()
 
 		if (bExpired || bInvalid)
 		{
+			EndPredictedProxyTargetEffectFeedback(
+				Entry.TargetActor.Get(), Entry.PredictedProxyAnimTagHandle);
 			PendingPredictedReactions.RemoveAtSwap(Index);
 		}
 	}
@@ -2320,43 +2638,24 @@ float UPP_PredictionComponent::GetReactionStartPosition(const FPP_ReactionDataEn
 	return SectionStartTime;
 }
 
-void UPP_PredictionComponent::PrepareOwnerReactionRootMotionState
-(ACharacter* TargetCharacter,
- const FPP_ReactionPredictionContext& Context,
- FGameplayTag ReactionTag) const
+void UPP_PredictionComponent::RefreshPredictedProxyReconciliationAnimationState(
+	ACharacter* TargetCharacter) const
 {
 	if (!TargetCharacter) return;
 
-	UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement();
-	UPP_CharacterMovementComponent* SyncMoveComponent =
-		Cast<UPP_CharacterMovementComponent>(MovementComponent);
-	UPP_AbilityMotionComponent* MotionComponent =
-		TargetCharacter->FindComponentByClass<UPP_AbilityMotionComponent>();
 	USkeletalMeshComponent* Mesh = TargetCharacter->GetMesh();
-	UAnimInstance* AnimInstance = Mesh ? Mesh->GetAnimInstance() : nullptr;
+	UPP_AnimInstance* AnimInstance = Mesh
+		? Cast<UPP_AnimInstance>(Mesh->GetAnimInstance())
+		: nullptr;
+	if (!AnimInstance) return;
 
-	const bool bWasAbilityRootMotionSuppressed =
-		SyncMoveComponent && SyncMoveComponent->IsAbilityRootMotionSuppressed();
-	const bool bWasAbilityMovementInputSuppressed =
-		SyncMoveComponent && SyncMoveComponent->IsAbilityMovementInputSuppressed();
-	const float SavedRootMotionScale = TargetCharacter->GetAnimRootMotionTranslationScale();
+	const bool bReconciliationActive = PredictedProxyRootMotionReconciliations.ContainsByPredicate(
+		[TargetCharacter](const FPP_PredictedProxyRootMotionReconciliation& State)
+		{
+			return State.TargetCharacter.Get() == TargetCharacter;
+		});
 
-	if (MotionComponent)
-	{
-		MotionComponent->ResetAbilityMotionState();
-	}
-
-	if (SyncMoveComponent)
-	{
-		SyncMoveComponent->SetAbilityRootMotionSuppressed(false);
-		SyncMoveComponent->SetAbilityMovementInputSuppressed(false);
-	}
-
-	TargetCharacter->SetAnimRootMotionTranslationScale(1.0f);
-	if (AnimInstance)
-	{
-		AnimInstance->SetRootMotionMode(ERootMotionMode::RootMotionFromMontagesOnly);
-	}
+	AnimInstance->SetPredictedProxyReconciliationActive(bReconciliationActive);
 }
 
 bool UPP_PredictionComponent::PlayReactionMontageOnActor
@@ -2495,14 +2794,9 @@ void UPP_PredictionComponent::ApplyReactionTransform
 	}
 }
 
-void UPP_PredictionComponent::ApplyReactionTransformToRecipients
-(AActor* InstigatorActor, AActor* TargetActor,
- AActor* ReferenceActor,
- EPP_ReactionTransformRecipient Recipient,
- TFunctionRef<void
-	 (
-		 AActor* RecipientActor,
-		 AActor* ReferenceActor)> ApplyFunction)
+void UPP_PredictionComponent::ApplyReactionTransformToRecipients(AActor* InstigatorActor, AActor* TargetActor,
+	AActor* ReferenceActor, EPP_ReactionTransformRecipient Recipient,
+	TFunctionRef<void (AActor* RecipientActor, AActor* ReferenceActor)> ApplyFunction)
 {
 	if (!ReferenceActor) return;
 
@@ -2535,9 +2829,8 @@ void UPP_PredictionComponent::ApplyReactionTransformToRecipients
 	}
 }
 
-void UPP_PredictionComponent::ApplyReactionMovement
-(AActor* RecipientActor, AActor* ReferenceActor,
- const FPP_ReactionMovementSettings& MovementSettings)
+void UPP_PredictionComponent::ApplyReactionMovement(AActor* RecipientActor, AActor* ReferenceActor,
+	const FPP_ReactionMovementSettings& MovementSettings)
 {
 	if (!RecipientActor || !ReferenceActor) return;
 
@@ -2623,11 +2916,8 @@ void UPP_PredictionComponent::ApplyReactionMovement
 	SetReactionActorLocation(RecipientActor, NewLocation, MovementSettings);
 }
 
-void UPP_PredictionComponent::SetReactionActorLocation(
-	AActor* RecipientActor,
-	const FVector& TargetLocation,
-	const FPP_ReactionMovementSettings& MovementSettings,
-	bool bForceNoSweep)
+void UPP_PredictionComponent::SetReactionActorLocation(AActor* RecipientActor, const FVector& TargetLocation,
+	const FPP_ReactionMovementSettings& MovementSettings, bool bForceNoSweep)
 {
 	if (!RecipientActor) return;
 
@@ -2866,8 +3156,7 @@ void UPP_PredictionComponent::ApplyReactionRotation
 	RecipientActor->SetActorRotation(DesiredRotation, ToTeleportType(RotationSettings.TeleportType));
 }
 
-AActor* UPP_PredictionComponent::ResolveReactionReferenceActor
-(AActor* InstigatorActor, AActor* TargetActor,
+AActor* UPP_PredictionComponent::ResolveReactionReferenceActor(AActor* InstigatorActor, AActor* TargetActor,
  EPP_ReactionReferenceActorSource ReferenceActorSource)
 {
 	switch (ReferenceActorSource)
@@ -2889,5 +3178,3 @@ ETeleportType UPP_PredictionComponent::ToTeleportType(EPP_ReactionTeleportType T
 		       ? ETeleportType::ResetPhysics
 		       : ETeleportType::None;
 }
-
-

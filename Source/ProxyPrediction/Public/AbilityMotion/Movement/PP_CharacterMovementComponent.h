@@ -25,7 +25,7 @@ public:
 	void SetCrowdControlMovementInputSuppressed(bool bInSuppressed);
 	bool IsCrowdControlMovementInputSuppressed() const { return bCrowdControlMovementInputSuppressed; }
 
-	/** Ignores montage track correction during visual-only owner reaction playback. */
+	/** Protects a locally predicted owner-reaction timeline from server montage-track correction. */
 	void SetIgnoreServerRootMotionMontageTrackCorrection(bool bInIgnore);
 	bool ShouldIgnoreServerRootMotionMontageTrackCorrection() const
 	{
@@ -34,11 +34,13 @@ public:
 
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType,
 		FActorComponentTickFunction* ThisTickFunction) override;
+	/** Reduces voluntary movement speed when acceleration points behind the character. */
+	virtual float GetMaxSpeed() const override;
 	virtual void UpdateFromCompressedFlags(uint8 Flags) override;
 	virtual FVector ScaleInputAcceleration(const FVector& InputAcceleration) const override;
 	virtual class FNetworkPredictionData_Client* GetPredictionData_Client() const override;
 
-	// Keep capsule correction while optionally ignoring montage-track correction.
+	/** Reconciles root-motion moves while protecting locally owned or newer montage timelines from delayed responses. */
 	virtual void ClientAdjustRootMotionPosition_Implementation(float TimeStamp, float ServerMontageTrackPosition,
 		FVector ServerLoc, FVector_NetQuantizeNormal ServerRotation, float ServerVelZ, UPrimitiveComponent* ServerBase,
 		FName ServerBoneName, bool bHasBase, bool bBaseRelativePosition, uint8 ServerMovementMode) override;
@@ -69,7 +71,7 @@ private:
 	UPROPERTY(Transient)
 	bool bCrowdControlMovementInputSuppressed = false;
 
-	/** True while owner reaction playback ignores server montage position. */
+	/** True while a local owner reaction owns its montage timeline instead of server track position. */
 	UPROPERTY(Transient)
 	bool bIgnoreServerRootMotionMontageTrackCorrection = false;
 
@@ -77,13 +79,28 @@ private:
 	UPROPERTY(Transient)
 	bool bHasSavedOwnerReactionCorrectionFlags = false;
 
-	/** Original client movement-correction setting restored after the reaction. */
+	/** Original client correction-ignore setting restored after the reaction. */
 	UPROPERTY(Transient)
 	bool bSavedOwnerReactionClientIgnoreMovementCorrections = false;
 
-	/** Original server error-correction setting restored after the reaction. */
+	/** Original error-check setting restored after the reaction (relevant for a local listen-server owner). */
 	UPROPERTY(Transient)
 	bool bSavedOwnerReactionIgnoreErrorChecksAndCorrection = false;
 
+protected:
+	/** Multiplier applied to normal maximum speed while the character is actively blocking. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement|Directional Speed",
+		meta=(ClampMin="0.0", UIMin="0.0"))
+	float BlockingSpeedMultiplier = 0.6f;
+
+	/** Multiplier applied to normal maximum speed while voluntarily moving backward. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement|Directional Speed",
+		meta=(ClampMin="0.0", UIMin="0.0"))
+	float BackwardSpeedMultiplier = 0.6f;
+
+	/** Forward-vector/input dot product at or below which movement counts as backward. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement|Directional Speed",
+		meta=(ClampMin="-1.0", ClampMax="1.0", UIMin="-1.0", UIMax="1.0"))
+	float BackwardDotThreshold = -0.5f;
 };
 

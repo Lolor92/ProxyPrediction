@@ -101,6 +101,29 @@ void UPP_AnimInstance::NativeUpdateAnimation(float DeltaSeconds)
 	}
 }
 
+void UPP_AnimInstance::SetPredictedProxyReconciliationActive(const bool bActive)
+{
+	if (bPredictedProxyReconciliationActive == bActive)
+	{
+		return;
+	}
+
+	bPredictedProxyReconciliationActive = bActive;
+	if (bActive)
+	{
+		// Apply immediately so the anim graph cannot blend locomotion legs into the reaction on
+		// the frame proxy reconciliation starts. ApplyAbilityMotionState enforces it afterward.
+		bShouldBlendLowerBody = false;
+		return;
+	}
+
+	// Restore the current authored ability state immediately instead of waiting one anim tick.
+	if (UPP_AbilityMotionComponent* Motion = GetMotionComponentSafe())
+	{
+		bShouldBlendLowerBody = Motion->GetAbilityMotionState().bShouldBlendLowerBody;
+	}
+}
+
 void UPP_AnimInstance::UpdateAbilityMotionReplication()
 {
 	if (!Character || !Character->IsLocallyControlled()) return;
@@ -146,6 +169,8 @@ void UPP_AnimInstance::UpdateAbilityMotionReplication()
 		bRootMotionCollisionPauseHeldUntilRelease = false;
 	}
 
+	// The client override takes effect immediately; the component RPC applies the matching
+	// server policy for the same explicitly opted-in ability.
 	ApplyAbilityMovementCorrectionOverride(Ability);
 	Motion->SetServerMovementCorrectionIgnoreForAbility(Ability->ShouldIgnoreMovementCorrectionsDuringAbility());
 
@@ -227,7 +252,10 @@ void UPP_AnimInstance::UpdateAbilityMotionReplication()
 void UPP_AnimInstance::ApplyAbilityMotionState(const FPP_AbilityMotionState& NewState)
 {
 	bCanBlendMontage = NewState.bCanBlendMontage;
-	bShouldBlendLowerBody = NewState.bShouldBlendLowerBody;
+	// A locally predicted proxy reaction must remain full-body while replicated root-motion moves
+	// for the same reaction are being discarded during reconciliation.
+	bShouldBlendLowerBody =
+		!bPredictedProxyReconciliationActive && NewState.bShouldBlendLowerBody;
 
 	UPP_CharacterMovementComponent* MoveComp =
 		Cast<UPP_CharacterMovementComponent>(CharacterMovementComponent);
@@ -325,12 +353,14 @@ void UPP_AnimInstance::ApplyAbilityMovementCorrectionOverride(const UPP_Gameplay
 
 	if (!bHasSavedMovementCorrectionFlags)
 	{
-		bSavedIgnoreClientMovementErrorChecksAndCorrection =
-			CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection;
+		bSavedClientIgnoreMovementCorrections =
+			CharacterMovementComponent->bClientIgnoreMovementCorrections;
 		bHasSavedMovementCorrectionFlags = true;
 	}
 
-	CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection = true;
+	// Client half of the opt-in: keep the predicted capsule when corrections already in flight
+	// arrive. This project engine still acknowledges their timestamps so SavedMoves stay bounded.
+	CharacterMovementComponent->bClientIgnoreMovementCorrections = true;
 }
 
 void UPP_AnimInstance::RestoreAbilityMovementCorrectionOverride()
@@ -340,8 +370,8 @@ void UPP_AnimInstance::RestoreAbilityMovementCorrectionOverride()
 		return;
 	}
 
-	CharacterMovementComponent->bIgnoreClientMovementErrorChecksAndCorrection =
-		bSavedIgnoreClientMovementErrorChecksAndCorrection;
+	CharacterMovementComponent->bClientIgnoreMovementCorrections =
+		bSavedClientIgnoreMovementCorrections;
 
 	bHasSavedMovementCorrectionFlags = false;
 }

@@ -14,6 +14,14 @@ void UPP_CollisionNotifyState::NotifyBegin(USkeletalMeshComponent* MeshComp, UAn
 	if (!MeshComp) return;
 	
 	AActor* OwnerActor = MeshComp->GetOwner();
+	if (UPP_PredictionComponent* PredictionComponent =
+		OwnerActor ? OwnerActor->FindComponentByClass<UPP_PredictionComponent>() : nullptr)
+	{
+		FPP_ReactionGameplayCueSettings GameplayCueSettings;
+		GameplayCueSettings.Cues = GameplayCuesToExecute;
+		PredictionComponent->ExecuteActivationGameplayCues(GameplayCueSettings);
+	}
+
 	if (!ShouldRunPredictedCollision(OwnerActor)) return;
 	
 	FTransform CurrentTransform;
@@ -175,7 +183,7 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 
 			// Mark before prediction so overlapping sub-sweeps cannot replay the hit.
 			MarkTargetProcessed(Window, HitActor);
-			HandleCollisionTarget(OwnerActor, HitActor);
+			HandleCollisionTarget(OwnerActor, HitActor, Hit);
 		}
 	}
 }
@@ -217,7 +225,8 @@ void UPP_CollisionNotifyState::MarkTargetProcessed(FPP_NotifyRuntimeWindow& Wind
 void UPP_CollisionNotifyState::BuildReactionSettings(
 	FPP_ReactionTransformSettings& OutTransformSettings,
 	FPP_ReactionDefenseSettings& OutDefenseSettings,
-	FPP_ReactionDamageSettings& OutDamageSettings) const
+	FPP_ReactionDamageSettings& OutDamageSettings,
+	FPP_ReactionGameplayCueSettings& OutGameplayCueSettings) const
 {
 	OutTransformSettings.MovementSettings.MoveDirection = MoveDirection;
 	OutTransformSettings.MovementSettings.Recipient = MovementRecipient;
@@ -246,9 +255,12 @@ void UPP_CollisionNotifyState::BuildReactionSettings(
 	OutDamageSettings.bApplyDamageWhenBlocked = bApplyDamageWhenBlocked;
 	OutDamageSettings.bApplyDamageWhenParried = bApplyDamageWhenParried;
 	OutDamageSettings.bApplyDamageWhenDodged = bApplyDamageWhenDodged;
+
+	OutGameplayCueSettings.Cues = GameplayCuesToExecute;
 }
 
-void UPP_CollisionNotifyState::HandleCollisionTarget(AActor* AttackerActor, AActor* HitActor) const
+void UPP_CollisionNotifyState::HandleCollisionTarget(
+	AActor* AttackerActor, AActor* HitActor, const FHitResult& HitResult) const
 {
 	if (!AttackerActor || !HitActor || !PredictedReactionTag.IsValid()) return;
 
@@ -259,19 +271,22 @@ void UPP_CollisionNotifyState::HandleCollisionTarget(AActor* AttackerActor, AAct
 	FPP_ReactionTransformSettings TransformSettings;
 	FPP_ReactionDefenseSettings DefenseSettings;
 	FPP_ReactionDamageSettings DamageSettings;
-	BuildReactionSettings(TransformSettings, DefenseSettings, DamageSettings);
+	FPP_ReactionGameplayCueSettings GameplayCueSettings;
+	BuildReactionSettings(TransformSettings, DefenseSettings, DamageSettings, GameplayCueSettings);
 
 	if (AttackerActor->HasAuthority())
 	{
 		PredictionComponent->RecordAuthoritativeCollision(
-			HitActor, PredictedReactionTag, TransformSettings, DefenseSettings, DamageSettings);
+			HitActor, PredictedReactionTag, TransformSettings, DefenseSettings, DamageSettings,
+			GameplayCueSettings, HitResult);
 		return;
 	}
 
-	TryPlayPredictedReaction(AttackerActor, HitActor);
+	TryPlayPredictedReaction(AttackerActor, HitActor, HitResult);
 }
 
-void UPP_CollisionNotifyState::TryPlayPredictedReaction(AActor* AttackerActor, AActor* HitActor) const
+void UPP_CollisionNotifyState::TryPlayPredictedReaction(
+	AActor* AttackerActor, AActor* HitActor, const FHitResult& HitResult) const
 {
 	if (!AttackerActor || !HitActor) return;
 	
@@ -298,13 +313,16 @@ void UPP_CollisionNotifyState::TryPlayPredictedReaction(AActor* AttackerActor, A
 	FPP_ReactionTransformSettings TransformSettings;
 	FPP_ReactionDefenseSettings DefenseSettings;
 	FPP_ReactionDamageSettings DamageSettings;
-	BuildReactionSettings(TransformSettings, DefenseSettings, DamageSettings);
+	FPP_ReactionGameplayCueSettings GameplayCueSettings;
+	BuildReactionSettings(TransformSettings, DefenseSettings, DamageSettings, GameplayCueSettings);
 
 	PredictionComponent->PlayPredictedReactionOnTargetProxy(
 		HitActor,
 		PredictedReactionTag,
 		TransformSettings,
 		DefenseSettings,
-		DamageSettings);
+		DamageSettings,
+		GameplayCueSettings,
+		HitResult);
 }
 

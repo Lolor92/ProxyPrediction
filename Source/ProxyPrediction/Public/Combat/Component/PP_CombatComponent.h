@@ -54,6 +54,13 @@ struct FPP_ReplicatedCombatAnimBool
 	bool bValue = false;
 };
 
+/** Local-only animation tags predicted on a remote proxy while server confirmation is in flight. */
+struct FPP_PredictedProxyAnimTags
+{
+	FGameplayTagContainer Tags;
+	FTimerHandle ExpireTimer;
+};
+
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent, DisplayName="ActorComponent (Combat)"))
 class PROXYPREDICTION_API UPP_CombatComponent : public UActorComponent
 {
@@ -67,6 +74,11 @@ public:
 
 	void SetAnimBool(const FPP_CombatAnimBoolBinding& Binding, bool bValue);
 	bool IsAnimBoolActive(const FPP_CombatAnimBoolBinding& Binding) const;
+
+	/** Adds temporary cosmetic tags used only by this proxy's animation bindings. */
+	int32 BeginPredictedProxyAnimTags(const FGameplayTagContainer& Tags, float TimeoutSeconds);
+	/** Removes one temporary cosmetic prediction, for example after server rejection. */
+	void EndPredictedProxyAnimTags(int32 PredictionHandle);
 
 	void OnTagChanged(FGameplayTag Tag, int32 NewCount);
 
@@ -92,6 +104,14 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Combat|Abilities")
 	TObjectPtr<UPP_CombatAbilityData> AbilityData = nullptr;
+
+	/**
+	 * Effects applied in array order when this character's ability system is initialized.
+	 * Use these for initial vitals and persistent stats such as health, defense, and critical damage.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Combat|Startup",
+		meta=(DisplayName="Startup Gameplay Effects"))
+	TArray<TSubclassOf<UGameplayEffect>> StartupGameplayEffects;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Combat|Tags", meta=(DisplayName="Tag Reaction Data"))
 	TObjectPtr<UPP_CombatTagReactionData> TagReactionData = nullptr;
@@ -174,11 +194,14 @@ private:
 	bool ResolveAbilitySystemComponent();
 	void InitializeAbilityActorInfoIfNeeded() const;
 	void TryInitializeAbilitySystem();
+	void ApplyStartupGameplayEffects();
 	void ScheduleAbilitySystemRetry();
 	void ClearTagListeners();
 	void ClearReactionTimers();
 	void ApplyCrowdControlState(bool bShouldEnforce);
 	void ApplyPawnCollisionIgnoreState(bool bShouldIgnore);
+	void ConfirmPredictedProxyAnimTag(FGameplayTag Tag);
+	void RefreshAnimBoolBindings();
 	bool HasAbility(const TSubclassOf<UGameplayAbility>& AbilityClass) const;
 	void ApplyGameplayEffectToActor(AActor* RecipientActor,
 		const TSubclassOf<UGameplayEffect>& EffectClass, AActor* InstigatorActor) const;
@@ -196,8 +219,11 @@ private:
 	TMap<FGameplayTag, FTimerHandle> ApplyEffectTimers;
 	TMap<FName, TArray<FActiveGameplayEffectHandle>> AppliedEffectHandles;
 	TMap<FGameplayTag, FDelegateHandle> TagListenerHandles;
+	TMap<int32, FPP_PredictedProxyAnimTags> PredictedProxyAnimTags;
 	FTimerHandle AbilitySystemRetryTimer;
+	int32 NextPredictedProxyAnimTagHandle = 0;
 	int32 AbilitySystemRetryCount = 0;
+	bool bStartupGameplayEffectsApplied = false;
 	bool bCrowdControlEnforced = false;
 	bool bPawnCollisionIgnoreEnforced = false;
 	TEnumAsByte<ECollisionResponse> SavedPawnCollisionResponse = ECR_Block;
