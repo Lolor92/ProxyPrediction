@@ -65,6 +65,8 @@ UE_DEFINE_GAMEPLAY_TAG(TAG_State_Reaction_SuperArmor3, "State.Reaction.SuperArmo
 // Reaction triggers.
 UE_DEFINE_GAMEPLAY_TAG(TAG_Trigger, "Trigger");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Trigger_Flinch, "Trigger.Flinch");
+UE_DEFINE_GAMEPLAY_TAG(TAG_Trigger_Flinch_Blocking, "Trigger.Flinch.Blocking");
+UE_DEFINE_GAMEPLAY_TAG(TAG_Trigger_Flinch_Knockdown, "Trigger.Flinch.Knockdown");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Trigger_Hit, "Trigger.Hit");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Trigger_Hit_Block_Success, "Trigger.Hit.Block.Success");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Trigger_Hit_Blocked, "Trigger.Hit.Blocked");

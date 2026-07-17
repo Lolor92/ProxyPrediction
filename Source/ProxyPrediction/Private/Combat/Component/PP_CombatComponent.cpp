@@ -1,4 +1,5 @@
 #include "Combat/Component/PP_CombatComponent.h"
+#include "Diagnostics/PP_NetMotionDiagnostics.h"
 #include "AbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Combat/Data/PP_CombatAbilityData.h"
@@ -491,6 +492,11 @@ void UPP_CombatComponent::OnTagChanged(FGameplayTag Tag, int32 NewCount)
 	}
 
 	const bool bAdded = NewCount > 0;
+	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+		TEXT("[TagChanged] %s Tag=%s Count=%d Transition=%s AnimatingAbility=%s"),
+		*PP_GetNetMotionActorContext(GetOwner()), *Tag.ToString(), NewCount,
+		bAdded ? TEXT("Added") : TEXT("Removed"),
+		*GetNameSafe(AbilitySystemComponent->GetAnimatingAbility()));
 	// Once GAS changes a predicted tag, authoritative state owns the corresponding anim bool.
 	ConfirmPredictedProxyAnimTag(Tag);
 
@@ -688,12 +694,29 @@ void UPP_CombatComponent::QueueAbilityActivation(const FPP_CombatTagReactionBind
 {
 	if (!Binding.Ability.AbilityTag.IsValid() || !ASC) return;
 
-	auto Fn = [ASC, Binding]
+	UWorld* World = GetWorld();
+	FTimerHandle& Handle = AbilityTimers.FindOrAdd(TriggeredTag);
+	const bool bReplacedExistingTimer = World && World->GetTimerManager().IsTimerActive(Handle);
+	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+		TEXT("[ReactionAbilityQueued] %s Trigger=%s AbilityTag=%s Delay=%.3f ReplacedTimer=%d TriggerCount=%d AnimatingAbility=%s"),
+		*PP_GetNetMotionActorContext(GetOwner()), *TriggeredTag.ToString(),
+		*Binding.Ability.AbilityTag.ToString(), Binding.Ability.DelaySeconds,
+		bReplacedExistingTimer ? 1 : 0, ASC->GetTagCount(TriggeredTag),
+		*GetNameSafe(ASC->GetAnimatingAbility()));
+
+	auto Fn = [this, ASC, Binding, TriggeredTag]
 	{
-		ASC->TryActivateAbilitiesByTag(FGameplayTagContainer(Binding.Ability.AbilityTag));
+		const UGameplayAbility* BeforeAbility = ASC->GetAnimatingAbility();
+		const bool bActivated =
+			ASC->TryActivateAbilitiesByTag(FGameplayTagContainer(Binding.Ability.AbilityTag));
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[ReactionAbilityExecuted] %s Trigger=%s AbilityTag=%s Activated=%d TriggerCount=%d Before=%s After=%s"),
+			*PP_GetNetMotionActorContext(GetOwner()), *TriggeredTag.ToString(),
+			*Binding.Ability.AbilityTag.ToString(), bActivated ? 1 : 0,
+			ASC->GetTagCount(TriggeredTag), *GetNameSafe(BeforeAbility),
+			*GetNameSafe(ASC->GetAnimatingAbility()));
 	};
 
-	FTimerHandle& Handle = AbilityTimers.FindOrAdd(TriggeredTag);
 	ExecuteDelayed(Fn, Binding.Ability.DelaySeconds, Handle);
 }
 

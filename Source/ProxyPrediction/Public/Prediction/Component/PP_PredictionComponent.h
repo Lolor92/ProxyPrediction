@@ -213,12 +213,19 @@ struct FPP_OwnerFinalReconciliationGraceState
 	bool bHoldMovementCorrections = false;
 };
 
-/** Guards a confirmed locally predicted proxy from server root-motion replay until its montage ends. */
+/** Guards the newest locally predicted proxy reaction from stale server root-motion replay. */
 struct FPP_PredictedProxyRootMotionReconciliation
 {
 	TWeakObjectPtr<ACharacter> TargetCharacter;
 	TWeakObjectPtr<UAnimMontage> Montage;
+	FGameplayTag ReactionTag;
+	int32 PredictionId = INDEX_NONE;
+	float StartPosition = 0.0f;
+	float MontagePlayRate = 1.0f;
+	double StartTimeSeconds = 0.0;
+	double ExpectedEndTimeSeconds = 0.0;
 	double ExpireTimeSeconds = 0.0;
+	bool bServerConfirmed = false;
 };
 
 /**
@@ -339,6 +346,10 @@ private:
 	int32 BeginPredictedProxyTargetEffectFeedback(AActor* TargetActor,
 		const FPP_ReactionDataEntry& Reaction) const;
 	static void EndPredictedProxyTargetEffectFeedback(AActor* TargetActor, int32 PredictionHandle);
+	bool ResolveReactionForTarget(AActor* TargetActor, FGameplayTag RequestedReactionTag,
+		FGameplayTag& OutResolvedReactionTag, FPP_ReactionDataEntry& OutReaction,
+		bool& bOutPreserveOriginalTransform) const;
+	static void SuppressReactionTransform(FPP_ReactionTransformSettings& TransformSettings);
 
 	float GetReactionStartPosition(const FPP_ReactionDataEntry& Reaction) const;
 	/** Keeps a locally predicted proxy reaction full-body only while proxy root-motion reconciliation is active. */
@@ -406,9 +417,13 @@ private:
 	bool HasNewerReactionMarkerForTarget(const FPP_ReactionPredictionContext& Context, AActor* TargetActor);
 	void RemoveExpiredProxyPendingFinalReactionCorrections();
 	void BeginPredictedProxyRootMotionReconciliation(const FPP_ReactionPredictionContext& Context,
-		AActor* TargetActor, FGameplayTag ReactionTag);
+		AActor* TargetActor, FGameplayTag ReactionTag, bool bServerConfirmed = false);
+	bool EnsurePredictedProxyReactionMontagePlaying(const FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor, const FPP_ReactionDataEntry& Reaction, const TCHAR* Reason);
+	void EndPredictedProxyRootMotionReconciliation(const FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor, const TCHAR* Reason);
 	void UpdatePredictedProxyRootMotionReconciliations();
-	void RemovePredictedProxyRootMotionReconciliation(int32 Index);
+	void RemovePredictedProxyRootMotionReconciliation(int32 Index, const TCHAR* Reason = TEXT("Unspecified"));
 	/** Plays owner feedback and starts the local correction-suppression window. */
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context, FGameplayTag ReactionTag,

@@ -408,6 +408,44 @@ public:
 	TArray<TSubclassOf<UGameplayEffect>> TargetEffects;
 };
 
+/**
+ * Replaces an incoming reaction when the target is already in a configured gameplay-tag state.
+ * Rules are evaluated in array order and the first matching rule wins.
+ */
+USTRUCT(BlueprintType, meta=(DisplayName="Target Tag Reaction Override"))
+struct FPP_ReactionTargetTagOverride
+{
+	GENERATED_BODY()
+
+	/** Incoming reactions eligible for this override, such as Trigger.Pushback and Trigger.Stagger. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Override",
+		meta=(DisplayName="Incoming Reaction Tags"))
+	FGameplayTagContainer IncomingReactionTags;
+
+	/** Every tag in this container must be present on the target. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Override",
+		meta=(DisplayName="Required Target Tags"))
+	FGameplayTagContainer RequiredTargetTags;
+
+	/** The rule does not match when the target has any tag in this container. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Override",
+		meta=(DisplayName="Blocked Target Tags"))
+	FGameplayTagContainer BlockedTargetTags;
+
+	/** Reaction definition used instead of the incoming reaction. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Override",
+		meta=(DisplayName="Replacement Reaction Tag"))
+	FGameplayTag ReplacementReactionTag;
+
+	/**
+	 * Keeps movement and rotation authored by the original collision notify.
+	 * Leave disabled when replacing pushback/stagger with an in-place reaction such as flinch.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Override",
+		meta=(DisplayName="Preserve Original Transform"))
+	bool bPreserveOriginalTransform = false;
+};
+
 /** Data asset that maps reaction tags to predicted reaction definitions. */
 UCLASS()
 class PROXYPREDICTION_API UPP_ReactionData : public UDataAsset
@@ -419,6 +457,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="SyncPrediction|Reaction", meta=(TitleProperty="ReactionTag"))
 	TArray<FPP_ReactionDataEntry> Reactions;
 
+	/** Ordered target-state rules that can replace an incoming reaction before prediction or confirmation. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="SyncPrediction|Reaction Overrides",
+		meta=(TitleProperty="ReplacementReactionTag"))
+	TArray<FPP_ReactionTargetTagOverride> TargetTagOverrides;
+
 	/** Finds a reaction or reports an error when the tag is missing. */
 	UFUNCTION(BlueprintPure, Category="SyncPrediction|Reaction")
 	const FPP_ReactionDataEntry& FindReactionChecked(FGameplayTag ReactionTag) const;
@@ -429,5 +472,13 @@ public:
 
 	/** Native lookup that returns null when the tag is not configured. */
 	const FPP_ReactionDataEntry* FindReactionPtr(FGameplayTag ReactionTag) const;
+
+	/**
+	 * Resolves the first matching target-tag override, then copies the selected reaction definition.
+	 * Returns false when the requested or replacement reaction is not configured.
+	 */
+	bool ResolveReaction(FGameplayTag RequestedReactionTag, const FGameplayTagContainer& TargetOwnedTags,
+		FGameplayTag& OutResolvedReactionTag, FPP_ReactionDataEntry& OutReaction,
+		bool& bOutPreserveOriginalTransform) const;
 };
 

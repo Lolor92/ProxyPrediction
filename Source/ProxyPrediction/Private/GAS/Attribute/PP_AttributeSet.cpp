@@ -189,18 +189,19 @@ void UPP_AttributeSet::PostGameplayEffectExecute(const struct FGameplayEffectMod
 
 		if (AppliedDamage > 0.0f)
 		{
+			// Report the resolved hit, including overkill, while health remains clamped to zero.
 			FGameplayTagContainer GrantedTags;
 			Data.EffectSpec.GetAllGrantedTags(GrantedTags);
 			const bool bCritical = GrantedTags.HasTagExact(TAG_Hit_Critical);
 			const FVector WorldLocation = PP_GetCombatTextLocation(Props);
 
 			PP_ShowCombatText(
-				Props.TargetAvatarActor, AppliedDamage, WorldLocation,
+				Props.TargetAvatarActor, Damage, WorldLocation,
 				EPP_CombatTextType::DamageReceived, bCritical);
 			if (Props.SourceAvatarActor && Props.SourceAvatarActor != Props.TargetAvatarActor)
 			{
 				PP_ShowCombatText(
-					Props.SourceAvatarActor, AppliedDamage, WorldLocation,
+					Props.SourceAvatarActor, Damage, WorldLocation,
 					EPP_CombatTextType::DamageDealt, bCritical);
 			}
 		}
