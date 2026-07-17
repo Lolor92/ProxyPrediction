@@ -26,6 +26,7 @@ namespace
 	{
 		TWeakObjectPtr<UAnimMontage> SavedMoveMontage;
 		TWeakObjectPtr<UAnimMontage> ActiveMontage;
+		FVector SavedMoveLocation = FVector::ZeroVector;
 		float SavedMoveTrackPosition = 0.f;
 		bool bFoundSavedMove = false;
 	};
@@ -48,6 +49,7 @@ namespace
 				const FSavedMove_Character& SavedMove = *ClientData->SavedMoves[MoveIndex];
 				Context.bFoundSavedMove = true;
 				Context.SavedMoveMontage = SavedMove.RootMotionMontage;
+				Context.SavedMoveLocation = SavedMove.SavedLocation;
 				Context.SavedMoveTrackPosition = SavedMove.RootMotionTrackPosition;
 			}
 		}
@@ -81,6 +83,73 @@ namespace
 			Context.SavedMoveMontage == Context.ActiveMontage &&
 			FMath::Abs(ServerMontageTrackPosition - Context.SavedMoveTrackPosition) <=
 				RootMotionTrackAgreementToleranceSeconds;
+	}
+
+	bool IsCorrectionTrackBehindSavedMove(
+		const FAnimRootMotionCorrectionContext& Context,
+		const float ServerMontageTrackPosition,
+		const float MaxSuppressedRewindSeconds)
+	{
+		if (!Context.bFoundSavedMove ||
+			!Context.SavedMoveMontage.IsValid() ||
+			!Context.ActiveMontage.IsValid() ||
+			Context.SavedMoveMontage != Context.ActiveMontage)
+		{
+			return false;
+		}
+
+		const float RewindSeconds =
+			Context.SavedMoveTrackPosition - ServerMontageTrackPosition;
+		return RewindSeconds > RootMotionTrackAgreementToleranceSeconds &&
+			RewindSeconds <= FMath::Max(
+				RootMotionTrackAgreementToleranceSeconds, MaxSuppressedRewindSeconds);
+	}
+
+	bool ResolveServerCorrectionWorldLocation(
+		UPP_CharacterMovementComponent* MovementComponent,
+		const FVector& ServerLocation,
+		const FMovementBaseInterfaceData* ServerMovementBaseInterfaceData,
+		const FName ServerBoneName,
+		const bool bBaseRelativePosition,
+		FVector& OutServerWorldLocation)
+	{
+		if (!MovementComponent)
+		{
+			return false;
+		}
+
+		if (!bBaseRelativePosition)
+		{
+			OutServerWorldLocation =
+				FRepMovement::RebaseOntoLocalOrigin(ServerLocation, MovementComponent);
+			return true;
+		}
+
+		if (!MovementBaseUtility::IsMovementBaseDataValid(ServerMovementBaseInterfaceData))
+		{
+			return false;
+		}
+
+		return MovementBaseUtility::TransformLocationToWorld(
+			ServerMovementBaseInterfaceData, ServerBoneName, ServerLocation,
+			OutServerWorldLocation);
+	}
+
+	bool IsCorrectionHistoricalStateAlreadyAligned(
+		const FAnimRootMotionCorrectionContext& Context,
+		const float ServerMontageTrackPosition,
+		const FVector& ServerWorldLocation,
+		const float LocationTolerance,
+		const bool bServerLocationComparable)
+	{
+		// Matching the historical montage track alone is insufficient: a genuine path or facing
+		// divergence can reach the same track position at a different location and must still be
+		// corrected by Character Movement. Base-relative server locations are converted to world
+		// space before reaching this comparison.
+		return bServerLocationComparable &&
+			IsCorrectionTrackAlignedWithSavedMove(Context, ServerMontageTrackPosition) &&
+			FVector::DistSquared(Context.SavedMoveLocation, ServerWorldLocation) <=
+			FMath::Square(FMath::Max(0.f, LocationTolerance));
 	}
 
 	class FScopedIgnoreMontageTrackCorrection
@@ -457,32 +526,57 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionPosition_Implementati
 		IsCorrectionForDifferentActiveMontage(CorrectionContext);
 	const bool bCorrectionTrackAlreadyAligned =
 		IsCorrectionTrackAlignedWithSavedMove(CorrectionContext, ServerMontageTrackPosition);
+	const bool bCorrectionTrackBehindSavedMove =
+		IsCorrectionTrackBehindSavedMove(
+			CorrectionContext, ServerMontageTrackPosition,
+			MaxSuppressedRootMotionMontageRewindSeconds);
+	FVector ServerWorldLocation = FVector::ZeroVector;
+	const bool bServerLocationComparable = ResolveServerCorrectionWorldLocation(
+		this, ServerLoc, ServerMovementBaseInterfaceData, ServerBoneName,
+		bBaseRelativePosition, ServerWorldLocation);
+	const bool bHistoricalStateAlreadyAligned =
+		IsCorrectionHistoricalStateAlreadyAligned(
+			CorrectionContext, ServerMontageTrackPosition, ServerWorldLocation,
+			AlignedRootMotionCorrectionLocationTolerance, bServerLocationComparable);
 	const bool bSuppressTrackCorrection = bIgnoreServerRootMotionMontageTrackCorrection ||
 		bClientIgnoreMovementCorrections || bCorrectionForDifferentMontage ||
-		bCorrectionTrackAlreadyAligned;
+		bCorrectionTrackBehindSavedMove || bHistoricalStateAlreadyAligned;
+	const bool bIgnoreWholeCorrection =
+		bCorrectionForDifferentMontage || bCorrectionTrackBehindSavedMove ||
+		bHistoricalStateAlreadyAligned;
 	const FVector ClientLocationBefore = UpdatedComponent
 		? UpdatedComponent->GetComponentLocation() : FVector::ZeroVector;
 	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[ClientRootMotionCorrectionReceived] %s Kind=Montage Timestamp=%.3f ServerLoc=%s ClientLoc=%s LocError=%.2f ServerTrack=%.3f SavedTrack=%.3f SavedMoveFound=%d SavedMontage=%s ActiveMontage=%s DifferentMontage=%d TrackAligned=%d SuppressTrack=%d IgnoreCorrections=%d"),
+		TEXT("[ClientRootMotionCorrectionReceived] %s Kind=Montage Timestamp=%.3f ServerLoc=%s ServerWorldLoc=%s BaseRelative=%d LocationComparable=%d ClientLoc=%s LocError=%.2f SavedLoc=%s SavedLocError=%.2f HistoricalTolerance=%.2f ServerTrack=%.3f SavedTrack=%.3f TrackRewind=%.3f SavedMoveFound=%d SavedMontage=%s ActiveMontage=%s DifferentMontage=%d TrackAligned=%d HistoricalAligned=%d TrackBehind=%d SuppressTrack=%d IgnoreWholeCorrection=%d IgnoreCorrections=%d"),
 		*PP_GetNetMotionActorContext(CharacterOwner), TimeStamp, *ServerLoc.ToCompactString(),
-		*ClientLocationBefore.ToCompactString(), FVector::Dist(ClientLocationBefore, ServerLoc),
+		*ServerWorldLocation.ToCompactString(), bBaseRelativePosition ? 1 : 0,
+		bServerLocationComparable ? 1 : 0, *ClientLocationBefore.ToCompactString(),
+		bServerLocationComparable ? FVector::Dist(ClientLocationBefore, ServerWorldLocation) : -1.f,
+		*CorrectionContext.SavedMoveLocation.ToCompactString(),
+		CorrectionContext.bFoundSavedMove && bServerLocationComparable
+			? FVector::Dist(CorrectionContext.SavedMoveLocation, ServerWorldLocation) : -1.f,
+		AlignedRootMotionCorrectionLocationTolerance,
 		ServerMontageTrackPosition, CorrectionContext.SavedMoveTrackPosition,
+		CorrectionContext.SavedMoveTrackPosition - ServerMontageTrackPosition,
 		CorrectionContext.bFoundSavedMove ? 1 : 0, *GetNameSafe(CorrectionContext.SavedMoveMontage.Get()),
 		*GetNameSafe(CorrectionContext.ActiveMontage.Get()), bCorrectionForDifferentMontage ? 1 : 0,
-		bCorrectionTrackAlreadyAligned ? 1 : 0, bSuppressTrackCorrection ? 1 : 0,
+		bCorrectionTrackAlreadyAligned ? 1 : 0, bHistoricalStateAlreadyAligned ? 1 : 0,
+		bCorrectionTrackBehindSavedMove ? 1 : 0,
+		bSuppressTrackCorrection ? 1 : 0, bIgnoreWholeCorrection ? 1 : 0,
 		bClientIgnoreMovementCorrections ? 1 : 0);
 
-	// Base Character Movement first reconciles/acknowledges the saved move, then applies the
-	// response's montage position. Suppress only that track write when a local reaction owns the
-	// timeline, the ability owns client prediction, the response belongs to a previous montage,
-	// or the response already agrees with its saved move.
+	// A same-track response whose server location agrees with the matching saved move is only an
+	// acknowledgement of already-predicted history. Preserve the current montage and capsule instead
+	// of rewinding them before the remaining saved moves replay. Genuine historical location errors
+	// still use Character Movement's normal correction and resimulation.
 	FScopedIgnoreMontageTrackCorrection IgnoreMontageTrackCorrection(
 		CharacterOwner, bSuppressTrackCorrection);
 
-	// A response produced for a previous montage cannot describe the current ability's capsule.
-	// The scoped ignore path acknowledges its saved move without applying that stale location.
+	// A previous-montage response cannot describe the current ability's capsule. A bounded
+	// same-montage rewind is likewise an old prediction response: acknowledge either saved move,
+	// but preserve both the current track and current location until a current response arrives.
 	FScopedIgnoreClientMovementCorrection IgnoreStaleMovementCorrection(
-		this, bCorrectionForDifferentMontage);
+		this, bIgnoreWholeCorrection);
 	Super::ClientAdjustRootMotionPosition_Implementation(TimeStamp, ServerMontageTrackPosition, ServerLoc,
 		ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData, ServerBoneName, bHasBase,
 		bBaseRelativePosition, ServerMovementMode);
@@ -492,7 +586,8 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionPosition_Implementati
 		TEXT("[ClientRootMotionCorrectionApplied] %s Kind=Montage Timestamp=%.3f Before=%s After=%s Moved=%.2f RemainingError=%.2f"),
 		*PP_GetNetMotionActorContext(CharacterOwner), TimeStamp,
 		*ClientLocationBefore.ToCompactString(), *ClientLocationAfter.ToCompactString(),
-		FVector::Dist(ClientLocationBefore, ClientLocationAfter), FVector::Dist(ClientLocationAfter, ServerLoc));
+		FVector::Dist(ClientLocationBefore, ClientLocationAfter),
+		bServerLocationComparable ? FVector::Dist(ClientLocationAfter, ServerWorldLocation) : -1.f);
 }
 
 void UPP_CharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implementation(
@@ -536,20 +631,47 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implem
 		IsCorrectionForDifferentActiveMontage(CorrectionContext);
 	const bool bCorrectionTrackAlreadyAligned = bHasAnimRootMotion &&
 		IsCorrectionTrackAlignedWithSavedMove(CorrectionContext, ServerMontageTrackPosition);
+	const bool bCorrectionTrackBehindSavedMove = bHasAnimRootMotion &&
+		IsCorrectionTrackBehindSavedMove(
+			CorrectionContext, ServerMontageTrackPosition,
+			MaxSuppressedRootMotionMontageRewindSeconds);
+	FVector ServerWorldLocation = FVector::ZeroVector;
+	const bool bServerLocationComparable = ResolveServerCorrectionWorldLocation(
+		this, ServerLoc, ServerMovementBaseInterfaceData, ServerBoneName,
+		bBaseRelativePosition, ServerWorldLocation);
+	const bool bHistoricalStateAlreadyAligned = bHasAnimRootMotion &&
+		IsCorrectionHistoricalStateAlreadyAligned(
+			CorrectionContext, ServerMontageTrackPosition, ServerWorldLocation,
+			AlignedRootMotionCorrectionLocationTolerance, bServerLocationComparable);
 	const bool bSuppressTrackCorrection = bHasAnimRootMotion &&
 		(bIgnoreServerRootMotionMontageTrackCorrection || bClientIgnoreMovementCorrections ||
-		bCorrectionForDifferentMontage || bCorrectionTrackAlreadyAligned);
+		bCorrectionForDifferentMontage || bCorrectionTrackBehindSavedMove ||
+		bHistoricalStateAlreadyAligned);
+	const bool bIgnoreWholeCorrection = bHasAnimRootMotion &&
+		(bCorrectionForDifferentMontage || bCorrectionTrackBehindSavedMove ||
+		bHistoricalStateAlreadyAligned);
 	const FVector ClientLocationBefore = UpdatedComponent
 		? UpdatedComponent->GetComponentLocation() : FVector::ZeroVector;
 	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[ClientRootMotionCorrectionReceived] %s Kind=Source Timestamp=%.3f HasAnimRootMotion=%d ServerLoc=%s ClientLoc=%s LocError=%.2f ServerTrack=%.3f SavedTrack=%.3f SavedMoveFound=%d SavedMontage=%s ActiveMontage=%s DifferentMontage=%d TrackAligned=%d SuppressTrack=%d IgnoreCorrections=%d"),
+		TEXT("[ClientRootMotionCorrectionReceived] %s Kind=Source Timestamp=%.3f HasAnimRootMotion=%d ServerLoc=%s ServerWorldLoc=%s BaseRelative=%d LocationComparable=%d ClientLoc=%s LocError=%.2f SavedLoc=%s SavedLocError=%.2f HistoricalTolerance=%.2f ServerTrack=%.3f SavedTrack=%.3f TrackRewind=%.3f SavedMoveFound=%d SavedMontage=%s ActiveMontage=%s DifferentMontage=%d TrackAligned=%d HistoricalAligned=%d TrackBehind=%d SuppressTrack=%d IgnoreWholeCorrection=%d IgnoreCorrections=%d"),
 		*PP_GetNetMotionActorContext(CharacterOwner), TimeStamp, bHasAnimRootMotion ? 1 : 0,
-		*ServerLoc.ToCompactString(), *ClientLocationBefore.ToCompactString(),
-		FVector::Dist(ClientLocationBefore, ServerLoc), ServerMontageTrackPosition,
-		CorrectionContext.SavedMoveTrackPosition, CorrectionContext.bFoundSavedMove ? 1 : 0,
+		*ServerLoc.ToCompactString(), *ServerWorldLocation.ToCompactString(),
+		bBaseRelativePosition ? 1 : 0, bServerLocationComparable ? 1 : 0,
+		*ClientLocationBefore.ToCompactString(),
+		bServerLocationComparable ? FVector::Dist(ClientLocationBefore, ServerWorldLocation) : -1.f,
+		*CorrectionContext.SavedMoveLocation.ToCompactString(),
+		CorrectionContext.bFoundSavedMove && bServerLocationComparable
+			? FVector::Dist(CorrectionContext.SavedMoveLocation, ServerWorldLocation) : -1.f,
+		AlignedRootMotionCorrectionLocationTolerance,
+		ServerMontageTrackPosition,
+		CorrectionContext.SavedMoveTrackPosition,
+		CorrectionContext.SavedMoveTrackPosition - ServerMontageTrackPosition,
+		CorrectionContext.bFoundSavedMove ? 1 : 0,
 		*GetNameSafe(CorrectionContext.SavedMoveMontage.Get()),
 		*GetNameSafe(CorrectionContext.ActiveMontage.Get()), bCorrectionForDifferentMontage ? 1 : 0,
-		bCorrectionTrackAlreadyAligned ? 1 : 0, bSuppressTrackCorrection ? 1 : 0,
+		bCorrectionTrackAlreadyAligned ? 1 : 0, bHistoricalStateAlreadyAligned ? 1 : 0,
+		bCorrectionTrackBehindSavedMove ? 1 : 0,
+		bSuppressTrackCorrection ? 1 : 0, bIgnoreWholeCorrection ? 1 : 0,
 		bClientIgnoreMovementCorrections ? 1 : 0);
 
 	// A root-motion-source response can carry the same anim-montage correction. Apply the same
@@ -557,7 +679,7 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implem
 	FScopedIgnoreMontageTrackCorrection IgnoreMontageTrackCorrection(
 		CharacterOwner, bSuppressTrackCorrection);
 	FScopedIgnoreClientMovementCorrection IgnoreStaleMovementCorrection(
-		this, bCorrectionForDifferentMontage);
+		this, bIgnoreWholeCorrection);
 	Super::ClientAdjustRootMotionSourcePosition_Implementation(TimeStamp, ServerRootMotion, bHasAnimRootMotion,
 		ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData,
 		ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);
@@ -567,6 +689,7 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implem
 		TEXT("[ClientRootMotionCorrectionApplied] %s Kind=Source Timestamp=%.3f Before=%s After=%s Moved=%.2f RemainingError=%.2f"),
 		*PP_GetNetMotionActorContext(CharacterOwner), TimeStamp,
 		*ClientLocationBefore.ToCompactString(), *ClientLocationAfter.ToCompactString(),
-		FVector::Dist(ClientLocationBefore, ClientLocationAfter), FVector::Dist(ClientLocationAfter, ServerLoc));
+		FVector::Dist(ClientLocationBefore, ClientLocationAfter),
+		bServerLocationComparable ? FVector::Dist(ClientLocationAfter, ServerWorldLocation) : -1.f);
 }
 

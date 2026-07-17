@@ -33,6 +33,10 @@ struct FPP_ReactionPredictionContext
 	UPROPERTY()
 	double ClientEstimatedServerTimeSeconds = -1.0;
 
+	/** Server-authored movement timestamp on the target snapshot used by the client's collision. */
+	UPROPERTY()
+	float TargetPresentationMovementTimeStamp = -1.0f;
+
 	/** Server-clamped hit time. Client-provided values in this field are always discarded. */
 	UPROPERTY()
 	double ServerValidatedHitTimeSeconds = -1.0;
@@ -40,6 +44,14 @@ struct FPP_ReactionPredictionContext
 	/** Whether the server accepted the synchronized timestamp for lag compensation. */
 	UPROPERTY()
 	bool bServerHitTimeValidated = false;
+
+	/** Server time resolved from TargetPresentationMovementTimeStamp. Client values are discarded. */
+	UPROPERTY()
+	double ServerValidatedTargetPresentationTimeSeconds = -1.0;
+
+	/** Whether the server matched the target snapshot marker to its authoritative history. */
+	UPROPERTY()
+	bool bServerTargetPresentationTimeValidated = false;
 
 	bool IsValid() const
 	{
@@ -189,6 +201,9 @@ struct FPP_AuthoritativeCollisionSweepRecord
 	FPP_ReactionDefenseSettings DefenseSettings;
 	FPP_ReactionDamageSettings DamageSettings;
 	FPP_ReactionGameplayCueSettings GameplayCueSettings;
+	TWeakObjectPtr<UGameplayAbility> AnimatingAbility;
+	TWeakObjectPtr<UAnimMontage> AnimatingMontage;
+	float MontagePosition = -1.0f;
 	TSet<TWeakObjectPtr<AActor>> ValidatedTargets;
 	double TimeSeconds = 0.0;
 };
@@ -273,6 +288,7 @@ struct FPP_PredictedProxyRootMotionReconciliation
 struct FPP_ServerCharacterHistorySample
 {
 	double ServerTimeSeconds = 0.0;
+	float MovementTimeStamp = 0.0f;
 	FVector Location = FVector::ZeroVector;
 	FRotator Rotation = FRotator::ZeroRotator;
 	TWeakObjectPtr<UGameplayAbility> AnimatingAbility;
@@ -300,6 +316,14 @@ public:
 		FPP_ReactionTransformSettings TransformSettings, FPP_ReactionDefenseSettings DefenseSettings,
 		FPP_ReactionDamageSettings DamageSettings, FPP_ReactionGameplayCueSettings GameplayCueSettings,
 		FHitResult HitResult);
+
+	/** Reserves one target/tag hit for the currently animating ability activation.
+	 *  Prevents a delayed montage correction from reopening the same notify and predicting twice.
+	 */
+	bool TryReservePredictedCollisionTarget(AActor* TargetActor, FGameplayTag ReactionTag);
+
+	/** Releases a reservation when prediction could not actually be started. */
+	void ReleasePredictedCollisionTarget(AActor* TargetActor, FGameplayTag ReactionTag);
 
 	/** Records a server notify hit and resolves a matching client request using server-authored settings. */
 	void RecordAuthoritativeCollision(AActor* TargetActor, FGameplayTag ReactionTag,
@@ -355,9 +379,15 @@ private:
 		const FPP_ReactionGameplayCueSettings& GameplayCueSettings,
 		const FHitResult& HitResult);
 	bool ValidateClientHitTime(FPP_ReactionPredictionContext& Context) const;
+	bool ValidateTargetPresentationTime(FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor) const;
 	void RecordServerOwnerHistory();
 	bool TrySampleServerOwnerHistory(double ServerTimeSeconds,
 		FPP_ServerCharacterHistorySample& OutSample) const;
+	bool TryResolveServerOwnerHistoryFromMovementTimeStamp(float MovementTimeStamp,
+		double ReferenceHitTimeSeconds, FPP_ServerCharacterHistorySample& OutSample) const;
+	double GetValidatedTargetHistoryTimeSeconds(
+		const FPP_ReactionPredictionContext& Context) const;
 	bool ApplyLagCompensatedRootMotionRollback(const FPP_ReactionPredictionContext& Context,
 		AActor* TargetActor) const;
 	bool TryValidateHistoricalCollisionSweep(const FPP_ReactionPredictionContext& Context,
@@ -417,7 +447,7 @@ private:
 
 	// Prediction start: validate -> transform/cosmetics -> create marker -> server RPC.
 	bool CanPlayPredictedReactionOnTargetProxy(AActor* TargetActor, const FPP_ReactionDataEntry& Reaction) const;
-	FPP_ReactionPredictionContext MakeReactionPredictionContext();
+	FPP_ReactionPredictionContext MakeReactionPredictionContext(AActor* TargetActor = nullptr);
 	void AddPendingPredictedReaction(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, bool bPlayedLocally, bool bPlayedGameplayCuesLocally,
 		int32 PredictedProxyAnimTagHandle);
@@ -546,6 +576,15 @@ private:
 	/** Latest predicted reaction time per target for replay throttling. */
 	UPROPERTY(Transient)
 	mutable TMap<TWeakObjectPtr<AActor>, double> LastReactionTimeByTarget;
+
+	/** Ability instance owning the current activation-scoped predicted-hit reservations. */
+	TWeakObjectPtr<UGameplayAbility> PredictedCollisionDedupAbility;
+
+	/** Activation sequence paired with PredictedCollisionDedupAbility. */
+	uint32 PredictedCollisionDedupActivationSequenceId = 0;
+
+	/** Target/reaction pairs already predicted during that activation. */
+	TMap<TWeakObjectPtr<AActor>, FGameplayTagContainer> PredictedCollisionTargetsThisActivation;
 
 	/** Latest accepted server reaction time per target. */
 	UPROPERTY(Transient)
@@ -676,6 +715,16 @@ private:
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",
 		meta=(ClampMin="0.05", ClampMax="1.0", Units="Seconds"))
 	float MaxHistoricalCollisionSweepTimeDelta = 0.5f;
+
+	/** Maximum age of the server-issued target snapshot relative to the client's hit time. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",
+		meta=(ClampMin="0.05", ClampMax="1.0", Units="Seconds"))
+	float MaxTargetPresentationAgeBeforeHitSeconds = 0.4f;
+
+	/** Maximum matching error between a reported movement timestamp and server history. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",
+		meta=(ClampMin="0.001", ClampMax="0.1", Units="Seconds"))
+	float TargetPresentationTimestampMatchTolerance = 0.05f;
 
 	/** Interval between authoritative history samples. */
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",

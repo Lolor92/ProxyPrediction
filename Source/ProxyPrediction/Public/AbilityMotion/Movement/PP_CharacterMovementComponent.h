@@ -88,6 +88,22 @@ private:
 	bool bSavedOwnerReactionIgnoreErrorChecksAndCorrection = false;
 
 protected:
+	/** Maximum same-montage rewind treated as a delayed prediction response instead of a new timeline.
+	 *  Larger disagreements remain server-authoritative and are corrected normally.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement|Network Prediction",
+		meta=(ClampMin="0.05", UIMin="0.05", Units="Seconds"))
+	float MaxSuppressedRootMotionMontageRewindSeconds = 0.4f;
+
+	/** Maximum historical capsule disagreement for a same-track response to count as an
+	 *  acknowledgement of an already-correct saved move rather than a new correction. Fast
+	 *  montage movement can span several centimeters between saved-move sampling boundaries;
+	 *  this remains well below the distance used to identify a genuinely different path.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement|Network Prediction",
+		meta=(ClampMin="0.0", UIMin="0.0", Units="Centimeters"))
+	float AlignedRootMotionCorrectionLocationTolerance = 50.f;
+
 	/** Multiplier applied to normal maximum speed while the character is actively blocking. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Movement|Directional Speed",
 		meta=(ClampMin="0.0", UIMin="0.0"))

@@ -112,6 +112,7 @@ public:
 	bool ShouldIgnoreMovementCorrectionsDuringAbility() const { return bIgnoreMovementCorrectionsDuringAbility; }
 	bool ShouldHoldRootMotionCollisionPauseUntilRelease() const { return bHoldRootMotionCollisionPauseUntilRelease; }
 	bool ShouldPauseRootMotionForCharacterCollision(const ACharacter* Character) const;
+	bool ShouldSynchronizeActivationYaw() const { return bRotateToControllerYawOnActivate; }
 
 protected:
 	bool CanInterruptAnimatingAbility(const FGameplayAbilityActorInfo* ActorInfo) const;

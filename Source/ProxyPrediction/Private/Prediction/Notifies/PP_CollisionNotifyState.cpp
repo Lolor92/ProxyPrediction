@@ -338,13 +338,21 @@ void UPP_CollisionNotifyState::TryPlayPredictedReaction(
 
 	if (!PredictedReactionTag.IsValid()) return;
 
+	const bool bReservedActivationHit =
+		bAllowRepeatedPredictedHitInSameAbilityActivation ||
+		PredictionComponent->TryReservePredictedCollisionTarget(HitActor, PredictedReactionTag);
+	if (!bReservedActivationHit)
+	{
+		return;
+	}
+
 	FPP_ReactionTransformSettings TransformSettings;
 	FPP_ReactionDefenseSettings DefenseSettings;
 	FPP_ReactionDamageSettings DamageSettings;
 	FPP_ReactionGameplayCueSettings GameplayCueSettings;
 	BuildReactionSettings(TransformSettings, DefenseSettings, DamageSettings, GameplayCueSettings);
 
-	PredictionComponent->PlayPredictedReactionOnTargetProxy(
+	const bool bPredictionStarted = PredictionComponent->PlayPredictedReactionOnTargetProxy(
 		HitActor,
 		PredictedReactionTag,
 		TransformSettings,
@@ -352,5 +360,9 @@ void UPP_CollisionNotifyState::TryPlayPredictedReaction(
 		DamageSettings,
 		GameplayCueSettings,
 		HitResult);
+	if (!bPredictionStarted && !bAllowRepeatedPredictedHitInSameAbilityActivation)
+	{
+		PredictionComponent->ReleasePredictedCollisionTarget(HitActor, PredictedReactionTag);
+	}
 }
 

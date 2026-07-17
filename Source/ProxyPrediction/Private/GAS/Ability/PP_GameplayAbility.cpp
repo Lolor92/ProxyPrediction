@@ -9,6 +9,7 @@
 #include "Components/CapsuleComponent.h"
 #include "AbilityMotion/Component/PP_AbilityMotionComponent.h"
 #include "AbilityMotion/Movement/PP_CharacterMovementComponent.h"
+#include "GAS/Component/PP_AbilitySystemComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
@@ -800,9 +801,24 @@ void UPP_GameplayAbility::RotateAvatarToControllerYawOnActivate() const
 		: Character->GetController();
 	if (!Controller) return;
 
-	FRotator NewRot = Character->GetActorRotation();
-	NewRot.Yaw = Controller->GetControlRotation().Yaw;
+	const float ControlYaw = FRotator::NormalizeAxis(Controller->GetControlRotation().Yaw);
+	float ActivationYaw = ControlYaw;
+	bool bUsedPreparedYaw = false;
+	if (UPP_AbilitySystemComponent* PPASC = Cast<UPP_AbilitySystemComponent>(Info->AbilitySystemComponent.Get()))
+	{
+		bUsedPreparedYaw = PPASC->ConsumePreparedAbilityActivationYaw(GetCurrentAbilitySpecHandle(), ActivationYaw);
+	}
+
+	ActivationYaw = FRotator::NormalizeAxis(ActivationYaw);
+	const FRotator PreviousRotation = Character->GetActorRotation();
+	FRotator NewRot = PreviousRotation;
+	NewRot.Yaw = ActivationYaw;
 	Character->SetActorRotation(NewRot, ETeleportType::TeleportPhysics);
 	RefreshLocalCameraAfterAbilityYaw(Character);
+
+	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+		TEXT("[AbilityActivationYawApplied] %s Ability=%s Handle=%s PreviousYaw=%.2f AppliedYaw=%.2f ControlYaw=%.2f Prepared=%d"),
+		*PP_GetNetMotionActorContext(Character), *GetNameSafe(this), *GetCurrentAbilitySpecHandle().ToString(),
+		PreviousRotation.Yaw, ActivationYaw, ControlYaw, bUsedPreparedYaw ? 1 : 0);
 }
 

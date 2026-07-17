@@ -235,6 +235,12 @@ EPP_ReactionTeleportType::None;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Collision", meta=(ClampMin="1", ClampMax="32"))
 	int32 MaxSweepSubsteps = 8;
 
+	/** Allows this activation to predict the same reaction on the same target more than once.
+	 *  Leave disabled for normal single-hit attacks. Separate ability activations are never blocked.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Collision")
+	bool bAllowRepeatedPredictedHitInSameAbilityActivation = false;
+
 	/** Reject a single implausibly large socket jump instead of tracing across it. Zero disables the guard. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Collision", meta=(ClampMin="0.0", Units="Centimeters"))
 	float MaxSocketSweepDistance = 500.f;

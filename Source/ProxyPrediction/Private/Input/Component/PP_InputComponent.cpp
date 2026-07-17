@@ -1,5 +1,6 @@
 #include "Input/Component/PP_InputComponent.h"
 #include "GAS/Ability/PP_GameplayAbility.h"
+#include "GAS/Component/PP_AbilitySystemComponent.h"
 #include "AbilitySystemComponent.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -22,6 +23,21 @@ namespace SyncInputTags
 	{
 		static FGameplayTag T = FGameplayTag::RequestGameplayTag(TEXT("SyncInput.Look"));
 		return T;
+	}
+}
+
+namespace
+{
+	bool TryActivateAbilityWithSyncedFacing(
+		UAbilitySystemComponent* AbilitySystemComponent,
+		const FGameplayAbilitySpecHandle AbilityHandle)
+	{
+		if (UPP_AbilitySystemComponent* PPASC = Cast<UPP_AbilitySystemComponent>(AbilitySystemComponent))
+		{
+			return PPASC->TryActivateAbilityWithSyncedFacing(AbilityHandle);
+		}
+
+		return AbilitySystemComponent && AbilitySystemComponent->TryActivateAbility(AbilityHandle);
 	}
 }
 
@@ -343,7 +359,7 @@ EPP_AbilityPressResult UPP_InputComponent::TryHandleAbilityPressed(
 						: EPP_AbilityPressResult::BlockedOther;
 				}
 
-				if (AbilitySystemComponent->TryActivateAbility(Spec.Handle))
+				if (TryActivateAbilityWithSyncedFacing(AbilitySystemComponent, Spec.Handle))
 				{
 					LastAbilityActivationFrame = GFrameCounter;
 					TrackPendingSelfRetrigger(Spec.Handle);
@@ -378,7 +394,7 @@ EPP_AbilityPressResult UPP_InputComponent::TryHandleAbilityPressed(
 
 		// Do not emit a generic InputPressed event for a new activation;
 		// TryActivateAbility already creates and sends its prediction key.
-		const bool bActivated = AbilitySystemComponent->TryActivateAbility(Spec.Handle);
+		const bool bActivated = TryActivateAbilityWithSyncedFacing(AbilitySystemComponent, Spec.Handle);
 		if (bActivated)
 		{
 			LastAbilityActivationFrame = GFrameCounter;
@@ -477,7 +493,7 @@ EPP_AbilityPressResult UPP_InputComponent::TryActivateComboAbility(
 		}
 
 		ComboSpec.InputPressed = RequestedAbilitySpec.InputPressed;
-		const bool bActivated = AbilitySystemComponent->TryActivateAbility(ComboSpec.Handle);
+		const bool bActivated = TryActivateAbilityWithSyncedFacing(AbilitySystemComponent, ComboSpec.Handle);
 		if (bActivated)
 		{
 			LastAbilityActivationFrame = GFrameCounter;

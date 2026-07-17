@@ -11,6 +11,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/Controller.h"
 #include "GameplayEffect.h"
+#include "GAS/Component/PP_AbilitySystemComponent.h"
 #include "TimerManager.h"
 
 namespace
@@ -707,8 +708,10 @@ void UPP_CombatComponent::QueueAbilityActivation(const FPP_CombatTagReactionBind
 	auto Fn = [this, ASC, Binding, TriggeredTag]
 	{
 		const UGameplayAbility* BeforeAbility = ASC->GetAnimatingAbility();
-		const bool bActivated =
-			ASC->TryActivateAbilitiesByTag(FGameplayTagContainer(Binding.Ability.AbilityTag));
+		const FGameplayTagContainer AbilityTags(Binding.Ability.AbilityTag);
+		const bool bActivated = Cast<UPP_AbilitySystemComponent>(ASC)
+			? CastChecked<UPP_AbilitySystemComponent>(ASC)->TryActivateAbilitiesByTagWithSyncedFacing(AbilityTags)
+			: ASC->TryActivateAbilitiesByTag(AbilityTags);
 		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
 			TEXT("[ReactionAbilityExecuted] %s Trigger=%s AbilityTag=%s Activated=%d TriggerCount=%d Before=%s After=%s"),
 			*PP_GetNetMotionActorContext(GetOwner()), *TriggeredTag.ToString(),
