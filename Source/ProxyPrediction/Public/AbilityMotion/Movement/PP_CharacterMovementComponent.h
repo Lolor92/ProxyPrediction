@@ -71,6 +71,14 @@ private:
 	UPROPERTY(Transient)
 	bool bCrowdControlMovementInputSuppressed = false;
 
+	/** Historical effective input lock for the saved move currently being replayed locally. */
+	UPROPERTY(Transient)
+	bool bSavedMoveReplayMovementInputSuppressed = false;
+
+	/** Per-move client CC input lock used by remote/server movement simulation only. */
+	UPROPERTY(Transient)
+	bool bNetworkMoveCrowdControlMovementInputSuppressed = false;
+
 	/** True while a local owner reaction owns its montage timeline instead of server track position. */
 	UPROPERTY(Transient)
 	bool bIgnoreServerRootMotionMontageTrackCorrection = false;

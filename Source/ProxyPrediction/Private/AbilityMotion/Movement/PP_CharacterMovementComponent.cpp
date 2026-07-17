@@ -1,6 +1,4 @@
 #include "AbilityMotion/Movement/PP_CharacterMovementComponent.h"
-#include "Diagnostics/PP_NetMotionDiagnostics.h"
-
 #include "AnimInstance/PP_AnimInstance.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
@@ -13,6 +11,7 @@ namespace PPAbilityMotionFlags
 	// Custom saved-move bits reproduce ability locks during server resimulation.
 	constexpr uint8 SuppressAbilityRootMotion = FSavedMove_Character::FLAG_Custom_0;
 	constexpr uint8 SuppressAbilityMovementInput = FSavedMove_Character::FLAG_Custom_1;
+	constexpr uint8 SuppressCrowdControlMovementInput = FSavedMove_Character::FLAG_Custom_2;
 }
 
 namespace
@@ -221,6 +220,7 @@ public:
 
 		bSavedAbilityRootMotionSuppressed = false;
 		bSavedAbilityMovementInputSuppressed = false;
+		bSavedCrowdControlMovementInputSuppressed = false;
 	}
 
 	virtual uint8 GetCompressedFlags() const override
@@ -236,6 +236,11 @@ public:
 		if (bSavedAbilityMovementInputSuppressed)
 		{
 			Result |= PPAbilityMotionFlags::SuppressAbilityMovementInput;
+		}
+
+		if (bSavedCrowdControlMovementInputSuppressed)
+		{
+			Result |= PPAbilityMotionFlags::SuppressCrowdControlMovementInput;
 		}
 
 		return Result;
@@ -256,6 +261,12 @@ public:
 			return false;
 		}
 
+		if (bSavedCrowdControlMovementInputSuppressed !=
+			NewPPMove->bSavedCrowdControlMovementInputSuppressed)
+		{
+			return false;
+		}
+
 		return Super::CanCombineWith(NewMove, Character, MaxDelta);
 	}
 
@@ -269,12 +280,15 @@ public:
 		{
 			bSavedAbilityRootMotionSuppressed = MoveComp->IsAbilityRootMotionSuppressed();
 			bSavedAbilityMovementInputSuppressed = MoveComp->IsAbilityMovementInputSuppressed();
+			bSavedCrowdControlMovementInputSuppressed =
+				MoveComp->IsCrowdControlMovementInputSuppressed();
 		}
 	}
 
 private:
 	uint8 bSavedAbilityRootMotionSuppressed : 1 = false;
 	uint8 bSavedAbilityMovementInputSuppressed : 1 = false;
+	uint8 bSavedCrowdControlMovementInputSuppressed : 1 = false;
 };
 
 class FNetworkPredictionData_Client_PPAbilityMotion final : public FNetworkPredictionData_Client_Character
@@ -295,12 +309,7 @@ void UPP_CharacterMovementComponent::SetAbilityRootMotionSuppressed(bool bInSupp
 {
 	if (bAbilityRootMotionSuppressed == bInSuppressed) return;
 
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[RootMotionSuppressionChanged] %s Previous=%d New=%d IgnoreCorrections=%d ClientIgnore=%d ServerIgnoresError=%d"),
-		*PP_GetNetMotionActorContext(CharacterOwner), bAbilityRootMotionSuppressed ? 1 : 0,
-		bInSuppressed ? 1 : 0, bIgnoreServerRootMotionMontageTrackCorrection ? 1 : 0,
-		bClientIgnoreMovementCorrections ? 1 : 0,
-		bIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0);
+
 	bAbilityRootMotionSuppressed = bInSuppressed;
 	RefreshAbilityRootMotionMode();
 }
@@ -327,11 +336,7 @@ void UPP_CharacterMovementComponent::SetAbilityMovementInputSuppressed(bool bInS
 {
 	if (bAbilityMovementInputSuppressed == bInSuppressed) return;
 
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[MovementInputSuppressionChanged] %s Source=Ability Previous=%d New=%d RootMotionSuppressed=%d CCSuppressed=%d"),
-		*PP_GetNetMotionActorContext(CharacterOwner), bAbilityMovementInputSuppressed ? 1 : 0,
-		bInSuppressed ? 1 : 0, bAbilityRootMotionSuppressed ? 1 : 0,
-		bCrowdControlMovementInputSuppressed ? 1 : 0);
+
 	bAbilityMovementInputSuppressed = bInSuppressed;
 }
 
@@ -339,11 +344,7 @@ void UPP_CharacterMovementComponent::SetCrowdControlMovementInputSuppressed(cons
 {
 	if (bCrowdControlMovementInputSuppressed == bInSuppressed) return;
 
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[MovementInputSuppressionChanged] %s Source=CrowdControl Previous=%d New=%d AbilitySuppressed=%d RootMotionSuppressed=%d"),
-		*PP_GetNetMotionActorContext(CharacterOwner), bCrowdControlMovementInputSuppressed ? 1 : 0,
-		bInSuppressed ? 1 : 0, bAbilityMovementInputSuppressed ? 1 : 0,
-		bAbilityRootMotionSuppressed ? 1 : 0);
+
 	bCrowdControlMovementInputSuppressed = bInSuppressed;
 }
 
@@ -355,8 +356,6 @@ void UPP_CharacterMovementComponent::SetIgnoreServerRootMotionMontageTrackCorrec
 	}
 
 	const bool bLocalOwnerReaction = CharacterOwner && CharacterOwner->IsLocallyControlled();
-	const bool bOldClientIgnore = bClientIgnoreMovementCorrections;
-	const bool bOldServerIgnore = bIgnoreClientMovementErrorChecksAndCorrection;
 
 	if (bInIgnore && bLocalOwnerReaction)
 	{
@@ -378,13 +377,7 @@ void UPP_CharacterMovementComponent::SetIgnoreServerRootMotionMontageTrackCorrec
 	}
 
 	bIgnoreServerRootMotionMontageTrackCorrection = bInIgnore;
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[CorrectionSuppressionChanged] %s Previous=%d New=%d LocalOwnerReaction=%d ClientIgnore=%d->%d ServerIgnoresError=%d->%d RootMotionSuppressed=%d"),
-		*PP_GetNetMotionActorContext(CharacterOwner), bInIgnore ? 0 : 1, bInIgnore ? 1 : 0,
-		bLocalOwnerReaction ? 1 : 0, bOldClientIgnore ? 1 : 0,
-		bClientIgnoreMovementCorrections ? 1 : 0, bOldServerIgnore ? 1 : 0,
-		bIgnoreClientMovementErrorChecksAndCorrection ? 1 : 0,
-		bAbilityRootMotionSuppressed ? 1 : 0);
+
 	RefreshAbilityRootMotionMode();
 }
 
@@ -456,13 +449,33 @@ void UPP_CharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
 {
 	Super::UpdateFromCompressedFlags(Flags);
 
-	// Remote/server simulation restores the exact locks saved by the owning client.
+	const bool bSavedAbilityMovementInputSuppressed =
+		(Flags & PPAbilityMotionFlags::SuppressAbilityMovementInput) != 0;
+	const bool bSavedCrowdControlMovementInputSuppressed =
+		(Flags & PPAbilityMotionFlags::SuppressCrowdControlMovementInput) != 0;
+
+	// During correction replay, use the historical input-lock state only for movement
+	// simulation. Do not call the ability/CC setters here: those setters own live GAS and
+	// animation state, and rewinding them for every saved move destabilizes active montages.
 	const bool bIsLocallyControlled = CharacterOwner && CharacterOwner->IsLocallyControlled();
-	if (!bIsLocallyControlled)
+	if (bIsLocallyControlled)
 	{
-		SetAbilityRootMotionSuppressed((Flags & PPAbilityMotionFlags::SuppressAbilityRootMotion) != 0);
-		SetAbilityMovementInputSuppressed((Flags & PPAbilityMotionFlags::SuppressAbilityMovementInput) != 0);
+		if (CharacterOwner->bClientUpdating)
+		{
+			bSavedMoveReplayMovementInputSuppressed =
+				bSavedAbilityMovementInputSuppressed ||
+				bSavedCrowdControlMovementInputSuppressed;
+		}
+		return;
 	}
+
+	// Remote/server simulation restores ability locks through the established path. Crowd
+	// control remains GAS-authoritative; its saved bit is only an additional per-move input
+	// lock, so client moves cannot clear a live authoritative CC state.
+	SetAbilityRootMotionSuppressed((Flags & PPAbilityMotionFlags::SuppressAbilityRootMotion) != 0);
+	SetAbilityMovementInputSuppressed(bSavedAbilityMovementInputSuppressed);
+	bNetworkMoveCrowdControlMovementInputSuppressed =
+		bSavedCrowdControlMovementInputSuppressed;
 }
 
 FNetworkPredictionData_Client* UPP_CharacterMovementComponent::GetPredictionData_Client() const
@@ -482,7 +495,15 @@ FNetworkPredictionData_Client* UPP_CharacterMovementComponent::GetPredictionData
 FVector UPP_CharacterMovementComponent::ScaleInputAcceleration(const FVector& InputAcceleration) const
 {
 	// Zero acceleration instead of blocking input events so ability release still works.
-	if (bAbilityMovementInputSuppressed || bCrowdControlMovementInputSuppressed)
+	// A correction replay must use the state captured by that historical move rather than
+	// today's live ability/CC state. Outside replay, GAS-owned state remains authoritative.
+	const bool bReplayingSavedMove = CharacterOwner && CharacterOwner->bClientUpdating;
+	const bool bInputSuppressed = bReplayingSavedMove
+		? bSavedMoveReplayMovementInputSuppressed
+		: bAbilityMovementInputSuppressed ||
+			bCrowdControlMovementInputSuppressed ||
+			bNetworkMoveCrowdControlMovementInputSuppressed;
+	if (bInputSuppressed)
 	{
 		return FVector::ZeroVector;
 	}
@@ -524,8 +545,6 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionPosition_Implementati
 		BuildAnimRootMotionCorrectionContext(this, TimeStamp);
 	const bool bCorrectionForDifferentMontage =
 		IsCorrectionForDifferentActiveMontage(CorrectionContext);
-	const bool bCorrectionTrackAlreadyAligned =
-		IsCorrectionTrackAlignedWithSavedMove(CorrectionContext, ServerMontageTrackPosition);
 	const bool bCorrectionTrackBehindSavedMove =
 		IsCorrectionTrackBehindSavedMove(
 			CorrectionContext, ServerMontageTrackPosition,
@@ -544,27 +563,6 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionPosition_Implementati
 	const bool bIgnoreWholeCorrection =
 		bCorrectionForDifferentMontage || bCorrectionTrackBehindSavedMove ||
 		bHistoricalStateAlreadyAligned;
-	const FVector ClientLocationBefore = UpdatedComponent
-		? UpdatedComponent->GetComponentLocation() : FVector::ZeroVector;
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[ClientRootMotionCorrectionReceived] %s Kind=Montage Timestamp=%.3f ServerLoc=%s ServerWorldLoc=%s BaseRelative=%d LocationComparable=%d ClientLoc=%s LocError=%.2f SavedLoc=%s SavedLocError=%.2f HistoricalTolerance=%.2f ServerTrack=%.3f SavedTrack=%.3f TrackRewind=%.3f SavedMoveFound=%d SavedMontage=%s ActiveMontage=%s DifferentMontage=%d TrackAligned=%d HistoricalAligned=%d TrackBehind=%d SuppressTrack=%d IgnoreWholeCorrection=%d IgnoreCorrections=%d"),
-		*PP_GetNetMotionActorContext(CharacterOwner), TimeStamp, *ServerLoc.ToCompactString(),
-		*ServerWorldLocation.ToCompactString(), bBaseRelativePosition ? 1 : 0,
-		bServerLocationComparable ? 1 : 0, *ClientLocationBefore.ToCompactString(),
-		bServerLocationComparable ? FVector::Dist(ClientLocationBefore, ServerWorldLocation) : -1.f,
-		*CorrectionContext.SavedMoveLocation.ToCompactString(),
-		CorrectionContext.bFoundSavedMove && bServerLocationComparable
-			? FVector::Dist(CorrectionContext.SavedMoveLocation, ServerWorldLocation) : -1.f,
-		AlignedRootMotionCorrectionLocationTolerance,
-		ServerMontageTrackPosition, CorrectionContext.SavedMoveTrackPosition,
-		CorrectionContext.SavedMoveTrackPosition - ServerMontageTrackPosition,
-		CorrectionContext.bFoundSavedMove ? 1 : 0, *GetNameSafe(CorrectionContext.SavedMoveMontage.Get()),
-		*GetNameSafe(CorrectionContext.ActiveMontage.Get()), bCorrectionForDifferentMontage ? 1 : 0,
-		bCorrectionTrackAlreadyAligned ? 1 : 0, bHistoricalStateAlreadyAligned ? 1 : 0,
-		bCorrectionTrackBehindSavedMove ? 1 : 0,
-		bSuppressTrackCorrection ? 1 : 0, bIgnoreWholeCorrection ? 1 : 0,
-		bClientIgnoreMovementCorrections ? 1 : 0);
-
 	// A same-track response whose server location agrees with the matching saved move is only an
 	// acknowledgement of already-predicted history. Preserve the current montage and capsule instead
 	// of rewinding them before the remaining saved moves replay. Genuine historical location errors
@@ -580,14 +578,6 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionPosition_Implementati
 	Super::ClientAdjustRootMotionPosition_Implementation(TimeStamp, ServerMontageTrackPosition, ServerLoc,
 		ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData, ServerBoneName, bHasBase,
 		bBaseRelativePosition, ServerMovementMode);
-	const FVector ClientLocationAfter = UpdatedComponent
-		? UpdatedComponent->GetComponentLocation() : FVector::ZeroVector;
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[ClientRootMotionCorrectionApplied] %s Kind=Montage Timestamp=%.3f Before=%s After=%s Moved=%.2f RemainingError=%.2f"),
-		*PP_GetNetMotionActorContext(CharacterOwner), TimeStamp,
-		*ClientLocationBefore.ToCompactString(), *ClientLocationAfter.ToCompactString(),
-		FVector::Dist(ClientLocationBefore, ClientLocationAfter),
-		bServerLocationComparable ? FVector::Dist(ClientLocationAfter, ServerWorldLocation) : -1.f);
 }
 
 void UPP_CharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implementation(
@@ -629,8 +619,6 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implem
 		: FAnimRootMotionCorrectionContext();
 	const bool bCorrectionForDifferentMontage = bHasAnimRootMotion &&
 		IsCorrectionForDifferentActiveMontage(CorrectionContext);
-	const bool bCorrectionTrackAlreadyAligned = bHasAnimRootMotion &&
-		IsCorrectionTrackAlignedWithSavedMove(CorrectionContext, ServerMontageTrackPosition);
 	const bool bCorrectionTrackBehindSavedMove = bHasAnimRootMotion &&
 		IsCorrectionTrackBehindSavedMove(
 			CorrectionContext, ServerMontageTrackPosition,
@@ -650,30 +638,6 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implem
 	const bool bIgnoreWholeCorrection = bHasAnimRootMotion &&
 		(bCorrectionForDifferentMontage || bCorrectionTrackBehindSavedMove ||
 		bHistoricalStateAlreadyAligned);
-	const FVector ClientLocationBefore = UpdatedComponent
-		? UpdatedComponent->GetComponentLocation() : FVector::ZeroVector;
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[ClientRootMotionCorrectionReceived] %s Kind=Source Timestamp=%.3f HasAnimRootMotion=%d ServerLoc=%s ServerWorldLoc=%s BaseRelative=%d LocationComparable=%d ClientLoc=%s LocError=%.2f SavedLoc=%s SavedLocError=%.2f HistoricalTolerance=%.2f ServerTrack=%.3f SavedTrack=%.3f TrackRewind=%.3f SavedMoveFound=%d SavedMontage=%s ActiveMontage=%s DifferentMontage=%d TrackAligned=%d HistoricalAligned=%d TrackBehind=%d SuppressTrack=%d IgnoreWholeCorrection=%d IgnoreCorrections=%d"),
-		*PP_GetNetMotionActorContext(CharacterOwner), TimeStamp, bHasAnimRootMotion ? 1 : 0,
-		*ServerLoc.ToCompactString(), *ServerWorldLocation.ToCompactString(),
-		bBaseRelativePosition ? 1 : 0, bServerLocationComparable ? 1 : 0,
-		*ClientLocationBefore.ToCompactString(),
-		bServerLocationComparable ? FVector::Dist(ClientLocationBefore, ServerWorldLocation) : -1.f,
-		*CorrectionContext.SavedMoveLocation.ToCompactString(),
-		CorrectionContext.bFoundSavedMove && bServerLocationComparable
-			? FVector::Dist(CorrectionContext.SavedMoveLocation, ServerWorldLocation) : -1.f,
-		AlignedRootMotionCorrectionLocationTolerance,
-		ServerMontageTrackPosition,
-		CorrectionContext.SavedMoveTrackPosition,
-		CorrectionContext.SavedMoveTrackPosition - ServerMontageTrackPosition,
-		CorrectionContext.bFoundSavedMove ? 1 : 0,
-		*GetNameSafe(CorrectionContext.SavedMoveMontage.Get()),
-		*GetNameSafe(CorrectionContext.ActiveMontage.Get()), bCorrectionForDifferentMontage ? 1 : 0,
-		bCorrectionTrackAlreadyAligned ? 1 : 0, bHistoricalStateAlreadyAligned ? 1 : 0,
-		bCorrectionTrackBehindSavedMove ? 1 : 0,
-		bSuppressTrackCorrection ? 1 : 0, bIgnoreWholeCorrection ? 1 : 0,
-		bClientIgnoreMovementCorrections ? 1 : 0);
-
 	// A root-motion-source response can carry the same anim-montage correction. Apply the same
 	// timeline and stale-location protections without suppressing root-motion-source reconciliation.
 	FScopedIgnoreMontageTrackCorrection IgnoreMontageTrackCorrection(
@@ -683,13 +647,5 @@ void UPP_CharacterMovementComponent::ClientAdjustRootMotionSourcePosition_Implem
 	Super::ClientAdjustRootMotionSourcePosition_Implementation(TimeStamp, ServerRootMotion, bHasAnimRootMotion,
 		ServerMontageTrackPosition, ServerLoc, ServerRotation, ServerVelZ, ServerMovementBaseInterfaceData,
 		ServerBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);
-	const FVector ClientLocationAfter = UpdatedComponent
-		? UpdatedComponent->GetComponentLocation() : FVector::ZeroVector;
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[ClientRootMotionCorrectionApplied] %s Kind=Source Timestamp=%.3f Before=%s After=%s Moved=%.2f RemainingError=%.2f"),
-		*PP_GetNetMotionActorContext(CharacterOwner), TimeStamp,
-		*ClientLocationBefore.ToCompactString(), *ClientLocationAfter.ToCompactString(),
-		FVector::Dist(ClientLocationBefore, ClientLocationAfter),
-		bServerLocationComparable ? FVector::Dist(ClientLocationAfter, ServerWorldLocation) : -1.f);
 }
 

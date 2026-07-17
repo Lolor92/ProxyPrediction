@@ -1,6 +1,5 @@
 #include "ProxyPrediction/Public/GAS/Component/PP_AbilitySystemComponent.h"
 
-#include "Diagnostics/PP_NetMotionDiagnostics.h"
 #include "GAS/Ability/PP_GameplayAbility.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/Controller.h"
@@ -128,10 +127,7 @@ bool UPP_AbilitySystemComponent::PrepareAbilityActivationYaw(
 		ServerPrepareAbilityActivationYaw(AbilityHandle, ActivationYaw);
 	}
 
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[AbilityActivationYawPrepared] %s Ability=%s Handle=%s Yaw=%.2f Authority=%d"),
-		*PP_GetNetMotionActorContext(Character), *GetNameSafe(Ability), *AbilityHandle.ToString(),
-		ActivationYaw, IsOwnerActorAuthoritative() ? 1 : 0);
+
 	return true;
 }
 
@@ -151,10 +147,7 @@ void UPP_AbilitySystemComponent::ServerPrepareAbilityActivationYaw_Implementatio
 	Pending.Yaw = FRotator::NormalizeAxis(ActivationYaw);
 	Pending.PreparedWorldTime = World->GetTimeSeconds();
 
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[AbilityActivationYawReceived] %s Ability=%s Handle=%s Yaw=%.2f"),
-		*PP_GetNetMotionActorContext(Cast<AActor>(GetAvatarActor())), *GetNameSafe(Ability),
-		*AbilityHandle.ToString(), Pending.Yaw);
+
 }
 
 bool UPP_AbilitySystemComponent::ConsumePreparedAbilityActivationYaw(
@@ -177,10 +170,7 @@ bool UPP_AbilitySystemComponent::ConsumePreparedAbilityActivationYaw(
 	const double Age = World ? World->GetTimeSeconds() - Pending.PreparedWorldTime : TNumericLimits<double>::Max();
 	if (Age < 0.0 || Age > PreparedActivationYawLifetimeSeconds || !FMath::IsFinite(Pending.Yaw))
 	{
-		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Warning,
-			TEXT("[AbilityActivationYawDiscarded] %s Handle=%s Reason=StaleOrInvalid Age=%.3f Yaw=%.2f"),
-			*PP_GetNetMotionActorContext(Cast<AActor>(GetAvatarActor())), *AbilityHandle.ToString(),
-			Age, Pending.Yaw);
+
 		return false;
 	}
 

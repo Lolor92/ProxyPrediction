@@ -91,10 +91,7 @@ private:
 	bool IsRootMotionCollisionCharacterInFront(const ACharacter* OtherCharacter) const;
 	bool HasFallbackRootMotionBlockingCharacterCollision(
 		float RequiredDot,
-		float GraceRequiredDot,
-		float& OutAngle,
-		float& OutDot,
-		ACharacter*& OutCharacter) const;
+		float GraceRequiredDot) const;
 	void AddRootMotionCollisionCharacter(ACharacter* OtherCharacter);
 	void RemoveRootMotionCollisionCharacter(ACharacter* OtherCharacter);
 
@@ -118,9 +115,6 @@ private:
 	bool bLastRootMotionCollisionBlocked = false;
 	/** Time of the latest blocking result, used by the short grace window. */
 	float LastRootMotionCollisionBlockTimeSeconds = -1000.f;
-	/** Character responsible for the latest root-motion collision block, retained for release diagnostics. */
-	TWeakObjectPtr<ACharacter> LastRootMotionCollisionBlockingCharacter;
-
 	/** Last correction-override state requested by the autonomous client. */
 	bool bLastRequestedServerMovementCorrectionIgnore = false;
 	/** True while the server-side per-ability correction override is active. */

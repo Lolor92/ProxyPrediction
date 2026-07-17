@@ -507,7 +507,7 @@ private:
 	bool PeekOwnerPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
 		FGameplayTag ReactionTag, FVector& OutServerFinalLocation, FRotator& OutServerFinalRotation);
 	bool ApplyOwnerPendingFinalReactionCorrection(const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
-		FGameplayTag ReactionTag, const TCHAR* Reason);
+		FGameplayTag ReactionTag);
 	void RemoveExpiredOwnerPendingFinalReactionCorrections();
 	bool BeginOwnerFinalReconciliationGrace(const FPP_ReactionPredictionContext& Context,
 		AActor* TargetActor, FGameplayTag ReactionTag);
@@ -528,11 +528,11 @@ private:
 	void BeginPredictedProxyRootMotionReconciliation(const FPP_ReactionPredictionContext& Context,
 		AActor* TargetActor, FGameplayTag ReactionTag, bool bServerConfirmed = false);
 	bool EnsurePredictedProxyReactionMontagePlaying(const FPP_ReactionPredictionContext& Context,
-		AActor* TargetActor, const FPP_ReactionDataEntry& Reaction, const TCHAR* Reason);
+		AActor* TargetActor, const FPP_ReactionDataEntry& Reaction);
 	void EndPredictedProxyRootMotionReconciliation(const FPP_ReactionPredictionContext& Context,
-		AActor* TargetActor, const TCHAR* Reason);
+		AActor* TargetActor);
 	void UpdatePredictedProxyRootMotionReconciliations();
-	void RemovePredictedProxyRootMotionReconciliation(int32 Index, const TCHAR* Reason = TEXT("Unspecified"));
+	void RemovePredictedProxyRootMotionReconciliation(int32 Index);
 	static void QuarantineAuthoritativeProxyRootMotionMove(
 		FPP_PredictedProxyRootMotionReconciliation& State,
 		const FSimulatedRootMotionReplicatedMove& Move);

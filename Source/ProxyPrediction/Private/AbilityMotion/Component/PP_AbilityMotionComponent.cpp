@@ -4,7 +4,6 @@
 #include "Components/CapsuleComponent.h"
 #include "AbilityMotion/Movement/PP_CharacterMovementComponent.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Diagnostics/PP_NetMotionDiagnostics.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
@@ -24,13 +23,8 @@ namespace PPAbilityMotionCollisionProbe
 		float ProbeDistance,
 		float RequiredDot,
 		float GraceRequiredDot,
-		bool bAllowGraceAngle,
-		float& OutAngle,
-		float& OutDot)
+		bool bAllowGraceAngle)
 	{
-		OutAngle = 0.f;
-		OutDot = -1.f;
-
 		const UCapsuleComponent* OwnerCapsule = Character ? Character->GetCapsuleComponent() : nullptr;
 		const UCapsuleComponent* OtherCapsule = OtherCharacter ? OtherCharacter->GetCapsuleComponent() : nullptr;
 		if (!Character || !OtherCharacter || OtherCharacter == Character || !OwnerCapsule || !OtherCapsule)
@@ -99,9 +93,8 @@ namespace PPAbilityMotionCollisionProbe
 			return false;
 		}
 
-		OutDot = FVector::DotProduct(Forward, ContactDirection);
-		OutAngle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(OutDot, -1.f, 1.f)));
-		return OutDot >= RequiredDot || (bAllowGraceAngle && OutDot >= GraceRequiredDot);
+		const float ContactDot = FVector::DotProduct(Forward, ContactDirection);
+		return ContactDot >= RequiredDot || (bAllowGraceAngle && ContactDot >= GraceRequiredDot);
 	}
 }
 
@@ -284,18 +277,9 @@ void UPP_AbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 
 void UPP_AbilityMotionComponent::ClearRootMotionCollisionProbe()
 {
-	if (bLastRootMotionCollisionBlocked)
-	{
-		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-			TEXT("[RootMotionCharacterCollisionChanged] Owner={%s} Blocked=0 Blocker={%s} Reason=ProbeCleared"),
-			*PP_GetNetMotionActorContext(GetOwnerCharacter()),
-			*PP_GetNetMotionActorContext(LastRootMotionCollisionBlockingCharacter.Get()));
-	}
-
 	bRootMotionCollisionProbeEnabled = false;
 	bLastRootMotionCollisionBlocked = false;
 	LastRootMotionCollisionBlockTimeSeconds = -1000.f;
-	LastRootMotionCollisionBlockingCharacter.Reset();
 	RootMotionCollisionProbeDistance = 0.f;
 	RootMotionCollisionFallbackProbeDistance = 0.f;
 	RootMotionCollisionCharacters.Reset();
@@ -316,9 +300,6 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 	const UWorld* World = GetWorld();
 	const float NowSeconds = World ? World->GetTimeSeconds() : 0.f;
 
-	ACharacter* BestRejectedCharacter = nullptr;
-	float BestRejectedAngle = 0.f;
-	float BestRejectedDot = -1.f;
 	const float RequiredDot = FMath::Cos(FMath::DegreesToRadians(RootMotionCollisionForwardAngleDegrees));
 	const float GraceAngleDegrees = FMath::Clamp(
 		RootMotionCollisionForwardAngleDegrees + PPAbilityMotionCollisionProbe::AngleReleaseGraceDegrees,
@@ -358,63 +339,25 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		}
 
 		const float Dot = FVector::DotProduct(Forward, ToOther);
-		const float Angle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(Dot, -1.f, 1.f)));
 		const bool bStrictAngleBlock = Dot >= RequiredDot;
 		const bool bAngleGraceBlock =
 			!bStrictAngleBlock &&
 			bLastRootMotionCollisionBlocked &&
 			Dot >= GraceRequiredDot;
 
-		float ContactAngle = 0.f;
-		float ContactDot = -1.f;
 		const bool bContactBlock = PPAbilityMotionCollisionProbe::IsForwardContactBlocking(
 			Character,
 			OtherCharacter,
 			RootMotionCollisionProbeDistance,
 			RequiredDot,
 			GraceRequiredDot,
-			bLastRootMotionCollisionBlocked,
-			ContactAngle,
-			ContactDot);
+			bLastRootMotionCollisionBlocked);
 
 		if (bStrictAngleBlock || bAngleGraceBlock || bContactBlock)
 		{
-			if (!bLastRootMotionCollisionBlocked ||
-				LastRootMotionCollisionBlockingCharacter.Get() != OtherCharacter)
-			{
-				const FVector OwnerLocation = Character->GetActorLocation();
-				const FVector OtherLocation = OtherCharacter->GetActorLocation();
-				const FVector ToOtherRaw = FVector(
-					OtherLocation.X - OwnerLocation.X, OtherLocation.Y - OwnerLocation.Y, 0.f);
-				const float CenterDistance = ToOtherRaw.Size2D();
-				const UCapsuleComponent* OwnerCapsule = Character->GetCapsuleComponent();
-				const float CombinedRadius =
-					(OwnerCapsule ? OwnerCapsule->GetScaledCapsuleRadius() : 0.f) +
-					OtherCapsule->GetScaledCapsuleRadius();
-				const float SurfaceDistance = FMath::Max(0.f, CenterDistance - CombinedRadius);
-				const TCHAR* Source = bContactBlock ? TEXT("ForwardContact") :
-					(bStrictAngleBlock ? TEXT("ProbeOverlap") : TEXT("AngleGrace"));
-				UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-					TEXT("[RootMotionCharacterCollisionChanged] Owner={%s} Blocked=1 Blocker={%s} Source=%s CenterDistance=%.2f SurfaceDistance=%.2f ForwardDistance=%.2f Angle=%.2f Dot=%.3f ProbeDistance=%.2f FallbackDistance=%.2f Strict=%d Contact=%d"),
-					*PP_GetNetMotionActorContext(Character),
-					*PP_GetNetMotionActorContext(OtherCharacter), Source,
-					CenterDistance, SurfaceDistance, FVector::DotProduct(ToOtherRaw, Forward),
-					Angle, Dot, RootMotionCollisionProbeDistance,
-					RootMotionCollisionFallbackProbeDistance,
-					bStrictAngleBlock ? 1 : 0, bContactBlock ? 1 : 0);
-			}
-
 			bLastRootMotionCollisionBlocked = true;
 			LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
-			LastRootMotionCollisionBlockingCharacter = OtherCharacter;
 			return true;
-		}
-
-		if (!BestRejectedCharacter || Dot > BestRejectedDot)
-		{
-			BestRejectedCharacter = OtherCharacter;
-			BestRejectedAngle = Angle;
-			BestRejectedDot = Dot;
 		}
 	}
 
@@ -430,29 +373,16 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		return true;
 	}
 
-	float FallbackAngle = 0.f;
-	float FallbackDot = -1.f;
-	ACharacter* FallbackCharacter = nullptr;
 	if (bLastRootMotionCollisionBlocked &&
-		HasFallbackRootMotionBlockingCharacterCollision(RequiredDot, GraceRequiredDot, FallbackAngle, FallbackDot, FallbackCharacter))
+		HasFallbackRootMotionBlockingCharacterCollision(RequiredDot, GraceRequiredDot))
 	{
 		// Manual overlap is a backup when component overlap events arrive late.
 		bLastRootMotionCollisionBlocked = true;
 		LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
-		LastRootMotionCollisionBlockingCharacter = FallbackCharacter;
 		return true;
 	}
 
-	if (bLastRootMotionCollisionBlocked)
-	{
-		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-			TEXT("[RootMotionCharacterCollisionChanged] Owner={%s} Blocked=0 Blocker={%s} Reason=NoBlockingCharacter SecondsSinceLastBlock=%.3f RejectedCharacter=%s RejectedAngle=%.2f RejectedDot=%.3f"),
-			*PP_GetNetMotionActorContext(GetOwnerCharacter()),
-			*PP_GetNetMotionActorContext(LastRootMotionCollisionBlockingCharacter.Get()),
-			SecondsSinceBlock, *GetNameSafe(BestRejectedCharacter), BestRejectedAngle, BestRejectedDot);
-	}
 	bLastRootMotionCollisionBlocked = false;
-	LastRootMotionCollisionBlockingCharacter.Reset();
 	return false;
 }
 
@@ -627,15 +557,8 @@ bool UPP_AbilityMotionComponent::IsRootMotionCollisionCharacterInFront(const ACh
 
 bool UPP_AbilityMotionComponent::HasFallbackRootMotionBlockingCharacterCollision(
 	float RequiredDot,
-	float GraceRequiredDot,
-	float& OutAngle,
-	float& OutDot,
-	ACharacter*& OutCharacter) const
+	float GraceRequiredDot) const
 {
-	OutAngle = 0.f;
-	OutDot = -1.f;
-	OutCharacter = nullptr;
-
 	const ACharacter* Character = GetOwnerCharacter();
 	const UWorld* World = GetWorld();
 	const UCapsuleComponent* OwnerCapsule = Character ? Character->GetCapsuleComponent() : nullptr;
@@ -691,14 +614,11 @@ bool UPP_AbilityMotionComponent::HasFallbackRootMotionBlockingCharacterCollision
 			ManualProbeDistance,
 			RequiredDot,
 			GraceRequiredDot,
-			true,
-			OutAngle,
-			OutDot))
+			true))
 		{
 			continue;
 		}
 
-		OutCharacter = OtherCharacter;
 		return true;
 	}
 

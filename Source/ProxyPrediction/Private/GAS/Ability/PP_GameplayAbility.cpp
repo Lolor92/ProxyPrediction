@@ -1,6 +1,4 @@
 #include "GAS/Ability/PP_GameplayAbility.h"
-#include "Diagnostics/PP_NetMotionDiagnostics.h"
-
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
 #include "Animation/AnimInstance.h"
@@ -166,18 +164,6 @@ void UPP_GameplayAbility::ActivateAbility(const FGameplayAbilitySpecHandle Handl
 	const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo,
 	const FGameplayEventData* TriggerEventData)
 {
-	ACharacter* DiagnosticCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
-	UPP_CharacterMovementComponent* DiagnosticMovement = DiagnosticCharacter
-		? Cast<UPP_CharacterMovementComponent>(DiagnosticCharacter->GetCharacterMovement())
-		: nullptr;
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[AbilityActivateBegin] %s Ability=%s SequenceNext=%u Mode=%d RootMotionSuppressed=%d IgnoreCorrections=%d"),
-		*PP_GetNetMotionActorContext(DiagnosticCharacter), *GetNameSafe(this),
-		ActivationSequenceId == MAX_uint32 ? 1u : ActivationSequenceId + 1u,
-		static_cast<int32>(ActivationInfo.ActivationMode),
-		DiagnosticMovement && DiagnosticMovement->IsAbilityRootMotionSuppressed() ? 1 : 0,
-		DiagnosticMovement && DiagnosticMovement->ShouldIgnoreServerRootMotionMontageTrackCorrection() ? 1 : 0);
-
 	// Retriggered instanced abilities must not leave handles or timers from the previous run.
 	CleanupOwnedEffects();
 	ActivationSequenceId = (ActivationSequenceId == MAX_uint32) ? 1u : (ActivationSequenceId + 1u);
@@ -199,13 +185,7 @@ void UPP_GameplayAbility::ActivateAbility(const FGameplayAbilitySpecHandle Handl
 			FTimerDelegate::CreateUObject(this, &ThisClass::InitializeActivatedMontage, ActivationSequenceId));
 	}
 	OpenComboWindow();
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[AbilityActivateEnd] %s Ability=%s Sequence=%u Active=%d AnimatingAbility=%s Montage=%s"),
-		*PP_GetNetMotionActorContext(DiagnosticCharacter), *GetNameSafe(this), ActivationSequenceId,
-		IsActive() ? 1 : 0,
-		*GetNameSafe(ActorInfo && ActorInfo->AbilitySystemComponent.IsValid()
-			? ActorInfo->AbilitySystemComponent->GetAnimatingAbility() : nullptr),
-		*GetNameSafe(GetCurrentMontage()));
+
 }
 
 void UPP_GameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle,
@@ -216,30 +196,8 @@ void UPP_GameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle,
 	// reach this override in the same frame; guard custom cleanup just as the base implementation does.
 	if (!IsEndAbilityValid(Handle, ActorInfo))
 	{
-		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-			TEXT("[AbilityDuplicateEndIgnored] %s Ability=%s Sequence=%u Cancelled=%d"),
-			*PP_GetNetMotionActorContext(ActorInfo ? Cast<ACharacter>(ActorInfo->AvatarActor.Get()) : nullptr),
-			*GetNameSafe(this), ActivationSequenceId, bWasCancelled ? 1 : 0);
 		return;
 	}
-
-	ACharacter* DiagnosticCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
-	UPP_CharacterMovementComponent* DiagnosticMovement = DiagnosticCharacter
-		? Cast<UPP_CharacterMovementComponent>(DiagnosticCharacter->GetCharacterMovement())
-		: nullptr;
-	UAnimMontage* DiagnosticMontage = GetCurrentMontage();
-	UAnimInstance* DiagnosticAnimInstance = DiagnosticCharacter && DiagnosticCharacter->GetMesh()
-		? DiagnosticCharacter->GetMesh()->GetAnimInstance() : nullptr;
-	const float DiagnosticMontagePosition = DiagnosticMontage && DiagnosticAnimInstance
-		? DiagnosticAnimInstance->Montage_GetPosition(DiagnosticMontage) : -1.f;
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[AbilityEndBegin] %s Ability=%s Sequence=%u Cancelled=%d ReplicateEnd=%d Montage=%s Position=%.3f Playing=%d RootMotionSuppressed=%d IgnoreCorrections=%d"),
-		*PP_GetNetMotionActorContext(DiagnosticCharacter), *GetNameSafe(this), ActivationSequenceId,
-		bWasCancelled ? 1 : 0, bReplicateEndAbility ? 1 : 0, *GetNameSafe(DiagnosticMontage),
-		DiagnosticMontagePosition,
-		DiagnosticMontage && DiagnosticAnimInstance && DiagnosticAnimInstance->Montage_IsPlaying(DiagnosticMontage) ? 1 : 0,
-		DiagnosticMovement && DiagnosticMovement->IsAbilityRootMotionSuppressed() ? 1 : 0,
-		DiagnosticMovement && DiagnosticMovement->ShouldIgnoreServerRootMotionMontageTrackCorrection() ? 1 : 0);
 
 	RestoreConfiguredMontagePlayRate();
 	CleanupOwnedEffects();
@@ -267,14 +225,7 @@ void UPP_GameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle,
 		RemoveSimulatedOnlyActivationOwnedTags(ActorInfo);
 	}
 
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[AbilityEndComplete] %s Ability=%s Sequence=%u Cancelled=%d StillActive=%d AnimatingAbility=%s RootMotionSuppressed=%d IgnoreCorrections=%d"),
-		*PP_GetNetMotionActorContext(DiagnosticCharacter), *GetNameSafe(this), ActivationSequenceId,
-		bWasCancelled ? 1 : 0, IsActive() ? 1 : 0,
-		*GetNameSafe(ActorInfo && ActorInfo->AbilitySystemComponent.IsValid()
-			? ActorInfo->AbilitySystemComponent->GetAnimatingAbility() : nullptr),
-		DiagnosticMovement && DiagnosticMovement->IsAbilityRootMotionSuppressed() ? 1 : 0,
-		DiagnosticMovement && DiagnosticMovement->ShouldIgnoreServerRootMotionMontageTrackCorrection() ? 1 : 0);
+
 }
 
 bool UPP_GameplayAbility::ShouldUseSimulatedOnlyActivationOwnedTags() const
@@ -342,18 +293,6 @@ void UPP_GameplayAbility::RemoveConfiguredGameplayEffectsOnActivate() const
 
 void UPP_GameplayAbility::InitializeActivatedMontage(const uint32 ExpectedActivationSequenceId)
 {
-	ACharacter* DiagnosticCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
-	UAnimMontage* DiagnosticMontage = GetCurrentMontage();
-	UAnimInstance* DiagnosticAnimInstance = DiagnosticCharacter && DiagnosticCharacter->GetMesh()
-		? DiagnosticCharacter->GetMesh()->GetAnimInstance() : nullptr;
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[AbilityMontageInitialized] %s Ability=%s ExpectedSequence=%u ActualSequence=%u Active=%d Montage=%s Position=%.3f Playing=%d"),
-		*PP_GetNetMotionActorContext(DiagnosticCharacter), *GetNameSafe(this),
-		ExpectedActivationSequenceId, ActivationSequenceId, IsActive() ? 1 : 0,
-		*GetNameSafe(DiagnosticMontage),
-		DiagnosticMontage && DiagnosticAnimInstance
-			? DiagnosticAnimInstance->Montage_GetPosition(DiagnosticMontage) : -1.f,
-		DiagnosticMontage && DiagnosticAnimInstance && DiagnosticAnimInstance->Montage_IsPlaying(DiagnosticMontage) ? 1 : 0);
 	ApplyConfiguredMontagePlayRate(ExpectedActivationSequenceId);
 	ScheduleMontageEffectWindows(ExpectedActivationSequenceId);
 }
@@ -648,13 +587,7 @@ bool UPP_GameplayAbility::CanInterruptAnimatingAbility(const FGameplayAbilityAct
 			UnlockPercent - (EffectiveToleranceSeconds / MontageLength) * 100.f,
 			0.f,
 			100.f);
-		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-			TEXT("[MontageLockoutServerEvaluation] %s RequestedAbility=%s AnimatingAbility=%s Montage=%s Position=%.3f Length=%.3f PlayedPercent=%.2f UnlockPercent=%.2f PingMs=%.1f AuthoredTolerance=%.3f EffectiveTolerance=%.3f Accepted=%d"),
-			*PP_GetNetMotionActorContext(Character), *GetNameSafe(this),
-			*GetNameSafe(AnimatingMotionAbility), *GetNameSafe(AnimatingMontage),
-			CurrentPosition, MontageLength, PlayedPercent, UnlockPercent,
-			MeasuredPingMilliseconds, AuthoredToleranceSeconds, EffectiveToleranceSeconds,
-			PlayedPercent >= UnlockPercent ? 1 : 0);
+
 	}
 
 	return PlayedPercent >= UnlockPercent;
@@ -803,10 +736,9 @@ void UPP_GameplayAbility::RotateAvatarToControllerYawOnActivate() const
 
 	const float ControlYaw = FRotator::NormalizeAxis(Controller->GetControlRotation().Yaw);
 	float ActivationYaw = ControlYaw;
-	bool bUsedPreparedYaw = false;
 	if (UPP_AbilitySystemComponent* PPASC = Cast<UPP_AbilitySystemComponent>(Info->AbilitySystemComponent.Get()))
 	{
-		bUsedPreparedYaw = PPASC->ConsumePreparedAbilityActivationYaw(GetCurrentAbilitySpecHandle(), ActivationYaw);
+		PPASC->ConsumePreparedAbilityActivationYaw(GetCurrentAbilitySpecHandle(), ActivationYaw);
 	}
 
 	ActivationYaw = FRotator::NormalizeAxis(ActivationYaw);
@@ -816,9 +748,6 @@ void UPP_GameplayAbility::RotateAvatarToControllerYawOnActivate() const
 	Character->SetActorRotation(NewRot, ETeleportType::TeleportPhysics);
 	RefreshLocalCameraAfterAbilityYaw(Character);
 
-	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[AbilityActivationYawApplied] %s Ability=%s Handle=%s PreviousYaw=%.2f AppliedYaw=%.2f ControlYaw=%.2f Prepared=%d"),
-		*PP_GetNetMotionActorContext(Character), *GetNameSafe(this), *GetCurrentAbilitySpecHandle().ToString(),
-		PreviousRotation.Yaw, ActivationYaw, ControlYaw, bUsedPreparedYaw ? 1 : 0);
+
 }
 
