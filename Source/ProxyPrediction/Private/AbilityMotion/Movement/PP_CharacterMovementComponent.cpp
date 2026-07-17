@@ -256,11 +256,25 @@ void UPP_CharacterMovementComponent::RefreshAbilityRootMotionMode()
 
 void UPP_CharacterMovementComponent::SetAbilityMovementInputSuppressed(bool bInSuppressed)
 {
+	if (bAbilityMovementInputSuppressed == bInSuppressed) return;
+
+	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+		TEXT("[MovementInputSuppressionChanged] %s Source=Ability Previous=%d New=%d RootMotionSuppressed=%d CCSuppressed=%d"),
+		*PP_GetNetMotionActorContext(CharacterOwner), bAbilityMovementInputSuppressed ? 1 : 0,
+		bInSuppressed ? 1 : 0, bAbilityRootMotionSuppressed ? 1 : 0,
+		bCrowdControlMovementInputSuppressed ? 1 : 0);
 	bAbilityMovementInputSuppressed = bInSuppressed;
 }
 
 void UPP_CharacterMovementComponent::SetCrowdControlMovementInputSuppressed(const bool bInSuppressed)
 {
+	if (bCrowdControlMovementInputSuppressed == bInSuppressed) return;
+
+	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+		TEXT("[MovementInputSuppressionChanged] %s Source=CrowdControl Previous=%d New=%d AbilitySuppressed=%d RootMotionSuppressed=%d"),
+		*PP_GetNetMotionActorContext(CharacterOwner), bCrowdControlMovementInputSuppressed ? 1 : 0,
+		bInSuppressed ? 1 : 0, bAbilityMovementInputSuppressed ? 1 : 0,
+		bAbilityRootMotionSuppressed ? 1 : 0);
 	bCrowdControlMovementInputSuppressed = bInSuppressed;
 }
 

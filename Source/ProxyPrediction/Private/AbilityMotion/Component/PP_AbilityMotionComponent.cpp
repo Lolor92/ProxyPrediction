@@ -4,6 +4,7 @@
 #include "Components/CapsuleComponent.h"
 #include "AbilityMotion/Movement/PP_CharacterMovementComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Diagnostics/PP_NetMotionDiagnostics.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
@@ -283,9 +284,18 @@ void UPP_AbilityMotionComponent::ConfigureRootMotionCollisionProbe(
 
 void UPP_AbilityMotionComponent::ClearRootMotionCollisionProbe()
 {
+	if (bLastRootMotionCollisionBlocked)
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[RootMotionCharacterCollisionChanged] Owner={%s} Blocked=0 Blocker={%s} Reason=ProbeCleared"),
+			*PP_GetNetMotionActorContext(GetOwnerCharacter()),
+			*PP_GetNetMotionActorContext(LastRootMotionCollisionBlockingCharacter.Get()));
+	}
+
 	bRootMotionCollisionProbeEnabled = false;
 	bLastRootMotionCollisionBlocked = false;
 	LastRootMotionCollisionBlockTimeSeconds = -1000.f;
+	LastRootMotionCollisionBlockingCharacter.Reset();
 	RootMotionCollisionProbeDistance = 0.f;
 	RootMotionCollisionFallbackProbeDistance = 0.f;
 	RootMotionCollisionCharacters.Reset();
@@ -369,8 +379,34 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 
 		if (bStrictAngleBlock || bAngleGraceBlock || bContactBlock)
 		{
+			if (!bLastRootMotionCollisionBlocked ||
+				LastRootMotionCollisionBlockingCharacter.Get() != OtherCharacter)
+			{
+				const FVector OwnerLocation = Character->GetActorLocation();
+				const FVector OtherLocation = OtherCharacter->GetActorLocation();
+				const FVector ToOtherRaw = FVector(
+					OtherLocation.X - OwnerLocation.X, OtherLocation.Y - OwnerLocation.Y, 0.f);
+				const float CenterDistance = ToOtherRaw.Size2D();
+				const UCapsuleComponent* OwnerCapsule = Character->GetCapsuleComponent();
+				const float CombinedRadius =
+					(OwnerCapsule ? OwnerCapsule->GetScaledCapsuleRadius() : 0.f) +
+					OtherCapsule->GetScaledCapsuleRadius();
+				const float SurfaceDistance = FMath::Max(0.f, CenterDistance - CombinedRadius);
+				const TCHAR* Source = bContactBlock ? TEXT("ForwardContact") :
+					(bStrictAngleBlock ? TEXT("ProbeOverlap") : TEXT("AngleGrace"));
+				UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+					TEXT("[RootMotionCharacterCollisionChanged] Owner={%s} Blocked=1 Blocker={%s} Source=%s CenterDistance=%.2f SurfaceDistance=%.2f ForwardDistance=%.2f Angle=%.2f Dot=%.3f ProbeDistance=%.2f FallbackDistance=%.2f Strict=%d Contact=%d"),
+					*PP_GetNetMotionActorContext(Character),
+					*PP_GetNetMotionActorContext(OtherCharacter), Source,
+					CenterDistance, SurfaceDistance, FVector::DotProduct(ToOtherRaw, Forward),
+					Angle, Dot, RootMotionCollisionProbeDistance,
+					RootMotionCollisionFallbackProbeDistance,
+					bStrictAngleBlock ? 1 : 0, bContactBlock ? 1 : 0);
+			}
+
 			bLastRootMotionCollisionBlocked = true;
 			LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
+			LastRootMotionCollisionBlockingCharacter = OtherCharacter;
 			return true;
 		}
 
@@ -403,10 +439,20 @@ bool UPP_AbilityMotionComponent::HasRootMotionBlockingCharacterCollision()
 		// Manual overlap is a backup when component overlap events arrive late.
 		bLastRootMotionCollisionBlocked = true;
 		LastRootMotionCollisionBlockTimeSeconds = NowSeconds;
+		LastRootMotionCollisionBlockingCharacter = FallbackCharacter;
 		return true;
 	}
 
+	if (bLastRootMotionCollisionBlocked)
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[RootMotionCharacterCollisionChanged] Owner={%s} Blocked=0 Blocker={%s} Reason=NoBlockingCharacter SecondsSinceLastBlock=%.3f RejectedCharacter=%s RejectedAngle=%.2f RejectedDot=%.3f"),
+			*PP_GetNetMotionActorContext(GetOwnerCharacter()),
+			*PP_GetNetMotionActorContext(LastRootMotionCollisionBlockingCharacter.Get()),
+			SecondsSinceBlock, *GetNameSafe(BestRejectedCharacter), BestRejectedAngle, BestRejectedDot);
+	}
 	bLastRootMotionCollisionBlocked = false;
+	LastRootMotionCollisionBlockingCharacter.Reset();
 	return false;
 }
 

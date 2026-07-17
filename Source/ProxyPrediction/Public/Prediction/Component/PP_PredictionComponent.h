@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "CollisionShape.h"
 #include "GameplayTagContainer.h"
 #include "Components/ActorComponent.h"
 #include "Engine/EngineTypes.h"
@@ -175,6 +176,23 @@ struct FPP_AuthoritativeCollisionRecord
 	double TimeSeconds = 0.0;
 };
 
+/** Server-authored notify sweep retained briefly for historical target validation. */
+struct FPP_AuthoritativeCollisionSweepRecord
+{
+	FGameplayTag ReactionTag;
+	FTransform TraceStartTransform = FTransform::Identity;
+	FTransform TraceEndTransform = FTransform::Identity;
+	FTransform AttackerTransform = FTransform::Identity;
+	FCollisionShape CollisionShape = FCollisionShape::MakeSphere(1.0f);
+	TEnumAsByte<ECollisionChannel> TraceChannel = ECC_Pawn;
+	FPP_ReactionTransformSettings TransformSettings;
+	FPP_ReactionDefenseSettings DefenseSettings;
+	FPP_ReactionDamageSettings DamageSettings;
+	FPP_ReactionGameplayCueSettings GameplayCueSettings;
+	TSet<TWeakObjectPtr<AActor>> ValidatedTargets;
+	double TimeSeconds = 0.0;
+};
+
 /** Client reaction request waiting for the server notify sweep to observe the same target. */
 USTRUCT()
 struct FPP_PendingServerReactionRequest
@@ -192,6 +210,12 @@ struct FPP_PendingServerReactionRequest
 
 	UPROPERTY()
 	double TimeSeconds = 0.0;
+
+	/** Number of later server-authored notify sub-sweeps tested against historical state. */
+	int32 HistoricalSweepCandidatesTested = 0;
+
+	/** Last reason a historical sub-sweep could not validate this request. */
+	FName LastHistoricalSweepFailureReason = NAME_None;
 };
 
 /** Collision-notify match waiting for a frame where it can start before target Character Movement. */
@@ -285,6 +309,15 @@ public:
 		const FPP_ReactionGameplayCueSettings& GameplayCueSettings,
 		const FHitResult& HitResult);
 
+	/** Records one server-authored notify sub-sweep for rewind validation when the live target has moved away. */
+	void RecordAuthoritativeCollisionSweep(FGameplayTag ReactionTag,
+		const FTransform& TraceStartTransform, const FTransform& TraceEndTransform,
+		const FCollisionShape& CollisionShape, ECollisionChannel TraceChannel,
+		const FPP_ReactionTransformSettings& TransformSettings,
+		const FPP_ReactionDefenseSettings& DefenseSettings,
+		const FPP_ReactionDamageSettings& DamageSettings,
+		const FPP_ReactionGameplayCueSettings& GameplayCueSettings);
+
 	/** Confirms a reaction using transform settings stored in server Reaction Data. */
 	UFUNCTION(Server, Reliable)
 	void ServerConfirmPredictedReaction(FPP_ReactionPredictionContext Context, AActor* TargetActor,
@@ -327,6 +360,18 @@ private:
 		FPP_ServerCharacterHistorySample& OutSample) const;
 	bool ApplyLagCompensatedRootMotionRollback(const FPP_ReactionPredictionContext& Context,
 		AActor* TargetActor) const;
+	bool TryValidateHistoricalCollisionSweep(const FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor, const FPP_AuthoritativeCollisionSweepRecord& SweepRecord,
+		FHitResult& OutHitResult, const TCHAR*& OutFailureReason) const;
+	bool TryFindHistoricalCollisionSweep(const FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor, FGameplayTag ReactionTag,
+		FPP_ReactionTransformSettings& OutTransformSettings,
+		FPP_ReactionDefenseSettings& OutDefenseSettings,
+		FPP_ReactionDamageSettings& OutDamageSettings,
+		FPP_ReactionGameplayCueSettings& OutGameplayCueSettings,
+		FHitResult& OutHitResult);
+	void ResolvePendingHistoricalCollisionRequests(
+		FPP_AuthoritativeCollisionSweepRecord& SweepRecord);
 	void DeferServerConfirmedReactionFromCollision(const FPP_ReactionPredictionContext& Context,
 		AActor* TargetActor, FGameplayTag ReactionTag,
 		const FPP_ReactionTransformSettings& TransformSettings,
@@ -522,6 +567,7 @@ private:
 	static constexpr int32 MaxPendingPredictedReactions = 32;
 	static constexpr int32 MaxPendingServerReactionRequests = 32;
 	static constexpr int32 MaxAuthoritativeCollisionRecords = 64;
+	static constexpr int32 MaxAuthoritativeCollisionSweepRecords = 128;
 
 	/** Local predictions waiting for server start confirmation. */
 	UPROPERTY(Transient)
@@ -546,6 +592,9 @@ private:
 	/** Server notify hits waiting for the corresponding reliable client request. */
 	UPROPERTY(Transient)
 	TArray<FPP_AuthoritativeCollisionRecord> AuthoritativeCollisionRecords;
+
+	/** Recent server-authored notify geometry used to validate targets at synchronized hit time. */
+	TArray<FPP_AuthoritativeCollisionSweepRecord> AuthoritativeCollisionSweepRecords;
 
 	/** Client requests that arrived before the server montage reached its collision window. */
 	UPROPERTY(Transient)
@@ -622,6 +671,11 @@ private:
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",
 		meta=(ClampMin="0.0", ClampMax="0.25", Units="Seconds"))
 	float FutureHitTimeToleranceSeconds = 0.05f;
+
+	/** Maximum phase/arrival difference between a client hit timestamp and its server notify sweep. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",
+		meta=(ClampMin="0.05", ClampMax="1.0", Units="Seconds"))
+	float MaxHistoricalCollisionSweepTimeDelta = 0.5f;
 
 	/** Interval between authoritative history samples. */
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",

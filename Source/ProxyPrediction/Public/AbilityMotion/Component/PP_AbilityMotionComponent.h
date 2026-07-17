@@ -118,6 +118,8 @@ private:
 	bool bLastRootMotionCollisionBlocked = false;
 	/** Time of the latest blocking result, used by the short grace window. */
 	float LastRootMotionCollisionBlockTimeSeconds = -1000.f;
+	/** Character responsible for the latest root-motion collision block, retained for release diagnostics. */
+	TWeakObjectPtr<ACharacter> LastRootMotionCollisionBlockingCharacter;
 
 	/** Last correction-override state requested by the autonomous client. */
 	bool bLastRequestedServerMovementCorrectionIgnore = false;

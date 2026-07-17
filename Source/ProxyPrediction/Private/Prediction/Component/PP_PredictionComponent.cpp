@@ -18,6 +18,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
 #include "GameplayEffect.h"
+#include "PhysicsEngine/BodyInstance.h"
 #include "AbilityMotion/Movement/PP_CharacterMovementComponent.h"
 #include "AnimInstance/PP_AnimInstance.h"
 #include "Tag/PP_NativeTags.h"
@@ -101,6 +102,7 @@ void UPP_PredictionComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	ServerCharacterHistory.Reset();
 	LastServerHistorySampleTimeSeconds = -1.0;
 	AuthoritativeCollisionRecords.Reset();
+	AuthoritativeCollisionSweepRecords.Reset();
 	PendingServerReactionRequests.Reset();
 	for (const FPP_DeferredServerReactionFromCollision& State : DeferredServerReactionsFromCollision)
 	{
@@ -315,10 +317,14 @@ bool UPP_PredictionComponent::ApplyLagCompensatedRootMotionRollback(
 	UAbilitySystemComponent* TargetASC = GetAbilitySystemComponentFromActor(TargetActor);
 	UGameplayAbility* CurrentAbility = TargetASC ? TargetASC->GetAnimatingAbility() : nullptr;
 	UAnimMontage* CurrentMontage = CurrentAbility ? CurrentAbility->GetCurrentMontage() : nullptr;
-	if (!CurrentAbility || !CurrentMontage || !CurrentMontage->HasRootMotion() ||
-		HistoricalSample.AnimatingAbility.Get() == CurrentAbility ||
-		HistoricalSample.AnimatingMontage.Get() == CurrentMontage)
+	if (!CurrentAbility || !CurrentMontage || !CurrentMontage->HasRootMotion())
 	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[ServerLagCompensationSkipped] PredictionId=%d Target={%s} Reason=NoActiveRootMotion Ability=%s Montage=%s HistoricalAbility=%s HistoricalMontage=%s"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(TargetActor),
+			*GetNameSafe(CurrentAbility), *GetNameSafe(CurrentMontage),
+			*GetNameSafe(HistoricalSample.AnimatingAbility.Get()),
+			*GetNameSafe(HistoricalSample.AnimatingMontage.Get()));
 		return false;
 	}
 
@@ -337,9 +343,10 @@ bool UPP_PredictionComponent::ApplyLagCompensatedRootMotionRollback(
 		return false;
 	}
 
-	// The server, not the client, identified both the historical transform and the ability that
-	// began afterward. Cancel that ability before moving so its remaining root motion cannot be
-	// consumed again on the next movement tick.
+	// The server, not the client, identified both the historical transform and the currently active
+	// root-motion ability. This also applies when that same ability was already active at hit time:
+	// preserve movement consumed before the hit, rewind movement consumed afterward, then cancel the
+	// remaining root motion so it cannot be consumed again on the next movement tick.
 	TargetASC->CancelAbility(CurrentAbility);
 	if (ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor))
 	{
@@ -365,6 +372,188 @@ bool UPP_PredictionComponent::ApplyLagCompensatedRootMotionRollback(
 		*GetNameSafe(HistoricalSample.AnimatingAbility.Get()),
 		*GetNameSafe(HistoricalSample.AnimatingMontage.Get()));
 	return FVector::DistSquared2D(CurrentLocation, AppliedLocation) > FMath::Square(KINDA_SMALL_NUMBER);
+}
+
+bool UPP_PredictionComponent::TryValidateHistoricalCollisionSweep(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor,
+	const FPP_AuthoritativeCollisionSweepRecord& SweepRecord,
+	FHitResult& OutHitResult,
+	const TCHAR*& OutFailureReason) const
+{
+	OutFailureReason = TEXT("InvalidState");
+	AActor* OwnerActor = GetOwner();
+	const UWorld* World = GetWorld();
+	if (!bEnableServerHitLagCompensation || !Context.bServerHitTimeValidated ||
+		!OwnerActor || !OwnerActor->HasAuthority() || !World || !TargetActor ||
+		!SweepRecord.ReactionTag.IsValid())
+	{
+		return false;
+	}
+
+	const double SweepTimeDelta = SweepRecord.TimeSeconds - Context.ServerValidatedHitTimeSeconds;
+	if (!FMath::IsFinite(SweepTimeDelta) ||
+		FMath::Abs(SweepTimeDelta) > FMath::Max(0.05f, MaxHistoricalCollisionSweepTimeDelta))
+	{
+		OutFailureReason = TEXT("SweepTimeDelta");
+		return false;
+	}
+
+	FPP_ServerCharacterHistorySample HistoricalAttackerSample;
+	if (!TrySampleServerOwnerHistory(
+		Context.ServerValidatedHitTimeSeconds, HistoricalAttackerSample))
+	{
+		OutFailureReason = TEXT("NoAttackerHistory");
+		return false;
+	}
+
+	const UPP_PredictionComponent* TargetPredictionComponent =
+		TargetActor->FindComponentByClass<UPP_PredictionComponent>();
+	FPP_ServerCharacterHistorySample HistoricalTargetSample;
+	if (!TargetPredictionComponent || !TargetPredictionComponent->TrySampleServerOwnerHistory(
+		Context.ServerValidatedHitTimeSeconds, HistoricalTargetSample))
+	{
+		OutFailureReason = TEXT("NoTargetHistory");
+		return false;
+	}
+
+	ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
+	UCapsuleComponent* TargetCapsule = TargetCharacter ? TargetCharacter->GetCapsuleComponent() : nullptr;
+	FBodyInstance* TargetBodyInstance = TargetCapsule ? TargetCapsule->GetBodyInstance() : nullptr;
+	if (!TargetBodyInstance || !TargetBodyInstance->IsValidBodyInstance())
+	{
+		OutFailureReason = TEXT("NoTargetBody");
+		return false;
+	}
+
+	const FTransform HistoricalAttackerTransform(
+		HistoricalAttackerSample.Rotation, HistoricalAttackerSample.Location);
+	const FTransform HistoricalTargetTransform(
+		HistoricalTargetSample.Rotation, HistoricalTargetSample.Location);
+	const FTransform CurrentTargetTransform = TargetActor->GetActorTransform();
+
+	// The notify geometry is authored and evaluated by the server at the correct montage phase.
+	// Move it from the server attacker's current frame into the attacker's synchronized historical
+	// frame, then express the historical attacker/target relationship around the target's current
+	// physics body. Rigid-transform invariance lets BodyInstance perform the exact sweep without
+	// teleporting the live target or firing overlap callbacks.
+	const FTransform HistoricalTraceStart =
+		SweepRecord.TraceStartTransform.GetRelativeTransform(SweepRecord.AttackerTransform) *
+		HistoricalAttackerTransform;
+	const FTransform HistoricalTraceEnd =
+		SweepRecord.TraceEndTransform.GetRelativeTransform(SweepRecord.AttackerTransform) *
+		HistoricalAttackerTransform;
+	const FTransform EquivalentCurrentTraceStart =
+		HistoricalTraceStart.GetRelativeTransform(HistoricalTargetTransform) * CurrentTargetTransform;
+	const FTransform EquivalentCurrentTraceEnd =
+		HistoricalTraceEnd.GetRelativeTransform(HistoricalTargetTransform) * CurrentTargetTransform;
+
+	FHitResult EquivalentHit;
+	if (!TargetBodyInstance->Sweep(
+		EquivalentHit,
+		EquivalentCurrentTraceStart.GetLocation(),
+		EquivalentCurrentTraceEnd.GetLocation(),
+		EquivalentCurrentTraceEnd.GetRotation().GetNormalized(),
+		SweepRecord.CollisionShape,
+		false))
+	{
+		OutFailureReason = TEXT("GeometryMiss");
+		return false;
+	}
+
+	const FVector HistoricalImpactPoint = HistoricalTargetTransform.TransformPosition(
+		CurrentTargetTransform.InverseTransformPosition(EquivalentHit.ImpactPoint));
+	const FVector HistoricalImpactNormal = HistoricalTargetTransform.TransformVectorNoScale(
+		CurrentTargetTransform.InverseTransformVectorNoScale(EquivalentHit.ImpactNormal)).GetSafeNormal();
+	OutHitResult = FHitResult(
+		TargetActor, TargetCapsule, HistoricalImpactPoint, HistoricalImpactNormal);
+	OutHitResult.TraceStart = HistoricalTraceStart.GetLocation();
+	OutHitResult.TraceEnd = HistoricalTraceEnd.GetLocation();
+	OutHitResult.Location = HistoricalTargetTransform.TransformPosition(
+		CurrentTargetTransform.InverseTransformPosition(EquivalentHit.Location));
+	OutHitResult.Time = EquivalentHit.Time;
+	OutHitResult.Distance = FVector::Distance(OutHitResult.TraceStart, OutHitResult.Location);
+	OutHitResult.bStartPenetrating = EquivalentHit.bStartPenetrating;
+	OutHitResult.PenetrationDepth = EquivalentHit.PenetrationDepth;
+	OutFailureReason = TEXT("None");
+	return true;
+}
+
+bool UPP_PredictionComponent::TryFindHistoricalCollisionSweep(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor,
+	FGameplayTag ReactionTag,
+	FPP_ReactionTransformSettings& OutTransformSettings,
+	FPP_ReactionDefenseSettings& OutDefenseSettings,
+	FPP_ReactionDamageSettings& OutDamageSettings,
+	FPP_ReactionGameplayCueSettings& OutGameplayCueSettings,
+	FHitResult& OutHitResult)
+{
+	if (!bEnableServerHitLagCompensation || !Context.bServerHitTimeValidated ||
+		!TargetActor || !ReactionTag.IsValid())
+	{
+		return false;
+	}
+
+	RemoveExpiredAuthoritativeCollisionState();
+	TArray<int32, TInlineAllocator<16>> CandidateIndices;
+	for (int32 Index = 0; Index < AuthoritativeCollisionSweepRecords.Num(); ++Index)
+	{
+		const FPP_AuthoritativeCollisionSweepRecord& Record =
+			AuthoritativeCollisionSweepRecords[Index];
+		if (Record.ReactionTag == ReactionTag &&
+			!Record.ValidatedTargets.Contains(TWeakObjectPtr<AActor>(TargetActor)))
+		{
+			CandidateIndices.Add(Index);
+		}
+	}
+
+	CandidateIndices.Sort(
+		[this, &Context](const int32 LeftIndex, const int32 RightIndex)
+		{
+			const double LeftDelta = FMath::Abs(
+				AuthoritativeCollisionSweepRecords[LeftIndex].TimeSeconds -
+				Context.ServerValidatedHitTimeSeconds);
+			const double RightDelta = FMath::Abs(
+				AuthoritativeCollisionSweepRecords[RightIndex].TimeSeconds -
+				Context.ServerValidatedHitTimeSeconds);
+			return LeftDelta < RightDelta;
+		});
+
+	const TCHAR* LastFailureReason = TEXT("NoCandidateSweep");
+	for (const int32 CandidateIndex : CandidateIndices)
+	{
+		FPP_AuthoritativeCollisionSweepRecord& Record =
+			AuthoritativeCollisionSweepRecords[CandidateIndex];
+		if (!TryValidateHistoricalCollisionSweep(
+			Context, TargetActor, Record, OutHitResult, LastFailureReason))
+		{
+			continue;
+		}
+
+		Record.ValidatedTargets.Add(TargetActor);
+		OutTransformSettings = Record.TransformSettings;
+		OutDefenseSettings = Record.DefenseSettings;
+		OutDamageSettings = Record.DamageSettings;
+		OutGameplayCueSettings = Record.GameplayCueSettings;
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[ServerHistoricalCollisionAccepted] PredictionId=%d Owner={%s} Target={%s} Tag=%s HitTime=%.3f SweepTime=%.3f Delta=%.3f TraceStart=%s TraceEnd=%s Candidates=%d"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(GetOwner()),
+			*PP_GetNetMotionActorContext(TargetActor), *ReactionTag.ToString(),
+			Context.ServerValidatedHitTimeSeconds, Record.TimeSeconds,
+			Record.TimeSeconds - Context.ServerValidatedHitTimeSeconds,
+			*OutHitResult.TraceStart.ToCompactString(),
+			*OutHitResult.TraceEnd.ToCompactString(), CandidateIndices.Num());
+		return true;
+	}
+
+	UE_CLOG(PP_IsNetMotionDiagnosticEnabled() && !CandidateIndices.IsEmpty(),
+		LogPPNetMotion, Log,
+		TEXT("[ServerHistoricalCollisionNotMatched] PredictionId=%d Owner={%s} Target={%s} Tag=%s HitTime=%.3f Candidates=%d LastReason=%s"),
+		Context.PredictionId, *PP_GetNetMotionActorContext(GetOwner()),
+		*PP_GetNetMotionActorContext(TargetActor), *ReactionTag.ToString(),
+		Context.ServerValidatedHitTimeSeconds, CandidateIndices.Num(), LastFailureReason);
+	return false;
 }
 
 void UPP_PredictionComponent::BeginPredictedProxyRootMotionReconciliation(const FPP_ReactionPredictionContext& Context,
@@ -1032,6 +1221,96 @@ void UPP_PredictionComponent::RecordAuthoritativeCollision(AActor* TargetActor, 
 	Record.TimeSeconds = World->GetTimeSeconds();
 }
 
+void UPP_PredictionComponent::RecordAuthoritativeCollisionSweep(
+	FGameplayTag ReactionTag,
+	const FTransform& TraceStartTransform,
+	const FTransform& TraceEndTransform,
+	const FCollisionShape& CollisionShape,
+	ECollisionChannel TraceChannel,
+	const FPP_ReactionTransformSettings& TransformSettings,
+	const FPP_ReactionDefenseSettings& DefenseSettings,
+	const FPP_ReactionDamageSettings& DamageSettings,
+	const FPP_ReactionGameplayCueSettings& GameplayCueSettings)
+{
+	AActor* OwnerActor = GetOwner();
+	UWorld* World = GetWorld();
+	const APawn* OwnerPawn = Cast<APawn>(OwnerActor);
+	const bool bHasRemotePredictingOwner = OwnerPawn && OwnerPawn->IsPlayerControlled() &&
+		!OwnerPawn->IsLocallyControlled();
+	if (!bEnableServerHitLagCompensation || !bRequireAuthoritativeCollisionMatch ||
+		!OwnerActor || !OwnerActor->HasAuthority() || !World || !bHasRemotePredictingOwner ||
+		!ReactionTag.IsValid() || CollisionShape.IsNearlyZero())
+	{
+		return;
+	}
+
+	RemoveExpiredAuthoritativeCollisionState();
+	if (AuthoritativeCollisionSweepRecords.Num() >= MaxAuthoritativeCollisionSweepRecords)
+	{
+		AuthoritativeCollisionSweepRecords.RemoveAt(0, 1, EAllowShrinking::No);
+	}
+
+	FPP_AuthoritativeCollisionSweepRecord& Record =
+		AuthoritativeCollisionSweepRecords.AddDefaulted_GetRef();
+	Record.ReactionTag = ReactionTag;
+	Record.TraceStartTransform = TraceStartTransform;
+	Record.TraceEndTransform = TraceEndTransform;
+	Record.AttackerTransform = OwnerActor->GetActorTransform();
+	Record.CollisionShape = CollisionShape;
+	Record.TraceChannel = TraceChannel;
+	Record.TransformSettings = TransformSettings;
+	Record.DefenseSettings = DefenseSettings;
+	Record.DamageSettings = DamageSettings;
+	Record.GameplayCueSettings = GameplayCueSettings;
+	Record.TimeSeconds = World->GetTimeSeconds();
+
+	ResolvePendingHistoricalCollisionRequests(Record);
+}
+
+void UPP_PredictionComponent::ResolvePendingHistoricalCollisionRequests(
+	FPP_AuthoritativeCollisionSweepRecord& SweepRecord)
+{
+	for (int32 Index = PendingServerReactionRequests.Num() - 1; Index >= 0; --Index)
+	{
+		FPP_PendingServerReactionRequest& Request = PendingServerReactionRequests[Index];
+		AActor* TargetActor = Request.TargetActor.Get();
+		if (!TargetActor || Request.ReactionTag != SweepRecord.ReactionTag ||
+			SweepRecord.ValidatedTargets.Contains(TWeakObjectPtr<AActor>(TargetActor)))
+		{
+			continue;
+		}
+
+		FHitResult HistoricalHitResult;
+		const TCHAR* FailureReason = TEXT("Unknown");
+		if (!TryValidateHistoricalCollisionSweep(
+			Request.Context, TargetActor, SweepRecord, HistoricalHitResult, FailureReason))
+		{
+			++Request.HistoricalSweepCandidatesTested;
+			Request.LastHistoricalSweepFailureReason = FName(FailureReason);
+			continue;
+		}
+		++Request.HistoricalSweepCandidatesTested;
+
+		const FPP_ReactionPredictionContext Context = Request.Context;
+		const FGameplayTag ReactionTag = Request.ReactionTag;
+		SweepRecord.ValidatedTargets.Add(TargetActor);
+		PendingServerReactionRequests.RemoveAt(Index, 1, EAllowShrinking::No);
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[ServerHistoricalCollisionAccepted] PredictionId=%d Owner={%s} Target={%s} Tag=%s HitTime=%.3f SweepTime=%.3f Delta=%.3f TraceStart=%s TraceEnd=%s Source=PendingRequest"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(GetOwner()),
+			*PP_GetNetMotionActorContext(TargetActor), *ReactionTag.ToString(),
+			Context.ServerValidatedHitTimeSeconds, SweepRecord.TimeSeconds,
+			SweepRecord.TimeSeconds - Context.ServerValidatedHitTimeSeconds,
+			*HistoricalHitResult.TraceStart.ToCompactString(),
+			*HistoricalHitResult.TraceEnd.ToCompactString());
+		DeferServerConfirmedReactionFromCollision(
+			Context, TargetActor, ReactionTag,
+			SweepRecord.TransformSettings, SweepRecord.DefenseSettings,
+			SweepRecord.DamageSettings, SweepRecord.GameplayCueSettings,
+			HistoricalHitResult);
+	}
+}
+
 void UPP_PredictionComponent::DeferServerConfirmedReactionFromCollision(
 	const FPP_ReactionPredictionContext& Context,
 	AActor* TargetActor,
@@ -1207,6 +1486,7 @@ void UPP_PredictionComponent::RemoveExpiredAuthoritativeCollisionState()
 	if (!World)
 	{
 		AuthoritativeCollisionRecords.Reset();
+		AuthoritativeCollisionSweepRecords.Reset();
 		PendingServerReactionRequests.Reset();
 		return;
 	}
@@ -1220,6 +1500,16 @@ void UPP_PredictionComponent::RemoveExpiredAuthoritativeCollisionState()
 		if (!Record.TargetActor.IsValid() || NowSeconds - Record.TimeSeconds > RecordLifetime)
 		{
 			AuthoritativeCollisionRecords.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+		}
+	}
+
+	for (int32 Index = AuthoritativeCollisionSweepRecords.Num() - 1; Index >= 0; --Index)
+	{
+		const FPP_AuthoritativeCollisionSweepRecord& Record =
+			AuthoritativeCollisionSweepRecords[Index];
+		if (!Record.ReactionTag.IsValid() || NowSeconds - Record.TimeSeconds > RecordLifetime)
+		{
+			AuthoritativeCollisionSweepRecords.RemoveAtSwap(Index, 1, EAllowShrinking::No);
 		}
 	}
 
@@ -1327,14 +1617,18 @@ void UPP_PredictionComponent::QueuePendingServerReactionRequest(
 					continue;
 				}
 
+				const int32 HistoricalSweepsTested = Pending.HistoricalSweepCandidatesTested;
+				const FName LastHistoricalReason = Pending.LastHistoricalSweepFailureReason;
 				StrongThis->PendingServerReactionRequests.RemoveAt(Index, 1, EAllowShrinking::No);
 				UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-					TEXT("[ServerCollisionMatchGraceExpired] PredictionId=%d Owner={%s} Target={%s} Tag=%s Grace=%.3f"),
+					TEXT("[ServerCollisionMatchGraceExpired] PredictionId=%d Owner={%s} Target={%s} Tag=%s Grace=%.3f HistoricalSweepsTested=%d LastHistoricalReason=%s"),
 					CapturedContext.PredictionId,
 					*PP_GetNetMotionActorContext(StrongThis->GetOwner()),
 					*PP_GetNetMotionActorContext(StrongTarget),
 					*CapturedReactionTag.ToString(),
-					FMath::Max(0.05f, StrongThis->AuthoritativeCollisionMatchTimeout));
+					FMath::Max(0.05f, StrongThis->AuthoritativeCollisionMatchTimeout),
+					HistoricalSweepsTested,
+					*LastHistoricalReason.ToString());
 				StrongThis->ClientRejectPredictedReaction(
 					CapturedContext, StrongTarget, CapturedReactionTag,
 					StrongTarget->GetActorLocation(), StrongTarget->GetActorRotation());
@@ -1914,6 +2208,24 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation
 			{
 				ClientRejectPredictedReaction(
 					Context, TargetActor, ReactionTag, TargetActor->GetActorLocation(), TargetActor->GetActorRotation());
+			}
+			return;
+		}
+
+		// A server-authored notify sweep may already have run without touching the target's current
+		// capsule. Validate that same geometry against synchronized server history before waiting for
+		// a future live overlap. No client-provided trace shape or transform participates in this test.
+		if (TryFindHistoricalCollisionSweep(Context, TargetActor, ReactionTag,
+			AuthoritativeTransformSettings, AuthoritativeDefenseSettings, AuthoritativeDamageSettings,
+			AuthoritativeGameplayCueSettings, AuthoritativeHitResult))
+		{
+			if (!ProcessServerConfirmedReaction(Context, TargetActor, ReactionTag,
+				AuthoritativeTransformSettings, AuthoritativeDefenseSettings, AuthoritativeDamageSettings,
+				AuthoritativeGameplayCueSettings, AuthoritativeHitResult))
+			{
+				ClientRejectPredictedReaction(
+					Context, TargetActor, ReactionTag,
+					TargetActor->GetActorLocation(), TargetActor->GetActorRotation());
 			}
 			return;
 		}

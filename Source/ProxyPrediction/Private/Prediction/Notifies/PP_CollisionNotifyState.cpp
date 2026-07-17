@@ -123,6 +123,20 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 	const int32 UnclampedNumSteps = FMath::Max(1, FMath::CeilToInt(SweepDistance / SafeStepDistance));
 	const int32 NumSteps = FMath::Min(UnclampedNumSteps, FMath::Max(1, MaxSweepSubsteps));
 	const FCollisionShape Shape = MakeCollisionShape();
+	UPP_PredictionComponent* PredictionComponent =
+		OwnerActor->FindComponentByClass<UPP_PredictionComponent>();
+	const bool bRecordAuthoritativeSweep = OwnerActor->HasAuthority() &&
+		PredictionComponent && PredictedReactionTag.IsValid();
+	FPP_ReactionTransformSettings AuthoritativeTransformSettings;
+	FPP_ReactionDefenseSettings AuthoritativeDefenseSettings;
+	FPP_ReactionDamageSettings AuthoritativeDamageSettings;
+	FPP_ReactionGameplayCueSettings AuthoritativeGameplayCueSettings;
+	if (bRecordAuthoritativeSweep)
+	{
+		BuildReactionSettings(
+			AuthoritativeTransformSettings, AuthoritativeDefenseSettings,
+			AuthoritativeDamageSettings, AuthoritativeGameplayCueSettings);
+	}
 
 	// Sub-sweeps cover fast socket movement between animation updates.
 	for (int32 StepIndex = 0; StepIndex < NumSteps; ++StepIndex)
@@ -184,6 +198,20 @@ void UPP_CollisionNotifyState::SweepCollision(USkeletalMeshComponent* MeshComp, 
 			// Mark before prediction so overlapping sub-sweeps cannot replay the hit.
 			MarkTargetProcessed(Window, HitActor);
 			HandleCollisionTarget(OwnerActor, HitActor, Hit);
+		}
+
+		// Retain the server-authored geometry even when the target's current capsule has already
+		// dashed away. The prediction component can replay this sub-sweep against synchronized
+		// historical attacker/target transforms without accepting client-authored trace data.
+		if (bRecordAuthoritativeSweep)
+		{
+			PredictionComponent->RecordAuthoritativeCollisionSweep(
+				PredictedReactionTag,
+				FTransform(StepRotation, StepStart),
+				FTransform(StepRotation, StepEnd),
+				Shape, TraceChannel.GetValue(),
+				AuthoritativeTransformSettings, AuthoritativeDefenseSettings,
+				AuthoritativeDamageSettings, AuthoritativeGameplayCueSettings);
 		}
 	}
 }

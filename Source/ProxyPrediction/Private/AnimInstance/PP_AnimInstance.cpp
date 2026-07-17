@@ -5,6 +5,7 @@
 #include "Animation/AnimMontage.h"
 #include "AbilityMotion/Component/PP_AbilityMotionComponent.h"
 #include "AbilityMotion/Movement/PP_CharacterMovementComponent.h"
+#include "Diagnostics/PP_NetMotionDiagnostics.h"
 #include "GAS/Ability/PP_GameplayAbility.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -138,6 +139,15 @@ void UPP_AnimInstance::UpdateAbilityMotionReplication()
 	// No active project ability: clear every movement lock and temporary override.
 	if (!bHasAbilityContext || !Ability)
 	{
+		const FPP_AbilityMotionState PreviousState = Motion->GetAbilityMotionState();
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled() &&
+			(LastTrackedAbility || PreviousState.bMovementInputSuppressed || !PreviousState.bRootMotionEnabled),
+			LogPPNetMotion, Log,
+			TEXT("[AbilityMotionReset] Actor={%s} Reason=NoActiveAbility PreviousAbility=%s PreviousMontage=%s InputSuppressed=%d RootMotionEnabled=%d CollisionPauseHeld=%d"),
+			*PP_GetNetMotionActorContext(Character), *GetNameSafe(LastTrackedAbility),
+			*GetNameSafe(LastTrackedMontage), PreviousState.bMovementInputSuppressed ? 1 : 0,
+			PreviousState.bRootMotionEnabled ? 1 : 0,
+			bRootMotionCollisionPauseHeldUntilRelease ? 1 : 0);
 		Motion->SetServerMovementCorrectionIgnoreForAbility(false);
 		RestoreAbilityMovementCorrectionOverride();
 		LastTrackedAbility = nullptr;
@@ -223,6 +233,16 @@ void UPP_AnimInstance::UpdateAbilityMotionReplication()
 		Ability->ShouldHoldRootMotionCollisionPauseUntilRelease()
 			? (!bReachedReleasePoint && (bRawPausedByCharacterCollision || bRootMotionCollisionPauseHeldUntilRelease))
 			: bRawPausedByCharacterCollision;
+
+	const FPP_AbilityMotionState PreviousState = Motion->GetAbilityMotionState();
+	UE_CLOG(PP_IsNetMotionDiagnosticEnabled() && bReachedReleasePoint &&
+		PreviousState.bMovementInputSuppressed,
+		LogPPNetMotion, Log,
+		TEXT("[AbilityMotionUnlock] Actor={%s} Ability=%s Montage=%s Percent=%.2f HasMovementInput=%d RawCollisionPaused=%d HeldCollisionPause=%d"),
+		*PP_GetNetMotionActorContext(Character), *GetNameSafe(Ability),
+		*GetNameSafe(CurrentMontage), Percent, bHasMovementInput ? 1 : 0,
+		bRawPausedByCharacterCollision ? 1 : 0,
+		bRootMotionCollisionPauseHeldUntilRelease ? 1 : 0);
 
 	if (!bShouldWatchCharacterCollision)
 	{
