@@ -4,6 +4,7 @@
 #include "TimerManager.h"
 #include "AbilitySystemBlueprintLibrary.h"
 #include "AbilitySystemComponent.h"
+#include "Abilities/GameplayAbility.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Components/CapsuleComponent.h"
@@ -13,6 +14,7 @@
 #include "Engine/EngineTypes.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/GameStateBase.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
 #include "GameplayEffect.h"
@@ -25,6 +27,8 @@
 namespace
 {
 	constexpr double PPPredictedRootMotionReconciliationTimeoutSeconds = 1.0;
+	constexpr double PPPredictedMontageRecoveryEndGuardSeconds = 0.2;
+	constexpr int32 PPMaxServerCharacterHistorySamples = 128;
 
 	bool PP_IsAdditiveReaction(const FPP_ReactionDataEntry& Reaction)
 	{
@@ -56,6 +60,13 @@ namespace
 
 		SyncMoveComponent->SetIgnoreServerRootMotionMontageTrackCorrection(bSuppressed);
 	}
+
+	float PP_GetActorOwnerPingMilliseconds(const AActor* Actor)
+	{
+		const APawn* Pawn = Cast<APawn>(Actor);
+		const APlayerState* PlayerState = Pawn ? Pawn->GetPlayerState() : nullptr;
+		return PlayerState ? PlayerState->GetPingInMilliseconds() : 0.0f;
+	}
 }
 
 UPP_PredictionComponent::UPP_PredictionComponent()
@@ -67,6 +78,17 @@ UPP_PredictionComponent::UPP_PredictionComponent()
 	SetIsReplicatedByDefault(true);
 }
 
+void UPP_PredictionComponent::BeginPlay()
+{
+	Super::BeginPlay();
+
+	if (GetOwner() && GetOwner()->HasAuthority() && bEnableServerHitLagCompensation)
+	{
+		RecordServerOwnerHistory();
+		SetComponentTickEnabled(true);
+	}
+}
+
 void UPP_PredictionComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	StopAllClientReactionMovementInterpolations();
@@ -76,6 +98,8 @@ void UPP_PredictionComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 			Pending.TargetActor.Get(), Pending.PredictedProxyAnimTagHandle);
 	}
 	PendingPredictedReactions.Reset();
+	ServerCharacterHistory.Reset();
+	LastServerHistorySampleTimeSeconds = -1.0;
 	AuthoritativeCollisionRecords.Reset();
 	PendingServerReactionRequests.Reset();
 	for (const FPP_DeferredServerReactionFromCollision& State : DeferredServerReactionsFromCollision)
@@ -110,14 +134,237 @@ void UPP_PredictionComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	RecordServerOwnerHistory();
 	ProcessDeferredServerReactionsFromCollision();
 	UpdatePredictedProxyRootMotionReconciliations();
 
 	if (PredictedProxyRootMotionReconciliations.IsEmpty() &&
-		DeferredServerReactionsFromCollision.IsEmpty())
+		DeferredServerReactionsFromCollision.IsEmpty() &&
+		(!GetOwner() || !GetOwner()->HasAuthority() || !bEnableServerHitLagCompensation))
 	{
 		SetComponentTickEnabled(false);
 	}
+}
+
+void UPP_PredictionComponent::RecordServerOwnerHistory()
+{
+	AActor* OwnerActor = GetOwner();
+	UWorld* World = GetWorld();
+	if (!bEnableServerHitLagCompensation || !OwnerActor || !OwnerActor->HasAuthority() ||
+		!World || !Cast<ACharacter>(OwnerActor))
+	{
+		return;
+	}
+
+	const double NowSeconds = World->GetTimeSeconds();
+	const double SampleInterval = FMath::Max(0.008f, ServerHistorySampleInterval);
+	if (LastServerHistorySampleTimeSeconds >= 0.0 &&
+		NowSeconds - LastServerHistorySampleTimeSeconds < SampleInterval)
+	{
+		return;
+	}
+
+	FPP_ServerCharacterHistorySample& Sample = ServerCharacterHistory.AddDefaulted_GetRef();
+	Sample.ServerTimeSeconds = NowSeconds;
+	Sample.Location = OwnerActor->GetActorLocation();
+	Sample.Rotation = OwnerActor->GetActorRotation();
+	if (UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActor(OwnerActor))
+	{
+		UGameplayAbility* AnimatingAbility = ASC->GetAnimatingAbility();
+		Sample.AnimatingAbility = AnimatingAbility;
+		Sample.AnimatingMontage = AnimatingAbility ? AnimatingAbility->GetCurrentMontage() : nullptr;
+	}
+	LastServerHistorySampleTimeSeconds = NowSeconds;
+
+	const double OldestAllowedTime = NowSeconds - FMath::Max(0.1f, MaxServerRewindSeconds) - SampleInterval;
+	int32 RemoveCount = 0;
+	while (RemoveCount < ServerCharacterHistory.Num() &&
+		ServerCharacterHistory[RemoveCount].ServerTimeSeconds < OldestAllowedTime)
+	{
+		++RemoveCount;
+	}
+	if (RemoveCount > 0)
+	{
+		ServerCharacterHistory.RemoveAt(0, RemoveCount, EAllowShrinking::No);
+	}
+	if (ServerCharacterHistory.Num() > PPMaxServerCharacterHistorySamples)
+	{
+		ServerCharacterHistory.RemoveAt(
+			0, ServerCharacterHistory.Num() - PPMaxServerCharacterHistorySamples,
+			EAllowShrinking::No);
+	}
+}
+
+bool UPP_PredictionComponent::TrySampleServerOwnerHistory(
+	const double ServerTimeSeconds,
+	FPP_ServerCharacterHistorySample& OutSample) const
+{
+	if (!FMath::IsFinite(ServerTimeSeconds) || ServerCharacterHistory.IsEmpty())
+	{
+		return false;
+	}
+
+	const double EndpointTolerance = FMath::Max(0.008f, ServerHistorySampleInterval) * 1.5;
+	const FPP_ServerCharacterHistorySample& First = ServerCharacterHistory[0];
+	const FPP_ServerCharacterHistorySample& Last = ServerCharacterHistory.Last();
+	if (ServerTimeSeconds < First.ServerTimeSeconds - EndpointTolerance ||
+		ServerTimeSeconds > Last.ServerTimeSeconds + EndpointTolerance)
+	{
+		return false;
+	}
+	if (ServerTimeSeconds <= First.ServerTimeSeconds)
+	{
+		OutSample = First;
+		return true;
+	}
+	if (ServerTimeSeconds >= Last.ServerTimeSeconds)
+	{
+		OutSample = Last;
+		return true;
+	}
+
+	for (int32 Index = 1; Index < ServerCharacterHistory.Num(); ++Index)
+	{
+		const FPP_ServerCharacterHistorySample& Next = ServerCharacterHistory[Index];
+		if (Next.ServerTimeSeconds < ServerTimeSeconds)
+		{
+			continue;
+		}
+
+		const FPP_ServerCharacterHistorySample& Previous = ServerCharacterHistory[Index - 1];
+		const double Span = FMath::Max(UE_DOUBLE_SMALL_NUMBER,
+			Next.ServerTimeSeconds - Previous.ServerTimeSeconds);
+		const float Alpha = static_cast<float>(FMath::Clamp(
+			(ServerTimeSeconds - Previous.ServerTimeSeconds) / Span, 0.0, 1.0));
+		OutSample.ServerTimeSeconds = ServerTimeSeconds;
+		OutSample.Location = FMath::Lerp(Previous.Location, Next.Location, Alpha);
+		OutSample.Rotation = FQuat::Slerp(
+			Previous.Rotation.Quaternion(), Next.Rotation.Quaternion(), Alpha).Rotator();
+		// Treat an ability as active only after a server sample actually observed it.
+		OutSample.AnimatingAbility = Previous.AnimatingAbility;
+		OutSample.AnimatingMontage = Previous.AnimatingMontage;
+		return true;
+	}
+
+	return false;
+}
+
+bool UPP_PredictionComponent::ValidateClientHitTime(FPP_ReactionPredictionContext& Context) const
+{
+	Context.bServerHitTimeValidated = false;
+	Context.ServerValidatedHitTimeSeconds = -1.0;
+
+	const AActor* OwnerActor = GetOwner();
+	const UWorld* World = GetWorld();
+	if (!bEnableServerHitLagCompensation || !OwnerActor || !OwnerActor->HasAuthority() || !World ||
+		!FMath::IsFinite(Context.ClientEstimatedServerTimeSeconds) ||
+		Context.ClientEstimatedServerTimeSeconds < 0.0)
+	{
+		return false;
+	}
+
+	const double NowSeconds = World->GetTimeSeconds();
+	const double MaxRewind = FMath::Max(0.1f, MaxServerRewindSeconds);
+	const double FutureTolerance = FMath::Max(0.0f, FutureHitTimeToleranceSeconds);
+	const double RequestedTime = Context.ClientEstimatedServerTimeSeconds;
+	if (RequestedTime < NowSeconds - MaxRewind || RequestedTime > NowSeconds + FutureTolerance)
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Warning,
+			TEXT("[ServerHitTimeRejected] PredictionId=%d Owner={%s} Requested=%.3f Now=%.3f Age=%.3f MaxRewind=%.3f FutureTolerance=%.3f"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(OwnerActor), RequestedTime,
+			NowSeconds, NowSeconds - RequestedTime, MaxRewind, FutureTolerance);
+		return false;
+	}
+
+	Context.ServerValidatedHitTimeSeconds = FMath::Clamp(RequestedTime, NowSeconds - MaxRewind, NowSeconds);
+	Context.bServerHitTimeValidated = true;
+	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+		TEXT("[ServerHitTimeValidated] PredictionId=%d Owner={%s} Requested=%.3f Validated=%.3f Now=%.3f Age=%.3f"),
+		Context.PredictionId, *PP_GetNetMotionActorContext(OwnerActor), RequestedTime,
+		Context.ServerValidatedHitTimeSeconds, NowSeconds,
+		NowSeconds - Context.ServerValidatedHitTimeSeconds);
+	return true;
+}
+
+bool UPP_PredictionComponent::ApplyLagCompensatedRootMotionRollback(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor) const
+{
+	AActor* OwnerActor = GetOwner();
+	UWorld* World = GetWorld();
+	if (!bEnableServerHitLagCompensation || !bRequireAuthoritativeCollisionMatch ||
+		!Context.bServerHitTimeValidated || !OwnerActor || !OwnerActor->HasAuthority() ||
+		!World || !TargetActor)
+	{
+		return false;
+	}
+
+	const UPP_PredictionComponent* TargetPredictionComponent =
+		TargetActor->FindComponentByClass<UPP_PredictionComponent>();
+	FPP_ServerCharacterHistorySample HistoricalSample;
+	if (!TargetPredictionComponent || !TargetPredictionComponent->TrySampleServerOwnerHistory(
+		Context.ServerValidatedHitTimeSeconds, HistoricalSample))
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[ServerLagCompensationSkipped] PredictionId=%d Target={%s} Reason=NoServerHistory HitTime=%.3f"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(TargetActor),
+			Context.ServerValidatedHitTimeSeconds);
+		return false;
+	}
+
+	UAbilitySystemComponent* TargetASC = GetAbilitySystemComponentFromActor(TargetActor);
+	UGameplayAbility* CurrentAbility = TargetASC ? TargetASC->GetAnimatingAbility() : nullptr;
+	UAnimMontage* CurrentMontage = CurrentAbility ? CurrentAbility->GetCurrentMontage() : nullptr;
+	if (!CurrentAbility || !CurrentMontage || !CurrentMontage->HasRootMotion() ||
+		HistoricalSample.AnimatingAbility.Get() == CurrentAbility ||
+		HistoricalSample.AnimatingMontage.Get() == CurrentMontage)
+	{
+		return false;
+	}
+
+	const FVector CurrentLocation = TargetActor->GetActorLocation();
+	const float RollbackDistance = FVector::Dist2D(CurrentLocation, HistoricalSample.Location);
+	const float MinDistance = FMath::Max(0.0f, MinLagCompensationRollbackDistance);
+	const float MaxDistance = FMath::Max(0.0f, MaxLagCompensationRollbackDistance);
+	if (RollbackDistance <= MinDistance || (MaxDistance > 0.0f && RollbackDistance > MaxDistance))
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[ServerLagCompensationSkipped] PredictionId=%d Target={%s} Reason=Distance From=%s Historical=%s Distance=%.2f Min=%.2f Max=%.2f Ability=%s Montage=%s"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(TargetActor),
+			*CurrentLocation.ToCompactString(), *HistoricalSample.Location.ToCompactString(),
+			RollbackDistance, MinDistance, MaxDistance, *GetNameSafe(CurrentAbility),
+			*GetNameSafe(CurrentMontage));
+		return false;
+	}
+
+	// The server, not the client, identified both the historical transform and the ability that
+	// began afterward. Cancel that ability before moving so its remaining root motion cannot be
+	// consumed again on the next movement tick.
+	TargetASC->CancelAbility(CurrentAbility);
+	if (ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor))
+	{
+		if (UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement())
+		{
+			MovementComponent->StopMovementImmediately();
+		}
+	}
+
+	FHitResult SweepResult;
+	TargetActor->SetActorLocationAndRotation(
+		HistoricalSample.Location, HistoricalSample.Rotation,
+		true, &SweepResult, ETeleportType::TeleportPhysics);
+	const FVector AppliedLocation = TargetActor->GetActorLocation();
+	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+		TEXT("[ServerLagCompensationRollback] PredictionId=%d Target={%s} HitTime=%.3f Age=%.3f From=%s Requested=%s Applied=%s Distance=%.2f Blocked=%d Ability=%s Montage=%s HistoricalAbility=%s HistoricalMontage=%s"),
+		Context.PredictionId, *PP_GetNetMotionActorContext(TargetActor),
+		Context.ServerValidatedHitTimeSeconds,
+		World->GetTimeSeconds() - Context.ServerValidatedHitTimeSeconds,
+		*CurrentLocation.ToCompactString(), *HistoricalSample.Location.ToCompactString(),
+		*AppliedLocation.ToCompactString(), FVector::Dist2D(CurrentLocation, AppliedLocation),
+		SweepResult.bBlockingHit ? 1 : 0, *GetNameSafe(CurrentAbility), *GetNameSafe(CurrentMontage),
+		*GetNameSafe(HistoricalSample.AnimatingAbility.Get()),
+		*GetNameSafe(HistoricalSample.AnimatingMontage.Get()));
+	return FVector::DistSquared2D(CurrentLocation, AppliedLocation) > FMath::Square(KINDA_SMALL_NUMBER);
 }
 
 void UPP_PredictionComponent::BeginPredictedProxyRootMotionReconciliation(const FPP_ReactionPredictionContext& Context,
@@ -138,6 +385,8 @@ void UPP_PredictionComponent::BeginPredictedProxyRootMotionReconciliation(const 
 		return;
 	}
 
+	TOptional<FSimulatedRootMotionReplicatedMove> CarriedAuthoritativeMove;
+	float CarriedAuthoritativePlayRate = 0.0f;
 	// A confirmation for an older hit must never displace protection owned by a newer prediction.
 	for (int32 Index = PredictedProxyRootMotionReconciliations.Num() - 1; Index >= 0; --Index)
 	{
@@ -151,6 +400,16 @@ void UPP_PredictionComponent::BeginPredictedProxyRootMotionReconciliation(const 
 		if (Existing.PredictionId == Context.PredictionId)
 		{
 			Existing.bServerConfirmed |= bServerConfirmed;
+			if (bServerConfirmed && Existing.QuarantinedAuthoritativeMove.IsSet())
+			{
+				UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+					TEXT("[ProxyAuthoritativeMoveDiscarded] PredictionId=%d Target={%s} Reason=ServerConfirmed Animation=%s Position=%.3f"),
+					Context.PredictionId, *PP_GetNetMotionActorContext(TargetCharacter),
+					*GetNameSafe(Existing.QuarantinedAuthoritativeMove->RootMotion.Animation),
+					Existing.QuarantinedAuthoritativeMove->RootMotion.Position);
+				Existing.QuarantinedAuthoritativeMove.Reset();
+				Existing.QuarantinedAuthoritativePlayRate = 0.0f;
+			}
 			UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
 				TEXT("[ProxyRootMotionGuardConfirmed] PredictionId=%d %s Tag=%s Montage=%s Playing=%d"),
 				Context.PredictionId, *PP_GetNetMotionActorContext(TargetCharacter),
@@ -171,6 +430,13 @@ void UPP_PredictionComponent::BeginPredictedProxyRootMotionReconciliation(const 
 			return;
 		}
 
+		if (Existing.QuarantinedAuthoritativeMove.IsSet() &&
+			(!CarriedAuthoritativeMove.IsSet() ||
+			 Existing.QuarantinedAuthoritativeMove->Time >= CarriedAuthoritativeMove->Time))
+		{
+			CarriedAuthoritativeMove = Existing.QuarantinedAuthoritativeMove;
+			CarriedAuthoritativePlayRate = Existing.QuarantinedAuthoritativePlayRate;
+		}
 		RemovePredictedProxyRootMotionReconciliation(Index, TEXT("ReplacedByNewPrediction"));
 	}
 
@@ -181,6 +447,11 @@ void UPP_PredictionComponent::BeginPredictedProxyRootMotionReconciliation(const 
 	State.ReactionTag = ReactionTag;
 	State.PredictionId = Context.PredictionId;
 	State.bServerConfirmed = bServerConfirmed;
+	if (!bServerConfirmed)
+	{
+		State.QuarantinedAuthoritativeMove = MoveTemp(CarriedAuthoritativeMove);
+		State.QuarantinedAuthoritativePlayRate = CarriedAuthoritativePlayRate;
+	}
 	RefreshPredictedProxyReconciliationAnimationState(TargetCharacter);
 	const USkeletalMeshComponent* TargetMesh = TargetCharacter->GetMesh();
 	const UAnimInstance* AnimInstance = TargetMesh ? TargetMesh->GetAnimInstance() : nullptr;
@@ -208,13 +479,28 @@ void UPP_PredictionComponent::BeginPredictedProxyRootMotionReconciliation(const 
 		MovementComponent->AddTickPrerequisiteComponent(this);
 	}
 
+	const UAnimSequenceBase* ExpectedReplicatedAnimation = Reaction.Montage->IsDynamicMontage()
+		? Reaction.Montage->GetFirstAnimReference()
+		: Reaction.Montage;
+	int32 QuarantinedInitialMoveCount = 0;
+	if (!bServerConfirmed)
+	{
+		for (const FSimulatedRootMotionReplicatedMove& Move : TargetCharacter->RootMotionRepMoves)
+		{
+			if (Move.RootMotion.Animation.Get() != ExpectedReplicatedAnimation)
+			{
+				QuarantineAuthoritativeProxyRootMotionMove(State, Move);
+				++QuarantinedInitialMoveCount;
+			}
+		}
+	}
 	TargetCharacter->RootMotionRepMoves.Reset();
 	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[ProxyRootMotionReconcileBegin] PredictionId=%d %s Instigator=%s Tag=%s Montage=%s Position=%.3f PlayRate=%.3f ExpectedEndT=%.3f ExpireT=%.3f Confirmed=%d ClearedRepMoves=1"),
+		TEXT("[ProxyRootMotionReconcileBegin] PredictionId=%d %s Instigator=%s Tag=%s Montage=%s Position=%.3f PlayRate=%.3f ExpectedEndT=%.3f ExpireT=%.3f Confirmed=%d ClearedRepMoves=1 QuarantinedInitial=%d"),
 		Context.PredictionId, *PP_GetNetMotionActorContext(TargetCharacter),
 		*GetNameSafe(GetOwner()), *ReactionTag.ToString(), *GetNameSafe(Reaction.Montage),
 		CurrentMontagePosition, MontagePlayRate, State.ExpectedEndTimeSeconds,
-		State.ExpireTimeSeconds, bServerConfirmed ? 1 : 0);
+		State.ExpireTimeSeconds, bServerConfirmed ? 1 : 0, QuarantinedInitialMoveCount);
 	SetComponentTickEnabled(true);
 }
 
@@ -248,7 +534,7 @@ bool UPP_PredictionComponent::EnsurePredictedProxyReactionMontagePlaying(
 		}
 
 		const double NowSeconds = World->GetTimeSeconds();
-		if (NowSeconds >= State.ExpectedEndTimeSeconds)
+		if (NowSeconds >= State.ExpectedEndTimeSeconds - PPPredictedMontageRecoveryEndGuardSeconds)
 		{
 			return false;
 		}
@@ -336,6 +622,11 @@ void UPP_PredictionComponent::UpdatePredictedProxyRootMotionReconciliations()
 				TargetCharacter->RootMotionRepMoves[MoveIndex].RootMotion;
 			const bool bExpectedReactionMove =
 				RootMotion.Animation.Get() == ExpectedReplicatedAnimation;
+			if (!bExpectedReactionMove && !State.bServerConfirmed)
+			{
+				QuarantineAuthoritativeProxyRootMotionMove(
+					State, TargetCharacter->RootMotionRepMoves[MoveIndex]);
+			}
 			TargetCharacter->RootMotionRepMoves.RemoveAtSwap(MoveIndex, 1, EAllowShrinking::No);
 			if (bExpectedReactionMove)
 			{
@@ -355,13 +646,23 @@ void UPP_PredictionComponent::UpdatePredictedProxyRootMotionReconciliations()
 			TargetCharacter->RootMotionRepMoves.Num(), bPredictedMontageStillPlaying ? 1 : 0,
 			State.bServerConfirmed ? 1 : 0);
 
-		if (NowSeconds >= State.ExpectedEndTimeSeconds)
+		const bool bPredictedTimelineCompleted = NowSeconds >= State.ExpectedEndTimeSeconds;
+		if (bPredictedTimelineCompleted && State.bServerConfirmed)
 		{
 			RemovePredictedProxyRootMotionReconciliation(StateIndex, TEXT("PredictedTimelineCompleted"));
 			continue;
 		}
 
-		if (!bPredictedMontageStillPlaying)
+		// A stale montage may displace the prediction repeatedly, so recover whenever one is
+		// filtered. Matching authoritative reaction replication can also stop the local montage
+		// early; allow one recovery for that case, but never retry it near the natural blend-out.
+		const bool bRecoverFromStaleMontage = RemovedStaleRepMoveCount > 0;
+		const bool bRecoverOnceFromEarlyExpectedStop =
+			State.bServerConfirmed && RemovedExpectedRepMoveCount > 0 &&
+			!State.bRecoveredFromEarlyExpectedStop &&
+			NowSeconds < State.ExpectedEndTimeSeconds - PPPredictedMontageRecoveryEndGuardSeconds;
+		if (!bPredictedTimelineCompleted && !bPredictedMontageStillPlaying &&
+			(bRecoverFromStaleMontage || bRecoverOnceFromEarlyExpectedStop))
 		{
 			FPP_ReactionDataEntry Reaction;
 			if (ReactionData && ReactionData->FindReaction(State.ReactionTag, Reaction) &&
@@ -369,8 +670,15 @@ void UPP_PredictionComponent::UpdatePredictedProxyRootMotionReconciliations()
 			{
 				FPP_ReactionPredictionContext Context;
 				Context.PredictionId = State.PredictionId;
-				EnsurePredictedProxyReactionMontagePlaying(
-					Context, TargetCharacter, Reaction, TEXT("StaleReplicatedMontageDisplacedPrediction"));
+				const TCHAR* RecoveryReason = bRecoverFromStaleMontage
+					? TEXT("StaleReplicatedMontageDisplacedPrediction")
+					: TEXT("ExpectedReactionReplicationStoppedPredictionEarly");
+				const bool bRecovered = EnsurePredictedProxyReactionMontagePlaying(
+					Context, TargetCharacter, Reaction, RecoveryReason);
+				if (bRecovered && bRecoverOnceFromEarlyExpectedStop)
+				{
+					State.bRecoveredFromEarlyExpectedStop = true;
+				}
 			}
 		}
 	}
@@ -383,10 +691,11 @@ void UPP_PredictionComponent::RemovePredictedProxyRootMotionReconciliation(int32
 	ACharacter* TargetCharacter = PredictedProxyRootMotionReconciliations[Index].TargetCharacter.Get();
 	UAnimMontage* Montage = PredictedProxyRootMotionReconciliations[Index].Montage.Get();
 	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[ProxyRootMotionReconcileEnd] PredictionId=%d %s Montage=%s Reason=%s PendingRepMoves=%d"),
+		TEXT("[ProxyRootMotionReconcileEnd] PredictionId=%d %s Montage=%s Reason=%s PendingRepMoves=%d HadQuarantinedAuthoritativeMove=%d"),
 		PredictedProxyRootMotionReconciliations[Index].PredictionId,
 		*PP_GetNetMotionActorContext(TargetCharacter), *GetNameSafe(Montage),
-		Reason ? Reason : TEXT("None"), TargetCharacter ? TargetCharacter->RootMotionRepMoves.Num() : -1);
+		Reason ? Reason : TEXT("None"), TargetCharacter ? TargetCharacter->RootMotionRepMoves.Num() : -1,
+		PredictedProxyRootMotionReconciliations[Index].QuarantinedAuthoritativeMove.IsSet() ? 1 : 0);
 	if (TargetCharacter)
 	{
 		if (UCharacterMovementComponent* MovementComponent = TargetCharacter->GetCharacterMovement())
@@ -397,6 +706,261 @@ void UPP_PredictionComponent::RemovePredictedProxyRootMotionReconciliation(int32
 
 	PredictedProxyRootMotionReconciliations.RemoveAtSwap(Index, 1, EAllowShrinking::No);
 	RefreshPredictedProxyReconciliationAnimationState(TargetCharacter);
+}
+
+void UPP_PredictionComponent::QuarantineAuthoritativeProxyRootMotionMove(
+	FPP_PredictedProxyRootMotionReconciliation& State,
+	const FSimulatedRootMotionReplicatedMove& Move)
+{
+	if (!Move.RootMotion.bIsActive || !Move.RootMotion.Animation)
+	{
+		return;
+	}
+
+	if (State.QuarantinedAuthoritativeMove.IsSet() &&
+		State.QuarantinedAuthoritativeMove->RootMotion.Animation == Move.RootMotion.Animation)
+	{
+		const float SampleDeltaSeconds = Move.Time - State.QuarantinedAuthoritativeMove->Time;
+		const float SampleDeltaPosition =
+			Move.RootMotion.Position - State.QuarantinedAuthoritativeMove->RootMotion.Position;
+		if (SampleDeltaSeconds > UE_KINDA_SMALL_NUMBER)
+		{
+			const float CandidatePlayRate = SampleDeltaPosition / SampleDeltaSeconds;
+			if (FMath::IsFinite(CandidatePlayRate) &&
+				FMath::Abs(CandidatePlayRate) >= 0.1f && FMath::Abs(CandidatePlayRate) <= 5.0f)
+			{
+				State.QuarantinedAuthoritativePlayRate =
+					FMath::Abs(State.QuarantinedAuthoritativePlayRate) > KINDA_SMALL_NUMBER
+						? FMath::Lerp(State.QuarantinedAuthoritativePlayRate, CandidatePlayRate, 0.5f)
+						: CandidatePlayRate;
+			}
+		}
+	}
+
+	if (!State.QuarantinedAuthoritativeMove.IsSet() ||
+		Move.Time >= State.QuarantinedAuthoritativeMove->Time)
+	{
+		State.QuarantinedAuthoritativeMove = Move;
+	}
+}
+
+bool UPP_PredictionComponent::TakeQuarantinedAuthoritativeProxyRootMotionMove(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor,
+	TOptional<FSimulatedRootMotionReplicatedMove>& OutMove,
+	float& OutObservedPlayRate)
+{
+	OutMove.Reset();
+	OutObservedPlayRate = 0.0f;
+	if (!Context.IsValid() || !TargetActor)
+	{
+		return false;
+	}
+
+	for (FPP_PredictedProxyRootMotionReconciliation& State : PredictedProxyRootMotionReconciliations)
+	{
+		if (State.TargetCharacter.Get() != TargetActor || State.PredictionId != Context.PredictionId)
+		{
+			continue;
+		}
+
+		OutMove = MoveTemp(State.QuarantinedAuthoritativeMove);
+		OutObservedPlayRate = State.QuarantinedAuthoritativePlayRate;
+		State.QuarantinedAuthoritativeMove.Reset();
+		State.QuarantinedAuthoritativePlayRate = 0.0f;
+		return true;
+	}
+
+	return false;
+}
+
+bool UPP_PredictionComponent::RestoreAuthoritativeProxyStateAfterRejectedPrediction(
+	const FPP_ReactionPredictionContext& Context,
+	AActor* TargetActor,
+	FGameplayTag PredictedReactionTag,
+	TOptional<FSimulatedRootMotionReplicatedMove>&& QuarantinedMove,
+	const float ObservedPlayRate)
+{
+	ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor);
+	UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActor(TargetActor);
+	USkeletalMeshComponent* Mesh = TargetCharacter ? TargetCharacter->GetMesh() : nullptr;
+	UAnimInstance* AnimInstance = Mesh ? Mesh->GetAnimInstance() : nullptr;
+	if (!Context.IsValid() || !TargetCharacter || TargetCharacter->IsLocallyControlled() ||
+		!ASC || !AnimInstance)
+	{
+		return false;
+	}
+
+	if (ASC->HasMatchingGameplayTag(TAG_State_CC))
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[ProxyAuthoritativeStateRestoreSkipped] PredictionId=%d Target={%s} Reason=StateCC"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(TargetCharacter));
+		return false;
+	}
+
+	// A rejection may arrive after another local reaction has already taken ownership of this
+	// proxy. Never let an older quarantined attack montage displace that newer reaction.
+	for (const FPP_PredictedProxyRootMotionReconciliation& State :
+		PredictedProxyRootMotionReconciliations)
+	{
+		if (State.TargetCharacter.Get() == TargetCharacter &&
+			State.PredictionId != Context.PredictionId)
+		{
+			UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+				TEXT("[ProxyAuthoritativeStateRestoreSkipped] PredictionId=%d Target={%s} Reason=ActiveReactionGuard GuardPredictionId=%d GuardTag=%s"),
+				Context.PredictionId, *PP_GetNetMotionActorContext(TargetCharacter),
+				State.PredictionId, *State.ReactionTag.ToString());
+			return false;
+		}
+	}
+
+	UAnimSequenceBase* AuthoritativeAnimation = QuarantinedMove.IsSet()
+		? QuarantinedMove->RootMotion.Animation.Get()
+		: nullptr;
+	FPP_ReactionDataEntry PredictedReaction;
+	const UAnimSequenceBase* PredictedAnimation =
+		ReactionData && ReactionData->FindReaction(PredictedReactionTag, PredictedReaction) &&
+		PredictedReaction.Montage
+			? (PredictedReaction.Montage->IsDynamicMontage()
+				? PredictedReaction.Montage->GetFirstAnimReference()
+				: PredictedReaction.Montage.Get())
+			: nullptr;
+	const bool bQuarantinedMoveMatches = QuarantinedMove.IsSet() &&
+		QuarantinedMove->RootMotion.bIsActive && AuthoritativeAnimation &&
+		AuthoritativeAnimation != PredictedAnimation;
+	if (!bQuarantinedMoveMatches)
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[ProxyAuthoritativeStateRestoreSkipped] PredictionId=%d Target={%s} PredictedTag=%s AuthoritativeAnimation=%s HadQuarantinedMove=%d"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(TargetCharacter),
+			*PredictedReactionTag.ToString(), *GetNameSafe(AuthoritativeAnimation),
+			QuarantinedMove.IsSet() ? 1 : 0);
+		return false;
+	}
+
+	const float QuarantinedPosition = QuarantinedMove->RootMotion.Position;
+	auto DoesMontageMatchAuthoritativeAnimation = [AuthoritativeAnimation](const UAnimMontage* Montage)
+	{
+		return Montage &&
+			(Montage->IsDynamicMontage() ? Montage->GetFirstAnimReference() : Montage) ==
+				AuthoritativeAnimation;
+	};
+	UGameplayAbility* AuthoritativeAbility = ASC->GetAnimatingAbility();
+	UAnimMontage* AnimatingAbilityMontage = AuthoritativeAbility && AuthoritativeAbility->IsActive()
+		? AuthoritativeAbility->GetCurrentMontage()
+		: nullptr;
+	UAnimMontage* AbilitySystemMontage = ASC->GetCurrentMontage();
+	const FRepRootMotionMontage& CurrentRepRootMotion = TargetCharacter->GetRepRootMotion();
+	const bool bMatchingAnimatingAbility =
+		DoesMontageMatchAuthoritativeAnimation(AnimatingAbilityMontage);
+	const bool bMatchingAbilitySystemMontage =
+		DoesMontageMatchAuthoritativeAnimation(AbilitySystemMontage);
+	const bool bMatchingReplicatedRootMotion = CurrentRepRootMotion.bIsActive &&
+		CurrentRepRootMotion.Animation.Get() == AuthoritativeAnimation;
+	if (!bMatchingAnimatingAbility && !bMatchingAbilitySystemMontage &&
+		!bMatchingReplicatedRootMotion)
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[ProxyAuthoritativeStateRestoreSkipped] PredictionId=%d Target={%s} Reason=NoCurrentAuthoritativeEvidence Ability=%s AbilityActive=%d AbilityMontage=%s ASCActiveMontage=%s RepRootMotionActive=%d RepRootMotionAnimation=%s QuarantinedAnimation=%s"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(TargetCharacter),
+			*GetNameSafe(AuthoritativeAbility),
+			AuthoritativeAbility && AuthoritativeAbility->IsActive() ? 1 : 0,
+			*GetNameSafe(AnimatingAbilityMontage), *GetNameSafe(AbilitySystemMontage),
+			CurrentRepRootMotion.bIsActive ? 1 : 0,
+			*GetNameSafe(CurrentRepRootMotion.Animation.Get()), *GetNameSafe(AuthoritativeAnimation));
+		return false;
+	}
+
+	UAnimMontage* MontageToResume = AnimatingAbilityMontage;
+	const TCHAR* RestoreSource = TEXT("AnimatingAbility");
+	if (!DoesMontageMatchAuthoritativeAnimation(MontageToResume))
+	{
+		MontageToResume = AbilitySystemMontage;
+		RestoreSource = TEXT("AbilitySystemCurrentMontage");
+	}
+	if (!DoesMontageMatchAuthoritativeAnimation(MontageToResume) &&
+		bMatchingReplicatedRootMotion)
+	{
+		MontageToResume = Cast<UAnimMontage>(CurrentRepRootMotion.Animation.Get());
+		RestoreSource = TEXT("CurrentReplicatedRootMotionMontage");
+	}
+	if (!DoesMontageMatchAuthoritativeAnimation(MontageToResume))
+	{
+		// Root-motion replication carries the actual montage for non-dynamic montages. This is
+		// the normal fallback for simulated proxies because GAS does not retain an animating
+		// ability pointer for them after a client-only predicted reaction displaces the montage.
+		MontageToResume = Cast<UAnimMontage>(AuthoritativeAnimation);
+		RestoreSource = TEXT("QuarantinedRootMotionMontage");
+	}
+
+	if (!DoesMontageMatchAuthoritativeAnimation(MontageToResume))
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[ProxyAuthoritativeStateRestoreSkipped] PredictionId=%d Target={%s} Reason=AuthoritativeMontageUnavailable Ability=%s Animation=%s Position=%.3f DynamicAnimation=%d"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(TargetCharacter),
+			*GetNameSafe(AuthoritativeAbility), *GetNameSafe(AuthoritativeAnimation),
+			QuarantinedPosition, AuthoritativeAnimation && !Cast<UAnimMontage>(AuthoritativeAnimation) ? 1 : 0);
+		return false;
+	}
+
+	float PlayRate = ObservedPlayRate;
+	if (!FMath::IsFinite(PlayRate) || FMath::Abs(PlayRate) < 0.1f || FMath::Abs(PlayRate) > 5.0f)
+	{
+		PlayRate = AnimInstance->Montage_GetPlayRate(MontageToResume);
+	}
+	if (FMath::Abs(PlayRate) <= KINDA_SMALL_NUMBER)
+	{
+		PlayRate = 1.0f;
+	}
+
+	const float MoveAgeSeconds = GetWorld()
+		? static_cast<float>(FMath::Clamp(
+			GetWorld()->GetTimeSeconds() - QuarantinedMove->Time, 0.0, 0.5))
+		: 0.0f;
+	const float AuthoritativePosition = QuarantinedPosition + (MoveAgeSeconds * PlayRate);
+	const float ClampedPosition = FMath::Clamp(
+		AuthoritativePosition, 0.0f,
+		FMath::Max(0.0f, MontageToResume->GetPlayLength() - KINDA_SMALL_NUMBER));
+	const float RemainingTrackDistance = PlayRate >= 0.0f
+		? FMath::Max(0.0f, MontageToResume->GetPlayLength() - ClampedPosition)
+		: ClampedPosition;
+	const float RemainingMontageSeconds =
+		RemainingTrackDistance / FMath::Max(FMath::Abs(PlayRate), KINDA_SMALL_NUMBER);
+	const float EndGuardSeconds = FMath::Max(0.0f, RejectedPredictionMontageRestoreEndGuardSeconds);
+	if (RemainingMontageSeconds <= EndGuardSeconds)
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[ProxyAuthoritativeStateRestoreSkipped] PredictionId=%d Target={%s} Reason=NearMontageEnd Animation=%s Montage=%s Position=%.3f Remaining=%.3f EndGuard=%.3f PlayRate=%.3f Source=%s"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(TargetCharacter),
+			*GetNameSafe(AuthoritativeAnimation), *GetNameSafe(MontageToResume),
+			ClampedPosition, RemainingMontageSeconds, EndGuardSeconds, PlayRate, RestoreSource);
+		return false;
+	}
+
+	if (ASC->PlayMontageSimulated(MontageToResume, PlayRate) <= 0.0f)
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Warning,
+			TEXT("[ProxyAuthoritativeStateRestoreFailed] PredictionId=%d Target={%s} Animation=%s Montage=%s Position=%.3f Source=%s"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(TargetCharacter),
+			*GetNameSafe(AuthoritativeAnimation), *GetNameSafe(MontageToResume),
+			ClampedPosition, RestoreSource);
+		return false;
+	}
+
+	// Jump directly to the replicated track position. Unlike GAS's ordinary OnRep fast-forward,
+	// this intentionally does not replay montage notifies from the skipped prediction window.
+	AnimInstance->Montage_SetPosition(MontageToResume, ClampedPosition);
+	AnimInstance->Montage_SetPlayRate(MontageToResume, PlayRate);
+
+	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+		TEXT("[ProxyAuthoritativeStateRestored] PredictionId=%d Target={%s} Animation=%s Montage=%s SourcePosition=%.3f Position=%.3f MoveAge=%.3f PlayRate=%.3f ObservedPlayRate=%.3f Remaining=%.3f RestoreSource=%s CapsuleKeptAtReliableServerLocation=1 PendingRepMoves=%d"),
+		Context.PredictionId, *PP_GetNetMotionActorContext(TargetCharacter),
+		*GetNameSafe(AuthoritativeAnimation), *GetNameSafe(MontageToResume),
+		QuarantinedPosition, ClampedPosition, MoveAgeSeconds, PlayRate, ObservedPlayRate,
+		RemainingMontageSeconds, RestoreSource,
+		TargetCharacter->RootMotionRepMoves.Num());
+	return true;
 }
 
 void UPP_PredictionComponent::RecordAuthoritativeCollision(AActor* TargetActor, FGameplayTag ReactionTag,
@@ -648,12 +1212,12 @@ void UPP_PredictionComponent::RemoveExpiredAuthoritativeCollisionState()
 	}
 
 	const double NowSeconds = World->GetTimeSeconds();
-	const double Timeout = FMath::Max(0.1f, AuthoritativeCollisionMatchTimeout);
+	const double RecordLifetime = FMath::Max(0.1f, AuthoritativeCollisionRecordLifetime);
 
 	for (int32 Index = AuthoritativeCollisionRecords.Num() - 1; Index >= 0; --Index)
 	{
 		const FPP_AuthoritativeCollisionRecord& Record = AuthoritativeCollisionRecords[Index];
-		if (!Record.TargetActor.IsValid() || NowSeconds - Record.TimeSeconds > Timeout)
+		if (!Record.TargetActor.IsValid() || NowSeconds - Record.TimeSeconds > RecordLifetime)
 		{
 			AuthoritativeCollisionRecords.RemoveAtSwap(Index, 1, EAllowShrinking::No);
 		}
@@ -738,7 +1302,13 @@ void UPP_PredictionComponent::QueuePendingServerReactionRequest(
 	const TWeakObjectPtr<AActor> WeakTarget(TargetActor);
 	const FPP_ReactionPredictionContext CapturedContext = Context;
 	const FGameplayTag CapturedReactionTag = ReactionTag;
-	const float Timeout = FMath::Max(0.1f, AuthoritativeCollisionMatchTimeout);
+	const float Timeout = FMath::Max(0.05f, AuthoritativeCollisionMatchTimeout);
+	const float PingMilliseconds = PP_GetActorOwnerPingMilliseconds(GetOwner());
+	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+		TEXT("[ServerCollisionMatchGraceStarted] PredictionId=%d Owner={%s} Target={%s} Tag=%s Grace=%.3f PingMs=%.1f EstimatedClientDecision=%.3f"),
+		Context.PredictionId, *PP_GetNetMotionActorContext(GetOwner()),
+		*PP_GetNetMotionActorContext(TargetActor), *ReactionTag.ToString(), Timeout,
+		PingMilliseconds, Timeout + (PingMilliseconds * 0.001f));
 	FTimerHandle RejectionTimer;
 	World->GetTimerManager().SetTimer(RejectionTimer,
 		[WeakThis, WeakTarget, CapturedContext, CapturedReactionTag]()
@@ -758,6 +1328,13 @@ void UPP_PredictionComponent::QueuePendingServerReactionRequest(
 				}
 
 				StrongThis->PendingServerReactionRequests.RemoveAt(Index, 1, EAllowShrinking::No);
+				UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+					TEXT("[ServerCollisionMatchGraceExpired] PredictionId=%d Owner={%s} Target={%s} Tag=%s Grace=%.3f"),
+					CapturedContext.PredictionId,
+					*PP_GetNetMotionActorContext(StrongThis->GetOwner()),
+					*PP_GetNetMotionActorContext(StrongTarget),
+					*CapturedReactionTag.ToString(),
+					FMath::Max(0.05f, StrongThis->AuthoritativeCollisionMatchTimeout));
 				StrongThis->ClientRejectPredictedReaction(
 					CapturedContext, StrongTarget, CapturedReactionTag,
 					StrongTarget->GetActorLocation(), StrongTarget->GetActorRotation());
@@ -1224,8 +1801,9 @@ bool UPP_PredictionComponent::PlayPredictedReactionOnTargetProxy
 	const bool bPlayReactionLocally = bPredictCleanReaction || bPredictBlockedAdditiveReaction;
 	const float StartPosition = GetReactionStartPosition(Reaction);
 	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[PredictedReactionBegin] PredictionId=%d Instigator={%s} Target={%s} RequestedTag=%s ResolvedTag=%s Defense=%d PlayLocal=%d Additive=%d Montage=%s StartPosition=%.3f"),
-		Context.PredictionId, *PP_GetNetMotionActorContext(GetOwner()),
+		TEXT("[PredictedReactionBegin] PredictionId=%d HitServerTime=%.3f Instigator={%s} Target={%s} RequestedTag=%s ResolvedTag=%s Defense=%d PlayLocal=%d Additive=%d Montage=%s StartPosition=%.3f"),
+		Context.PredictionId, Context.ClientEstimatedServerTimeSeconds,
+		*PP_GetNetMotionActorContext(GetOwner()),
 		*PP_GetNetMotionActorContext(TargetActor), *ReactionTag.ToString(),
 		*ResolvedReactionTag.ToString(), static_cast<int32>(PredictedDefenseOutcome),
 		bPlayReactionLocally ? 1 : 0, PP_IsAdditiveReaction(Reaction) ? 1 : 0,
@@ -1305,6 +1883,10 @@ void UPP_PredictionComponent::ServerConfirmPredictedReaction_Implementation
  FPP_ReactionGameplayCueSettings GameplayCueSettings,
  FHitResult HitResult)
 {
+	// Never trust the validation fields serialized by the client. Rebuild them from the
+	// synchronized-time estimate using this server's current clock and configured rewind window.
+	ValidateClientHitTime(Context);
+
 	if (bRequireAuthoritativeCollisionMatch)
 	{
 		AActor* OwnerActor = GetOwner();
@@ -1447,6 +2029,15 @@ bool UPP_PredictionComponent::ProcessServerConfirmedReaction(
 
 	if (!ValidateServerReactionRequest(TargetActor, Reaction, ResolvedTransformSettings)) return false;
 
+	const bool bAppliedLagCompensation =
+		ApplyLagCompensatedRootMotionRollback(Context, TargetActor);
+	if (bAppliedLagCompensation)
+	{
+		ResolvedTransformSettings.MovementSettings.ClientInterpolationSpeed = FMath::Max(
+			ResolvedTransformSettings.MovementSettings.ClientInterpolationSpeed,
+			FMath::Max(0.0f, LagCompensationClientCorrectionSpeed));
+	}
+
 	const float StartPosition = GetReactionStartPosition(Reaction);
 
 
@@ -1459,11 +2050,12 @@ bool UPP_PredictionComponent::ProcessServerConfirmedReaction(
 	const FVector ServerStartLocation = TargetActor->GetActorLocation();
 	const FRotator ServerStartRotation = TargetActor->GetActorRotation();
 	UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
-		TEXT("[ServerReactionAccepted] PredictionId=%d Instigator={%s} Target={%s} RequestedTag=%s ResolvedTag=%s Defense=%d Additive=%d Montage=%s StartLoc=%s StartRot=%s"),
+		TEXT("[ServerReactionAccepted] PredictionId=%d Instigator={%s} Target={%s} RequestedTag=%s ResolvedTag=%s Defense=%d Additive=%d LagCompensated=%d Montage=%s StartLoc=%s StartRot=%s"),
 		Context.PredictionId, *PP_GetNetMotionActorContext(OwnerActor),
 		*PP_GetNetMotionActorContext(TargetActor), *ReactionTag.ToString(),
 		*ResolvedReactionTag.ToString(), static_cast<int32>(DefenseOutcome),
-		PP_IsAdditiveReaction(Reaction) ? 1 : 0, *GetNameSafe(Reaction.Montage),
+		PP_IsAdditiveReaction(Reaction) ? 1 : 0, bAppliedLagCompensation ? 1 : 0,
+		*GetNameSafe(Reaction.Montage),
 		*ServerStartLocation.ToCompactString(), *ServerStartRotation.ToCompactString());
 
 	if (ShouldApplyDamage(TargetActor, DefenseOutcome, DamageSettings))
@@ -1667,6 +2259,7 @@ void UPP_PredictionComponent::MulticastPlayConfirmedReaction_Implementation
 			{
 				TargetActor->SetActorRotation(ServerStartRotation, ETeleportType::TeleportPhysics);
 				FPP_ReactionMovementSettings CorrectionSettings;
+				CorrectionSettings.ClientInterpolationSpeed = FMath::Max(0.0f, ClientInterpolationSpeed);
 				SetReactionActorLocation(TargetActor, ServerStartLocation, CorrectionSettings, true);
 			}
 		}
@@ -1745,12 +2338,40 @@ void UPP_PredictionComponent::ClientRejectPredictedReaction_Implementation(
 		Context.PredictionId, *PP_GetNetMotionActorContext(GetOwner()),
 		*PP_GetNetMotionActorContext(TargetActor), *ReactionTag.ToString(),
 		*ServerLocation.ToCompactString(), *ServerRotation.ToCompactString());
+	TOptional<FSimulatedRootMotionReplicatedMove> QuarantinedAuthoritativeMove;
+	float ObservedAuthoritativePlayRate = 0.0f;
+	const bool bHadProxyRootMotionGuard = TakeQuarantinedAuthoritativeProxyRootMotionMove(
+		Context, TargetActor, QuarantinedAuthoritativeMove, ObservedAuthoritativePlayRate);
 	EndPredictedProxyRootMotionReconciliation(
 		Context, TargetActor, TEXT("ServerRejectedPrediction"));
+	const float MeshBlendDuration = FMath::Max(0.03f, RejectedPredictionProxyMeshBlendDuration);
+	const float ProxyCorrectionDistance = TargetActor
+		? FVector::Dist(TargetActor->GetActorLocation(), ServerLocation)
+		: 0.0f;
+	const float ProxyCorrectionSpeed = ProxyCorrectionDistance > KINDA_SMALL_NUMBER
+		? ProxyCorrectionDistance / MeshBlendDuration
+		: 0.0f;
 	// Reuse the established rejection path, but deliver it reliably only to the predicting owner.
 	MulticastPlayConfirmedReaction_Implementation(
-		Context, TargetActor, ReactionTag, ServerLocation, ServerRotation, 0.f, false,
+		Context, TargetActor, ReactionTag, ServerLocation, ServerRotation, ProxyCorrectionSpeed, false,
 		FPP_ReactionGameplayCueSettings(), FHitResult());
+
+	// Resume the still-authoritative montage immediately. The proxy mesh correction started above
+	// continues in parallel, so visual position recovery never delays the remaining animation.
+	const bool bNewerReactionOwnsTarget = HasNewerReactionMarkerForTarget(Context, TargetActor);
+	if (bHadProxyRootMotionGuard && !bNewerReactionOwnsTarget)
+	{
+		RestoreAuthoritativeProxyStateAfterRejectedPrediction(
+			Context, TargetActor, ReactionTag, MoveTemp(QuarantinedAuthoritativeMove),
+			ObservedAuthoritativePlayRate);
+	}
+	else
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled() && bHadProxyRootMotionGuard,
+			LogPPNetMotion, Log,
+			TEXT("[ProxyAuthoritativeStateRestoreSkipped] PredictionId=%d Target={%s} Reason=NewerReaction"),
+			Context.PredictionId, *PP_GetNetMotionActorContext(TargetActor));
+	}
 }
 
 void UPP_PredictionComponent::ClientConfirmPredictedReactionStart_Implementation(
@@ -2932,6 +3553,13 @@ FPP_ReactionPredictionContext UPP_PredictionComponent::MakeReactionPredictionCon
 {
 	FPP_ReactionPredictionContext Context;
 	Context.PredictionId = NextPredictionId;
+	if (const UWorld* World = GetWorld())
+	{
+		const AGameStateBase* GameState = World->GetGameState();
+		Context.ClientEstimatedServerTimeSeconds = GameState
+			? GameState->GetServerWorldTimeSeconds()
+			: World->GetTimeSeconds();
+	}
 
 	NextPredictionId = (NextPredictionId + 1) % MaxPredictionId;
 	if (NextPredictionId == INDEX_NONE)

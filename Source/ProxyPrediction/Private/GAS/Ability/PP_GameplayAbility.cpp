@@ -13,6 +13,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/Controller.h"
+#include "GameFramework/PlayerState.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "GameplayEffect.h"
 #include "NativeGameplayTags.h"
@@ -210,6 +211,17 @@ void UPP_GameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle,
 	const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo,
 	bool bReplicateEndAbility, bool bWasCancelled)
 {
+	// GAS rejects a predicted activation after locally stopping its montage task. Both paths can
+	// reach this override in the same frame; guard custom cleanup just as the base implementation does.
+	if (!IsEndAbilityValid(Handle, ActorInfo))
+	{
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[AbilityDuplicateEndIgnored] %s Ability=%s Sequence=%u Cancelled=%d"),
+			*PP_GetNetMotionActorContext(ActorInfo ? Cast<ACharacter>(ActorInfo->AvatarActor.Get()) : nullptr),
+			*GetNameSafe(this), ActivationSequenceId, bWasCancelled ? 1 : 0);
+		return;
+	}
+
 	ACharacter* DiagnosticCharacter = Cast<ACharacter>(GetAvatarActorFromActorInfo());
 	UPP_CharacterMovementComponent* DiagnosticMovement = DiagnosticCharacter
 		? Cast<UPP_CharacterMovementComponent>(DiagnosticCharacter->GetCharacterMovement())
@@ -606,17 +618,42 @@ bool UPP_GameplayAbility::CanInterruptAnimatingAbility(const FGameplayAbilityAct
 			AnimatingMotionAbility->ComboMontageProgressBeforeInterrupt, 0.f, 100.f);
 	}
 
-	// The local player unlocks exactly at the authored percentage. Only the authoritative
-	// copy of a remote player's ability receives a small early-acceptance tolerance. That
-	// keeps prediction responsive while still validating the request against server state.
+	// The local player unlocks exactly at the authored percentage. The authoritative copy of
+	// a remote player accounts for the time its montage trails the predicted client's montage.
+	// The authored tolerance absorbs frame/jitter error; half the measured RTT estimates the
+	// one-way activation delay. A gameplay/security cap prevents an unbounded early interrupt.
 	if (ActorInfo && ActorInfo->IsNetAuthority() && !ActorInfo->IsLocallyControlled())
 	{
-		const float EarlyAcceptanceSeconds = FMath::Max(
+		const float AuthoredToleranceSeconds = FMath::Max(
 			0.f, AnimatingMotionAbility->MontageLockout.ServerInterruptEarlyAcceptanceTolerance);
+		float MeasuredPingMilliseconds = 0.f;
+		float EffectiveToleranceSeconds = AuthoredToleranceSeconds;
+		if (AnimatingMotionAbility->MontageLockout.bUseLatencyAdjustedServerInterruptTolerance)
+		{
+			if (const APlayerState* PlayerState = Character->GetPlayerState())
+			{
+				MeasuredPingMilliseconds = FMath::Max(0.f, PlayerState->GetPingInMilliseconds());
+			}
+
+			const float MaxToleranceSeconds = FMath::Max(
+				AuthoredToleranceSeconds,
+				AnimatingMotionAbility->MontageLockout.MaxServerInterruptEarlyAcceptanceTolerance);
+			EffectiveToleranceSeconds = FMath::Min(
+				AuthoredToleranceSeconds + (MeasuredPingMilliseconds * 0.0005f),
+				MaxToleranceSeconds);
+		}
+
 		UnlockPercent = FMath::Clamp(
-			UnlockPercent - (EarlyAcceptanceSeconds / MontageLength) * 100.f,
+			UnlockPercent - (EffectiveToleranceSeconds / MontageLength) * 100.f,
 			0.f,
 			100.f);
+		UE_CLOG(PP_IsNetMotionDiagnosticEnabled(), LogPPNetMotion, Log,
+			TEXT("[MontageLockoutServerEvaluation] %s RequestedAbility=%s AnimatingAbility=%s Montage=%s Position=%.3f Length=%.3f PlayedPercent=%.2f UnlockPercent=%.2f PingMs=%.1f AuthoredTolerance=%.3f EffectiveTolerance=%.3f Accepted=%d"),
+			*PP_GetNetMotionActorContext(Character), *GetNameSafe(this),
+			*GetNameSafe(AnimatingMotionAbility), *GetNameSafe(AnimatingMontage),
+			CurrentPosition, MontageLength, PlayedPercent, UnlockPercent,
+			MeasuredPingMilliseconds, AuthoredToleranceSeconds, EffectiveToleranceSeconds,
+			PlayedPercent >= UnlockPercent ? 1 : 0);
 	}
 
 	return PlayedPercent >= UnlockPercent;

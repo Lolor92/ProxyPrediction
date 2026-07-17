@@ -4,6 +4,7 @@
 #include "GameplayTagContainer.h"
 #include "Components/ActorComponent.h"
 #include "Engine/EngineTypes.h"
+#include "GameFramework/Character.h"
 #include "Prediction/Data/PP_ReactionData.h"
 #include "TimerManager.h"
 #include "PP_PredictionComponent.generated.h"
@@ -13,6 +14,7 @@ class ACharacter;
 class UAbilitySystemComponent;
 class UAnimMontage;
 class UCharacterMovementComponent;
+class UGameplayAbility;
 class USkeletalMeshComponent;
 class USceneComponent;
 
@@ -25,6 +27,18 @@ struct FPP_ReactionPredictionContext
 	/** Client-generated identifier used to match prediction with confirmation. */
 	UPROPERTY()
 	int32 PredictionId = INDEX_NONE;
+
+	/** Client estimate of server world time when the predicted hit was observed. */
+	UPROPERTY()
+	double ClientEstimatedServerTimeSeconds = -1.0;
+
+	/** Server-clamped hit time. Client-provided values in this field are always discarded. */
+	UPROPERTY()
+	double ServerValidatedHitTimeSeconds = -1.0;
+
+	/** Whether the server accepted the synchronized timestamp for lag compensation. */
+	UPROPERTY()
+	bool bServerHitTimeValidated = false;
 
 	bool IsValid() const
 	{
@@ -226,6 +240,19 @@ struct FPP_PredictedProxyRootMotionReconciliation
 	double ExpectedEndTimeSeconds = 0.0;
 	double ExpireTimeSeconds = 0.0;
 	bool bServerConfirmed = false;
+	bool bRecoveredFromEarlyExpectedStop = false;
+	TOptional<FSimulatedRootMotionReplicatedMove> QuarantinedAuthoritativeMove;
+	float QuarantinedAuthoritativePlayRate = 0.0f;
+};
+
+/** Server-owned character state used to validate and resolve high-latency root-motion races. */
+struct FPP_ServerCharacterHistorySample
+{
+	double ServerTimeSeconds = 0.0;
+	FVector Location = FVector::ZeroVector;
+	FRotator Rotation = FRotator::ZeroRotator;
+	TWeakObjectPtr<UGameplayAbility> AnimatingAbility;
+	TWeakObjectPtr<UAnimMontage> AnimatingMontage;
 };
 
 /**
@@ -278,6 +305,7 @@ public:
 		FPP_ReactionGameplayCueSettings GameplayCueSettings, FHitResult HitResult);
 
 protected:
+	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType,
 		FActorComponentTickFunction* ThisTickFunction) override;
@@ -293,6 +321,12 @@ private:
 		const FPP_ReactionDamageSettings& DamageSettings,
 		const FPP_ReactionGameplayCueSettings& GameplayCueSettings,
 		const FHitResult& HitResult);
+	bool ValidateClientHitTime(FPP_ReactionPredictionContext& Context) const;
+	void RecordServerOwnerHistory();
+	bool TrySampleServerOwnerHistory(double ServerTimeSeconds,
+		FPP_ServerCharacterHistorySample& OutSample) const;
+	bool ApplyLagCompensatedRootMotionRollback(const FPP_ReactionPredictionContext& Context,
+		AActor* TargetActor) const;
 	void DeferServerConfirmedReactionFromCollision(const FPP_ReactionPredictionContext& Context,
 		AActor* TargetActor, FGameplayTag ReactionTag,
 		const FPP_ReactionTransformSettings& TransformSettings,
@@ -424,6 +458,17 @@ private:
 		AActor* TargetActor, const TCHAR* Reason);
 	void UpdatePredictedProxyRootMotionReconciliations();
 	void RemovePredictedProxyRootMotionReconciliation(int32 Index, const TCHAR* Reason = TEXT("Unspecified"));
+	static void QuarantineAuthoritativeProxyRootMotionMove(
+		FPP_PredictedProxyRootMotionReconciliation& State,
+		const FSimulatedRootMotionReplicatedMove& Move);
+	bool TakeQuarantinedAuthoritativeProxyRootMotionMove(
+		const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+		TOptional<FSimulatedRootMotionReplicatedMove>& OutMove, float& OutObservedPlayRate);
+	bool RestoreAuthoritativeProxyStateAfterRejectedPrediction(
+		const FPP_ReactionPredictionContext& Context, AActor* TargetActor,
+		FGameplayTag PredictedReactionTag,
+		TOptional<FSimulatedRootMotionReplicatedMove>&& QuarantinedMove,
+		float ObservedPlayRate);
 	/** Plays owner feedback and starts the local correction-suppression window. */
 	UFUNCTION(Client, Reliable)
 	void ClientPlayOwnerConfirmedReaction(FPP_ReactionPredictionContext Context, FGameplayTag ReactionTag,
@@ -529,6 +574,11 @@ private:
 	/** Confirmed proxy reactions suppressing intermediate server root-motion replay on the predicting client. */
 	TArray<FPP_PredictedProxyRootMotionReconciliation> PredictedProxyRootMotionReconciliations;
 
+	/** Short authoritative history owned by this character's prediction component. */
+	TArray<FPP_ServerCharacterHistorySample> ServerCharacterHistory;
+
+	double LastServerHistorySampleTimeSeconds = -1.0;
+
 	/** Maximum reaction requests accepted from one client each second. */
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation", meta=(ClampMin="1"))
 	int32 MaxServerReactionRequestsPerSecond = 30;
@@ -549,10 +599,59 @@ private:
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation")
 	bool bRequireAuthoritativeCollisionMatch = true;
 
-	/** Time allowed for the server hit and client request to arrive in either order. */
+	/** Time a server collision record remains available for a later client request. */
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation",
 		meta=(ClampMin="0.1", ClampMax="3.0", Units="Seconds"))
-	float AuthoritativeCollisionMatchTimeout = 1.0f;
+	float AuthoritativeCollisionRecordLifetime = 0.75f;
+
+	/** Additional server grace after a client request arrives without a matching collision. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Server Validation",
+		meta=(ClampMin="0.05", ClampMax="1.0", Units="Seconds"))
+	float AuthoritativeCollisionMatchTimeout = 0.15f;
+
+	/** Use synchronized hit time and server-owned history to undo root motion that began after a hit. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation")
+	bool bEnableServerHitLagCompensation = true;
+
+	/** Maximum amount of server history a client hit may select. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",
+		meta=(ClampMin="0.1", ClampMax="2.0", Units="Seconds"))
+	float MaxServerRewindSeconds = 0.75f;
+
+	/** Small allowance for error in the client's synchronized server-time estimate. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",
+		meta=(ClampMin="0.0", ClampMax="0.25", Units="Seconds"))
+	float FutureHitTimeToleranceSeconds = 0.05f;
+
+	/** Interval between authoritative history samples. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",
+		meta=(ClampMin="0.008", ClampMax="0.1", Units="Seconds"))
+	float ServerHistorySampleInterval = 0.0167f;
+
+	/** Ignore negligible root-motion differences when resolving a hit-time race. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",
+		meta=(ClampMin="0.0", Units="Centimeters"))
+	float MinLagCompensationRollbackDistance = 5.0f;
+
+	/** Refuse unusually large historical rollbacks even when the timestamp is valid. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",
+		meta=(ClampMin="0.0", Units="Centimeters"))
+	float MaxLagCompensationRollbackDistance = 500.0f;
+
+	/** Minimum visual correction speed used when a historical root-motion rollback is applied. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Lag Compensation",
+		meta=(ClampMin="0.0", Units="CentimetersPerSecond"))
+	float LagCompensationClientCorrectionSpeed = 1200.0f;
+
+	/** Duration of the cosmetic proxy-mesh blend after the server rejects a predicted reaction. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction",
+		meta=(ClampMin="0.03", ClampMax="0.25", Units="Seconds"))
+	float RejectedPredictionProxyMeshBlendDuration = 0.2f;
+
+	/** Do not cosmetically resume an authoritative montage with less time than this remaining. */
+	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction",
+		meta=(ClampMin="0.0", ClampMax="0.25", Units="Seconds"))
+	float RejectedPredictionMontageRestoreEndGuardSeconds = 0.08f;
 
 	/** Time an unconfirmed local prediction remains matchable. */
 	UPROPERTY(EditAnywhere, Category="SyncPrediction|Reaction", meta=(ClampMin="0.0", Units="Seconds"))

@@ -64,5 +64,17 @@ struct FPP_AbilityMotionMontageLockout
 	 */
 	UPROPERTY(EditDefaultsOnly, Category="Montage Lockout", meta=(ClampMin="0.0", UIMin="0.0", Units="Seconds"))
 	float ServerInterruptEarlyAcceptanceTolerance = 0.05f;
+
+	/** Add half of the server-measured round-trip time to the fixed tolerance above.
+	 *  This keeps a remote predicted client and the authoritative montage at the same
+	 *  effective interrupt point without delaying responsive local input.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category="Montage Lockout")
+	bool bUseLatencyAdjustedServerInterruptTolerance = true;
+
+	/** Security/gameplay bound for the complete server-only early acceptance window. */
+	UPROPERTY(EditDefaultsOnly, Category="Montage Lockout",
+		meta=(EditCondition="bUseLatencyAdjustedServerInterruptTolerance", ClampMin="0.0", UIMin="0.0", Units="Seconds"))
+	float MaxServerInterruptEarlyAcceptanceTolerance = 0.4f;
 };
 
